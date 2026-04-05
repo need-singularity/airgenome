@@ -78,6 +78,22 @@ pub fn align(a: &[GateSample], b: &[GateSample]) -> (Vec<f64>, Vec<f64>) {
     (xs, ys)
 }
 
+/// Align two gate sample streams by shared timestamp, returning both
+/// (ram, cpu) pairs. Used by L3 cross-axis MI.
+pub fn align_full(a: &[GateSample], b: &[GateSample])
+    -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    let bmap: BTreeMap<u64, (f64, f64)> = b.iter().map(|s| (s.ts, (s.ram, s.cpu))).collect();
+    let mut ram_a = Vec::new(); let mut cpu_a = Vec::new();
+    let mut ram_b = Vec::new(); let mut cpu_b = Vec::new();
+    for s in a {
+        if let Some(&(r, c)) = bmap.get(&s.ts) {
+            ram_a.push(s.ram); cpu_a.push(s.cpu);
+            ram_b.push(r); cpu_b.push(c);
+        }
+    }
+    (ram_a, cpu_a, ram_b, cpu_b)
+}
+
 /// Output of the breakthrough projection.
 #[derive(Debug, Clone)]
 pub struct BreakthroughReport {
@@ -98,6 +114,9 @@ pub struct BreakthroughReport {
     pub lagged_mi_by_lag: Vec<(usize, f64)>,  // (lag, sum_across_pairs)
     pub lagged_mi_sum: f64,                   // total across all lags + pairs
     pub new_lagged_coupling: f64,             // lagged_mi_sum * SCALE
+    pub cross_axis_mi_by_combo: Vec<(&'static str, f64)>,  // (combo_name, sum)
+    pub cross_axis_mi_sum: f64,
+    pub new_cross_axis_coupling: f64,  // cross_axis_mi_sum * SCALE
 }
 
 /// Compute the breakthrough report from 4+ gate streams.
@@ -158,8 +177,31 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
     }
     let new_lagged_coupling = lagged_mi_sum * SCALE;
 
-    let adjusted = RAW + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling)
-                       + new_mi_recovery + GHOST_PENALTY;
+    // Layer L3: cross-axis MI (ram_A×cpu_B, cpu_A×ram_B, cpu_A×cpu_B).
+    // Note: ram_A×ram_B is already captured in L1 (cross_gate_mi_sum).
+    let mut ram_cpu_sum = 0.0; // ram_A × cpu_B
+    let mut cpu_ram_sum = 0.0; // cpu_A × ram_B
+    let mut cpu_cpu_sum = 0.0; // cpu_A × cpu_B
+    for i in 0..streams.len() {
+        for j in (i+1)..streams.len() {
+            let (ra, ca, rb, cb) = align_full(&streams[i].1, &streams[j].1);
+            if ra.len() < 10 { continue; }
+            ram_cpu_sum += mutual_info(&ra, &cb, 6);
+            cpu_ram_sum += mutual_info(&ca, &rb, 6);
+            cpu_cpu_sum += mutual_info(&ca, &cb, 6);
+        }
+    }
+    let cross_axis_mi_sum = ram_cpu_sum + cpu_ram_sum + cpu_cpu_sum;
+    let cross_axis_mi_by_combo: Vec<(&'static str, f64)> = vec![
+        ("ram_A×cpu_B", ram_cpu_sum),
+        ("cpu_A×ram_B", cpu_ram_sum),
+        ("cpu_A×cpu_B", cpu_cpu_sum),
+    ];
+    let new_cross_axis_coupling = cross_axis_mi_sum * SCALE;
+
+    let adjusted = RAW
+        + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling + new_cross_axis_coupling)
+        + new_mi_recovery + GHOST_PENALTY;
     let distance = SINGULARITY - adjusted;
     let crossed = adjusted > SINGULARITY;
 
@@ -170,6 +212,7 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
         adjusted, singularity: SINGULARITY, distance, crossed,
         per_gate_mi, pair_mi,
         lagged_mi_by_lag, lagged_mi_sum, new_lagged_coupling,
+        cross_axis_mi_by_combo, cross_axis_mi_sum, new_cross_axis_coupling,
     }
 }
 
@@ -270,5 +313,50 @@ mod tests {
         assert!(r.cross_gate_mi_sum > 0.0);
         // with 4 correlated streams, adjusted should be well above raw
         assert!(r.adjusted > r.raw);
+    }
+
+    #[test]
+    fn align_full_returns_all_axes() {
+        let a = vec![
+            GateSample { ts: 1, ram: 0.1, cpu: 0.2 },
+            GateSample { ts: 2, ram: 0.3, cpu: 0.4 },
+        ];
+        let b = vec![
+            GateSample { ts: 2, ram: 0.5, cpu: 0.6 },
+            GateSample { ts: 3, ram: 0.7, cpu: 0.8 },
+        ];
+        let (ra, ca, rb, cb) = align_full(&a, &b);
+        assert_eq!(ra, vec![0.3]);
+        assert_eq!(ca, vec![0.4]);
+        assert_eq!(rb, vec![0.5]);
+        assert_eq!(cb, vec![0.6]);
+    }
+
+    #[test]
+    fn l3_cross_axis_contributes_to_adjusted() {
+        // Build streams where ram and cpu are strongly correlated
+        // within each gate, and across gates — this should create
+        // cross-axis MI > 0.
+        let mk = |phase: f64, amp: f64| -> Vec<GateSample> {
+            (0..80).map(|i| {
+                let t = i as f64;
+                GateSample {
+                    ts: i as u64,
+                    ram: amp * ((t * 0.1 + phase).sin().abs()),
+                    cpu: amp * ((t * 0.1 + phase + 0.3).cos().abs()),
+                }
+            }).collect()
+        };
+        let streams = vec![
+            ("a".into(), mk(0.0, 1.0)),
+            ("b".into(), mk(0.5, 0.8)),
+            ("c".into(), mk(1.0, 0.9)),
+            ("d".into(), mk(1.5, 1.1)),
+        ];
+        let r = project_breakthrough(&streams);
+        assert!(r.cross_axis_mi_sum > 0.0, "expected positive cross-axis MI, got {}", r.cross_axis_mi_sum);
+        assert!(r.new_cross_axis_coupling > 0.0);
+        // ensure all 3 combos reported
+        assert_eq!(r.cross_axis_mi_by_combo.len(), 3);
     }
 }

@@ -131,6 +131,8 @@
 //   L2 (v3.52.0)  temporal lagged MI, τ ∈ {1, 2, 5, 10}    margin +0.1155
 //                  mechanism: MI(A.ram[:-τ], B.ram[τ:])
 //                  captures: causality hints (A predicts B)
-//   L3 (planned)  cross-axis MI (ram×cpu, cpu×ram, cpu×cpu)
+//   L3 (v3.53.0)  cross-axis MI (ram_A×cpu_B, cpu_A×ram_B, cpu_A×cpu_B)
+//                  mechanism: expand cross-gate MI beyond ram×ram
+//                  expected margin: +0.146
 //   L4 (planned)  triadic interaction info I(A;B;C)
 //   L5 (deferred) firing-bitfield MI (exhausted on current data)

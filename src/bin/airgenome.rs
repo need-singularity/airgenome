@@ -1248,6 +1248,11 @@ fn nexus2_cmd(_args: &[String]) {
         println!("    τ={:>2}  MI_sum={:.4}", lag, sum);
     }
     println!();
+    println!("  cross-axis MI (L3):");
+    for (name, sum) in &r.cross_axis_mi_by_combo {
+        println!("    {:<12} MI_sum={:.4}", name, sum);
+    }
+    println!();
     println!("  scaling factor:              {:.5}", r.scaling_factor);
     println!("  per-gate MI sum:             {:.4}", r.per_gate_mi_sum);
     println!("  cross-gate MI sum:           {:.4}", r.cross_gate_mi_sum);
@@ -1257,6 +1262,7 @@ fn nexus2_cmd(_args: &[String]) {
     println!("  + mesh coupling (orig):     +{:.4}", r.current_mesh);
     println!("  + cross-gate coupling:      +{:.4}", r.new_cross_coupling);
     println!("  + lagged coupling (L2):     +{:.4}", r.new_lagged_coupling);
+    println!("  + cross-axis coupling (L3): +{:.4}", r.new_cross_axis_coupling);
     println!("  + per-gate MI recovery:     +{:.4}", r.new_mi_recovery);
     println!("  - ghost penalty:             {:+.4}", r.ghost_penalty);
     println!("  ─────────────────────────────────────");
