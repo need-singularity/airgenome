@@ -44,6 +44,7 @@ fn main() {
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
         "transitions" | "trans" => transitions_cmd(&args),
+        "anomalies" | "anom" => anomalies_cmd(&args),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
@@ -775,6 +776,67 @@ fn processes_cmd() {
         let name_short: String = name.chars().take(40).collect();
         println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
     }
+}
+
+fn anomalies_cmd(args: &[String]) {
+    // For each vitals sample, find distance to nearest built-in+custom fingerprint.
+    // Flag samples where min distance > threshold (default = 10.0).
+    let threshold: f64 = args.iter().position(|a| a == "--threshold" || a == "-t")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10.0);
+
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+
+    // Combine built-in + custom.
+    let mut all: Vec<(String, airgenome::signature::Signature)> =
+        airgenome::signature::FINGERPRINTS.iter()
+            .map(|fp| (fp.name.to_string(), fp.signature)).collect();
+    for (n, s) in load_custom_fingerprints() { all.push((n, s)); }
+
+    let mut outliers = 0usize;
+    let mut max_d = 0.0f64;
+    let mut max_ts = 0u64;
+    let mut distances: Vec<f64> = Vec::with_capacity(records.len());
+
+    println!("=== airgenome — anomalies ({} samples, threshold d>{:.1}) ===",
+        records.len(), threshold);
+    println!();
+    println!("  ts          d_min   nearest           axes");
+    println!("  ──────────────────────────────────────────────────────");
+    let mut shown = 0;
+    for r in &records {
+        let sig = airgenome::signature::Signature::new(
+            [r.cpu, r.ram, r.gpu, r.npu, r.power, r.io]);
+        let (_, best_d, best_name) = all.iter()
+            .map(|(n, s)| (n.clone(), sig.euclidean(s), n.as_str()))
+            .fold((String::new(), f64::INFINITY, ""),
+                |acc, (n, d, nm)| if d < acc.1 { (n, d, nm) } else { acc });
+        distances.push(best_d);
+        if best_d > max_d { max_d = best_d; max_ts = r.ts; }
+        if best_d > threshold {
+            outliers += 1;
+            if shown < 10 {
+                println!("  {}  {:>5.2}  {:<16}  [{:.1},{:.2},{:.0},{:.0},{:.0},{:.2}]",
+                    r.ts, best_d, best_name, r.cpu, r.ram, r.gpu, r.npu, r.power, r.io);
+                shown += 1;
+            }
+        }
+    }
+    if outliers == 0 { println!("  (none above threshold)"); }
+
+    let mean_d: f64 = distances.iter().sum::<f64>() / distances.len().max(1) as f64;
+    println!();
+    println!("Summary:");
+    println!("  outliers     : {} / {} ({:.1}%)",
+        outliers, records.len(), 100.0 * outliers as f64 / records.len() as f64);
+    println!("  mean distance: {:.3}", mean_d);
+    println!("  max  distance: {:.3} at ts={}", max_d, max_ts);
 }
 
 fn transitions_cmd(args: &[String]) {
@@ -2850,6 +2912,7 @@ fn print_help() {
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
     println!("  transitions [-t N]                        regime changes in firing count (|Δ|≥N)");
+    println!("  anomalies [-t D]                          samples where min fingerprint distance > D");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
