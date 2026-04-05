@@ -40,6 +40,7 @@ fn main() {
         "init" => init_cmd(&args),
         "uninit" => uninit_cmd(),
         "doctor" | "doc" => doctor_cmd(),
+        "summary" | "sum" => summary_cmd(),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -1138,6 +1139,51 @@ fn policy_tick_once(args: &[String]) {
     }
 }
 
+fn summary_cmd() {
+    // Compact overview: version, current vitals, firing, trace stats.
+    let v = airgenome::sample();
+    let firing = airgenome::firing(&v);
+    let work = 1.0 - (firing.len() as f64) / (PAIR_COUNT as f64);
+
+    println!("airgenome {}", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("Now (ts={}):", v.ts);
+    println!("  cpu={:.2} ram={:.2} io={:.2} power={:.0}  |  firing {}/{}  |  work {:.3}",
+        v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io), v.get(Axis::Power),
+        firing.len(), PAIR_COUNT, work);
+
+    // Trace stats from log.
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    match std::fs::read_to_string(&log) {
+        Ok(body) => {
+            let records = airgenome::parse_log(&body);
+            let stats = airgenome::summarize(&records);
+            if stats.count > 0 {
+                let hours = stats.span_secs as f64 / 3600.0;
+                println!();
+                println!("Log ({:.1} h, {} samples):", hours, stats.count);
+                println!("  mean cpu={:.2} ram={:.2} io={:.2}  |  firing μ={:.1} max={}  |  work {:.3}",
+                    stats.cpu_mean, stats.ram_mean, stats.io_mean,
+                    stats.firing_mean, stats.firing_max, stats.work_fraction);
+                if stats.on_battery_frac > 0.0 {
+                    println!("  on battery {:.1}%", stats.on_battery_frac * 100.0);
+                }
+            }
+        }
+        Err(_) => {
+            println!();
+            println!("Log: (not yet written — run `airgenome daemon` or `init`)");
+        }
+    }
+
+    // Daemon health.
+    let loaded = std::process::Command::new("launchctl")
+        .arg("list").arg("com.airgenome.daemon").output()
+        .map(|o| o.status.success()).unwrap_or(false);
+    println!();
+    println!("Daemon: {}", if loaded { green("running") } else { yellow("not loaded") });
+}
+
 fn doctor_cmd() {
     let mut pass = 0usize;
     let mut warn = 0usize;
@@ -1380,6 +1426,7 @@ fn print_help() {
     println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
     println!("  uninit              unload + remove the LaunchAgent");
     println!("  doctor              self-diagnostic (binary/agent/log/profile)");
+    println!("  summary             compact overview: now + log stats + daemon status");
     println!("  version             print airgenome version");
     println!("  help                print this help");
 }
