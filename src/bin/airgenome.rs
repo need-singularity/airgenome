@@ -303,7 +303,9 @@ fn signature_cmd(args: &[String]) {
     // Project each process category onto the 6-axis hexagon and report
     // which firing rules the category *would* trigger if it were the
     // sole load on the system.
-    let filter = args.get(2).cloned();
+    let filter = args.iter().skip(2).find(|a| !a.starts_with('-')).cloned();
+    let append = args.iter().any(|a| a == "--append");
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
 
     let output = match std::process::Command::new("ps")
         .args(["-axm", "-o", "rss=,pcpu=,comm="])
@@ -358,11 +360,27 @@ fn signature_cmd(args: &[String]) {
         c.procs += 1;
     }
 
-    println!("=== airgenome — hexagon signature per category ===");
-    println!("  (system total RAM: {:.0} MB; projection: cpu→load-like, ram→rss share)", total_ram_mb);
-    println!();
-    println!("  category     procs   rss%    cpu    firing  pairs");
-    println!("  ────────────────────────────────────────────────────");
+    // Current timestamp for logging.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+
+    // Open signature log if --append.
+    let mut log_file: Option<std::fs::File> = if append {
+        let path = home_dir().join(".airgenome").join("signatures.jsonl");
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()
+    } else { None };
+
+    if !json && !append {
+        println!("=== airgenome — hexagon signature per category ===");
+        println!("  (system total RAM: {:.0} MB; projection: cpu→load-like, ram→rss share)", total_ram_mb);
+        println!();
+        println!("  category     procs   rss%    cpu    firing  pairs");
+        println!("  ────────────────────────────────────────────────────");
+    }
+
+    let mut json_rows: Vec<String> = Vec::new();
 
     // Gate: treat rss%/total_ram as "ram" axis [0..1], cpu_pct/100 as cpu load.
     // gpu/npu/power/io axes are unknown per-category — leave 0.0 except
@@ -380,12 +398,38 @@ fn signature_cmd(args: &[String]) {
         let fires: Vec<usize> = airgenome::firing(&v);
         let fires_str = if fires.is_empty() { "·".to_string() }
                         else { fires.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",") };
-        println!("  {:<11}  {:>5}  {:>5.1}%  {:>5.1}  {:>5}   [{}]",
-            name, c.procs, rss_frac * 100.0, c.cpu_pct, fires.len(), fires_str);
+
+        let row = format!(
+            "{{\"ts\":{},\"category\":\"{}\",\"procs\":{},\"rss_mb\":{:.1},\"rss_pct\":{:.3},\"cpu_pct\":{:.1},\"firing\":{}}}",
+            ts, name, c.procs, c.rss_mb, rss_frac, c.cpu_pct, fires.len());
+
+        if let Some(f) = log_file.as_mut() {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{}", row);
+        }
+
+        if json {
+            json_rows.push(row);
+        } else if !append {
+            println!("  {:<11}  {:>5}  {:>5.1}%  {:>5.1}  {:>5}   [{}]",
+                name, c.procs, rss_frac * 100.0, c.cpu_pct, fires.len(), fires_str);
+        }
     }
-    println!();
-    println!("  {}", dim("firing interpretation: if this category were the ONLY load,"));
-    println!("  {}", dim("these pair gates would fire (ignoring gpu/npu/power/io unknowns)."));
+
+    if json {
+        print!("[");
+        for (i, row) in json_rows.iter().enumerate() {
+            if i > 0 { print!(","); }
+            print!("{}", row);
+        }
+        println!("]");
+    } else if append {
+        println!("appended {} rows to ~/.airgenome/signatures.jsonl", entries.len());
+    } else {
+        println!();
+        println!("  {}", dim("firing interpretation: if this category were the ONLY load,"));
+        println!("  {}", dim("these pair gates would fire (ignoring gpu/npu/power/io unknowns)."));
+    }
 }
 
 fn processes_cmd() {
@@ -2413,7 +2457,7 @@ fn print_help() {
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
-    println!("  signature [category]                      project each category onto 6-axis hexagon");
+    println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
