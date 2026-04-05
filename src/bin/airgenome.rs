@@ -58,6 +58,7 @@ fn main() {
         "idle-capacity" | "idle" => idle_capacity_cmd(),
         "transitions" | "trans" => transitions_cmd(&args),
         "anomalies" | "anom" => anomalies_cmd(&args),
+        "chart" => chart_cmd(&args),
         "predict" => predict_cmd(&args),
         "correlations" | "corr" => correlations_cmd(),
         "processes" | "proc" => processes_cmd(),
@@ -938,6 +939,58 @@ fn predict_cmd(args: &[String]) {
     } else {
         println!("  status: {} (within known patterns)", green("normal"));
     }
+}
+
+fn chart_cmd(args: &[String]) {
+    let tail_n: usize = args.iter().position(|a| a == "--tail" || a == "-t")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(80);
+
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let mut records = airgenome::parse_log(&body);
+    if records.len() > tail_n { records = records[records.len() - tail_n..].to_vec(); }
+    if records.is_empty() { println!("no records"); return; }
+
+    // Downsample if wider than 80 chars.
+    let width = records.len().min(80);
+    let step = records.len() as f64 / width as f64;
+    let idx = |i: usize| (i as f64 * step) as usize;
+
+    // Sparkline helper.
+    let spark = |values: &[f64]| -> String {
+        let chars = ['▁','▂','▃','▄','▅','▆','▇','█'];
+        let (lo, hi) = values.iter().fold((f64::INFINITY, f64::NEG_INFINITY),
+            |(l,h),&v| (l.min(v), h.max(v)));
+        if (hi - lo).abs() < 1e-9 { return "▃".repeat(values.len()); }
+        values.iter().map(|&v| {
+            let t = ((v - lo) / (hi - lo) * 7.0) as usize;
+            chars[t.min(7)]
+        }).collect()
+    };
+
+    let cpu: Vec<f64> = (0..width).map(|i| records[idx(i)].cpu).collect();
+    let ram: Vec<f64> = (0..width).map(|i| records[idx(i)].ram).collect();
+    let io:  Vec<f64> = (0..width).map(|i| records[idx(i)].io).collect();
+    let fir: Vec<f64> = (0..width).map(|i| records[idx(i)].firing as f64).collect();
+
+    let span_min = (records.last().unwrap().ts - records.first().unwrap().ts) / 60;
+    println!("=== airgenome chart ({} samples, {} min span) ===", records.len(), span_min);
+    println!();
+    let mm = |v: &[f64]| (v.iter().cloned().fold(f64::INFINITY, f64::min),
+                          v.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    let (c_lo, c_hi) = mm(&cpu);
+    let (r_lo, r_hi) = mm(&ram);
+    let (i_lo, i_hi) = mm(&io);
+    let (f_lo, f_hi) = mm(&fir);
+    println!("  CPU  [{:.2}..{:.2}]  {}", c_lo, c_hi, spark(&cpu));
+    println!("  RAM  [{:.2}..{:.2}]  {}", r_lo, r_hi, spark(&ram));
+    println!("  IO   [{:.2}..{:.2}]  {}", i_lo, i_hi, spark(&io));
+    println!("  FIRE [{:.0}..{:.0}]  {}",    f_lo, f_hi, spark(&fir));
 }
 
 fn anomalies_cmd(args: &[String]) {
@@ -3510,6 +3563,7 @@ fn print_help() {
     println!("  idle-capacity                             per-axis stats + idle axis detection");
     println!("  transitions [-t N]                        regime changes in firing count (|Δ|≥N)");
     println!("  anomalies [-t D]                          samples where min fingerprint distance > D");
+    println!("  chart [--tail N]                          ascii sparklines for cpu/ram/io/firing");
     println!("  predict [-t D]                            if current d>D, suggest preemptive apply");
     println!("  correlations                              pairwise Pearson r across category series");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
