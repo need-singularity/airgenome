@@ -21,6 +21,7 @@ fn main() {
         "status" | "st" => status(&args),
         "probe" | "pr" => probe(),
         "sample" => sample_cmd(&args),
+        "simulate" | "sim" => simulate_cmd(&args),
         "pairs" => list_pairs(),
         "rules" => list_rules(),
         "diag" => diag(&args),
@@ -85,6 +86,82 @@ fn status(args: &[String]) {
     println!("  Rules firing: {} / {}", f.len(), PAIR_COUNT);
     println!("  Meta fixed point: 1/3 ≈ {:.6}  (work = 2/3 ≈ {:.6})",
         airgenome::META_FP, airgenome::WORK_FP);
+}
+
+fn simulate_cmd(args: &[String]) {
+    let scenario = args.get(2).map(|s| s.as_str()).unwrap_or("help");
+    let (label, vitals) = match scenario {
+        "ram-pressure" => ("RAM pressure 95%, CPU high, on AC",
+            airgenome::Vitals {
+                ts: 0,
+                axes: [5.5, 0.95, 8.0, 8.0, 1.0, 2.5],
+            }),
+        "thermal-throttle" => ("CPU maxed, battery, IO spike",
+            airgenome::Vitals {
+                ts: 0,
+                axes: [7.8, 0.6, 8.0, 8.0, 0.0, 3.0],
+            }),
+        "battery-drain" => ("battery mode, light load, swap active",
+            airgenome::Vitals {
+                ts: 0,
+                axes: [2.0, 0.75, 8.0, 8.0, 0.0, 1.5],
+            }),
+        "ml-inference" => ("GPU/NPU active, ram tight, AC",
+            airgenome::Vitals {
+                ts: 0,
+                axes: [4.0, 0.88, 8.0, 8.0, 1.0, 1.2],
+            }),
+        "idle" => ("idle baseline",
+            airgenome::Vitals {
+                ts: 0,
+                axes: [0.3, 0.15, 8.0, 8.0, 1.0, 0.5],
+            }),
+        _ => {
+            println!("usage: airgenome simulate <scenario>");
+            println!("scenarios:");
+            println!("  ram-pressure     high RAM + high CPU on AC");
+            println!("  thermal-throttle CPU maxed on battery");
+            println!("  battery-drain    swap + battery mode");
+            println!("  ml-inference     GPU/NPU active, RAM tight");
+            println!("  idle             light load baseline");
+            std::process::exit(2);
+        }
+    };
+
+    println!("=== simulate: {} ({}) ===", scenario, label);
+    println!();
+    println!("synthetic vitals:");
+    for axis in Axis::ALL {
+        println!("  {:<6} = {:.3}", axis.name(), vitals.get(axis));
+    }
+    println!();
+
+    let firing = airgenome::firing(&vitals);
+    println!("rules firing: {}/{}", firing.len(), PAIR_COUNT);
+    for &k in &firing {
+        let (a, b) = PAIRS[k];
+        let sev = airgenome::severity(k, &vitals);
+        let tag = match sev {
+            airgenome::Severity::Ok => dim("ok"),
+            airgenome::Severity::Warn => yellow("warn"),
+            airgenome::Severity::Critical => red("CRITICAL"),
+        };
+        println!("  [{:>2}] {}×{}  {}", k, a.name(), b.name(), tag);
+    }
+    println!();
+
+    println!("Tier 1 plan:");
+    let mut planned = 0;
+    for &k in &firing {
+        if let Some(action) = airgenome::plan_for_pair(k) {
+            planned += 1;
+            println!("  [{:>2}] {}", k, action.label());
+        }
+    }
+    println!("  → {} Tier 1 actions / {} firing pairs", planned, firing.len());
+    let work = 1.0 - (firing.len() as f64) / (PAIR_COUNT as f64);
+    println!();
+    println!("work fraction: {:.3}  (ceiling {:.3})", work, airgenome::WORK_FP);
 }
 
 fn sample_cmd(args: &[String]) {
@@ -1763,6 +1840,7 @@ fn print_help() {
     println!("  status              show hexagon + vitals + firing count (default)");
     println!("  probe               emit a single JSON vitals sample");
     println!("  sample -n N -i SEC  emit JSON array of N vitals samples");
+    println!("  simulate <scenario> run full pipeline against synthetic vitals");
     println!("  pairs               list the 15 canonical pair gates");
     println!("  rules               list the 15 rules with mesh neighbors");
     println!("  diag                fire rules on current vitals + dry-run proposals");
