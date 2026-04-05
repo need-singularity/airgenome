@@ -16,6 +16,7 @@ fn main() {
         "profile" => profile_cmd(&args),
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
+        "trace" => trace_cmd(&args),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -313,6 +314,70 @@ fn daemon_cmd(args: &[String]) {
     }
 }
 
+fn trace_cmd(args: &[String]) {
+    // parse --input PATH, --tail N
+    let mut input: Option<std::path::PathBuf> = None;
+    let mut tail: Option<usize> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) { input = Some(std::path::PathBuf::from(v)); }
+            }
+            "--tail" | "-t" => {
+                i += 1;
+                if let Some(v) = args.get(i) { tail = v.parse().ok(); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let path = input.unwrap_or_else(|| home_dir().join(".airgenome").join("vitals.jsonl"));
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", path.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut records = airgenome::parse_log(&body);
+    if let Some(n) = tail {
+        if records.len() > n {
+            records = records[records.len() - n..].to_vec();
+        }
+    }
+
+    let stats = airgenome::summarize(&records);
+
+    println!("=== airgenome — Trace Summary ===");
+    println!("  Source : {}", path.display());
+    println!("  Records: {}  ({} invalid lines skipped)",
+        stats.count,
+        body.lines().count().saturating_sub(stats.count));
+    if stats.count == 0 {
+        println!("  (no valid records — run `airgenome daemon` for a while first)");
+        return;
+    }
+    let hours = stats.span_secs as f64 / 3600.0;
+    println!("  Span   : {}s ({:.2} h)", stats.span_secs, hours);
+    println!();
+    println!("  Means:");
+    println!("    cpu load      {:>6.2}", stats.cpu_mean);
+    println!("    ram pressure  {:>6.2}", stats.ram_mean);
+    println!("    io proxy      {:>6.2}", stats.io_mean);
+    println!();
+    println!("  Firing:");
+    println!("    mean          {:>5.2} / {}", stats.firing_mean, airgenome::PAIR_COUNT);
+    println!("    max           {:>5}", stats.firing_max);
+    println!("    work fraction {:>5.3}  (ceiling 2/3 ≈ {:.3})",
+        stats.work_fraction, airgenome::WORK_FP);
+    println!();
+    println!("  Battery: {:.1}% of samples on battery", stats.on_battery_frac * 100.0);
+}
+
 fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -335,5 +400,6 @@ fn print_help() {
     println!("  profile active      show the currently applied profile");
     println!("  diff A B            show per-pair genome differences between profiles");
     println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
+    println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
     println!("  help                print this help");
 }
