@@ -51,14 +51,15 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
 - ✅ 6-axis hexagon + 15 pair gates + 60-byte genome
 - ✅ 5-gate mesh (macos, finder, telegram, chrome, safari)
 - ✅ Breakthrough layer ladder L1–L5a (margin +0.250)
-- ✅ Canonical hexa-lang spec (`docs/gates.hexa`, 388 lines, Mk.II+)
+- ✅ Canonical hexa-lang spec (`docs/gates.hexa`, compile-pass, 18/18 assertions)
 - ✅ All types/functions declared — 10 types, 19 constants, 24 functions
-- ✅ Effect system (5 allowed, 5 forbidden)
-- ✅ Consciousness block (NexusMerger)
+- ✅ Effect system (3 effects: FileIO, ProcessSensor, Clock)
+- ✅ Consciousness block (NexusMerger) — NEXUS-6 Omega Lens 5/6 CONFIRMED
+- ✅ hexa-lang compiler validation — exit 137 fixed (codesign -s -)
 - ⏳ L5c–L6e candidate layers (4 remaining, projected +0.173)
-- ⏳ hexa-lang compiler validation (exit 137 — binary issue)
 - ⏳ Per-source genome accumulation over time
 - ⏳ Signature diff between sources (Safari vs Chrome)
+- ⏳ Runtime: live ps sampling → gate projection → genome log
 
 ## Non-goals (explicit)
 

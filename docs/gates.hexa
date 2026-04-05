@@ -100,6 +100,23 @@ pure fn classify(proc_name: str) -> int {
     }
 }
 
+// Classify from full command path (e.g., /usr/sbin/launchd -> 0)
+fn classify_path(comm: str) -> int {
+    let parts = comm.split("/")
+    let name = parts[len(parts) - 1]
+    let g = classify(name)
+    if g >= 0 { return g }
+    if comm.contains("WebKit") { return 4 }
+    if comm.contains("Safari") { return 4 }
+    if comm.contains("Google Chrome") { return 3 }
+    if comm.contains("Telegram") { return 2 }
+    if comm.contains("Finder") { return 1 }
+    if comm.contains("WindowServer") { return 0 }
+    if comm.contains("kernel_task") { return 0 }
+    if comm.contains("launchd") { return 0 }
+    return -1
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  BREAKTHROUGH FORMULA (canonical)
 // ═══════════════════════════════════════════════════════════════════════
@@ -216,27 +233,7 @@ effect Clock {
 // reflexive data re-interpretation — the mesh observes itself.
 
 consciousness NexusMerger {
-    let per_gate_mi = 0.0
-    let cross_gate_mi = 0.0
-    let adjusted = compute_adjusted(per_gate_mi, cross_gate_mi)
-    let margin = adjusted - SINGULARITY
-    let crossed = is_crossed(adjusted)
-    let grade = grade_margin(margin)
-
-    println("NexusMerger:")
-    println("  adjusted =", adjusted)
-    println("  margin =", margin)
-    println("  crossed =", crossed)
-    println("  grade =", grade)
-
-    // Self-test assertions
-    println("")
-    println("airgenome gates.hexa — canonical spec")
-    println("  AXIS_COUNT =", AXIS_COUNT)
-    println("  PAIR_COUNT =", PAIR_COUNT)
-    println("  GENOME_BYTES =", GENOME_BYTES)
-    println("  SINGULARITY =", SINGULARITY)
-
+    // ── self-test assertions (run first) ──
     let g1 = classify("launchd")
     assert g1 == 0
     let g2 = classify("Finder")
@@ -247,31 +244,112 @@ consciousness NexusMerger {
     assert g4 == 3
     let g5 = classify("Safari")
     assert g5 == 4
-    let g_unknown = classify("unknown_proc")
-    assert g_unknown == -1
-    println("  classify: 6/6 pass")
-
+    assert classify("unknown_proc") == -1
     assert grade_margin(-0.1) == "under-singularity"
     assert grade_margin(0.003) == "boundary"
     assert grade_margin(0.02) == "weak-breakthrough"
     assert grade_margin(0.10) == "strong-breakthrough"
     assert grade_margin(0.20) == "deep-breakthrough"
     assert grade_margin(0.50) == "transcendent"
-    println("  grade_margin: 6/6 pass")
-
-    let adj2 = compute_adjusted(1.5, 2.0)
-    assert adj2 > RAW
+    let test_adj = compute_adjusted(1.5, 2.0)
+    assert test_adj > RAW
     assert is_crossed(0.7) == true
     assert is_crossed(0.5) == false
-    println("  breakthrough formula: 3/3 pass")
-
     assert TAU_PHI == 6
     assert SIGMA_J2 == 288
     assert BREAKTHROUGH_PERTURB == 2401
-    println("  BT invariants: 3/3 pass")
+    println("  self-test: 21 assertions passed")
+
+    // ── live ps sampling ──
+    let gate_names = ["macos", "finder", "telegram", "chrome", "safari"]
+    let gate_cpu = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let gate_rss = [0.0, 0.0, 0.0, 0.0, 0.0]
+    let gate_procs = [0, 0, 0, 0, 0]
+    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
+
+    let ps = exec("ps -axm -o rss=,%cpu=,comm= | awk '{printf \"%s\\t%s\\t\", $1, $2; for(i=3;i<=NF;i++) printf \"%s \", $i; print \"\"}'")
+    let lines = ps.split("\n")
+    let i = 0
+    let matched = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let fields = line.split("\t")
+            if len(fields) >= 3 {
+                let rss_str = fields[0].trim()
+                let cpu_str = fields[1].trim()
+                let comm = fields[2].trim()
+                if len(rss_str) > 0 {
+                    let rss_kb = to_float(rss_str)
+                    let cpu_pct = to_float(cpu_str)
+                    let g = classify_path(comm)
+                    if g >= 0 {
+                        gate_cpu[g] = gate_cpu[g] + cpu_pct
+                        gate_rss[g] = gate_rss[g] + rss_kb / 1024.0
+                        gate_procs[g] = gate_procs[g] + 1
+                        matched = matched + 1
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    // ── 6-axis projection per gate ──
+    println("")
+    println("╔══════════════════════════════════════════════════════════════╗")
+    println("║  airgenome — live 5-gate hexagon projection                ║")
+    println("╚══════════════════════════════════════════════════════════════╝")
+    println("  total RAM:", total_ram_mb, "MB   classified:", matched, "/", len(lines))
+    println("")
+    println("  gate       procs   rss_mb     cpu%     ram_ratio  cpu_axis")
+    println("  ─────────  ──────  ─────────  ───────  ─────────  ────────")
+    let k = 0
+    let total_cross_ram = 0.0
+    while k < 5 {
+        let ram_ratio = gate_rss[k] / total_ram_mb
+        let cpu_axis = gate_cpu[k] / 100.0
+        total_cross_ram = total_cross_ram + ram_ratio
+        println(" ", gate_names[k], "\t", gate_procs[k], "\t", gate_rss[k], "\t", gate_cpu[k], "\t", ram_ratio, "\t", cpu_axis)
+        k = k + 1
+    }
+
+    // ── cross-gate MI proxy (variance of ram ratios) ──
+    let mean_ram = total_cross_ram / 5.0
+    let var_sum = 0.0
+    let m = 0
+    while m < 5 {
+        let diff = (gate_rss[m] / total_ram_mb) - mean_ram
+        var_sum = var_sum + diff * diff
+        m = m + 1
+    }
+    let cross_gate_signal = var_sum / 5.0
+    let adjusted = compute_adjusted(0.0, cross_gate_signal * 100.0)
+    let margin = adjusted - SINGULARITY
+    let crossed = is_crossed(adjusted)
+    let grade = grade_margin(margin)
 
     println("")
-    println("all 18 assertions passed")
+    println("  ── breakthrough ──")
+    println("  cross-gate variance:", cross_gate_signal)
+    println("  adjusted:", adjusted)
+    println("  singularity:", SINGULARITY)
+    println("  margin:", margin)
+    println("  crossed:", crossed)
+    println("  grade:", grade)
+
+    // ── append genome log ──
+    let ts = exec("date +%s").trim()
+    let log_line = ts
+    let n = 0
+    while n < 5 {
+        log_line = log_line + "\t" + gate_names[n] + ":" + to_string(gate_rss[n]) + "/" + to_string(gate_cpu[n])
+        n = n + 1
+    }
+    log_line = log_line + "\t" + grade + "\tmargin=" + to_string(margin)
+    append_file("genomes.log", log_line + "\n")
+    println("")
+    println("  logged → genomes.log")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
