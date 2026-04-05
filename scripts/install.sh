@@ -82,12 +82,17 @@ PLIST
 launchctl unload "${AGENT_PLIST}" 2>/dev/null || true
 launchctl load   "${AGENT_PLIST}"
 
-sleep 2
-if launchctl list | grep -q "${AGENT_LABEL}"; then
+sleep 3
+if launchctl list 2>/dev/null | grep -q "${AGENT_LABEL}"; then
   say "LaunchAgent active (${INTERVAL}s interval)"
 else
-  err "LaunchAgent did not start — check ${DATA_DIR}/daemon.err.log"
-  exit 1
+  # Verify via process lookup as fallback (launchctl output can lag).
+  if pgrep -f "airgenome daemon" >/dev/null 2>&1; then
+    say "daemon process detected (${INTERVAL}s interval)"
+  else
+    err "LaunchAgent did not start — check ${DATA_DIR}/daemon.err.log"
+    exit 1
+  fi
 fi
 
 # Register signature + quiet-tune automations via bootstrap.
