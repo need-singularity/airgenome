@@ -38,6 +38,8 @@ pub enum UserAction {
     AdviseCloseTabs,
     /// No-op stub: advise the user to lower parallelism in a build tool.
     AdviseReduceParallelism { tool: String, from: u32, to: u32 },
+    /// Generic advisory text — catch-all for pairs without a dedicated path.
+    Advise { message: String },
 }
 
 /// For each firing pair, what Tier 1 UserAction (if any) would we suggest?
@@ -47,17 +49,20 @@ pub enum UserAction {
 /// is not required.
 pub fn plan_for_pair(pair: usize) -> Option<UserAction> {
     match pair {
-        // cpu×ram — suggest killing Chrome helpers (biggest RAM hogs)
         0 => Some(UserAction::KillProcess { pattern: "Google Chrome Helper (Renderer)".into() }),
-        // cpu×io — suggest reducing build parallelism
+        1 => Some(UserAction::Advise { message: "offload CPU hot path to Metal / GPU compute".into() }),
+        2 => Some(UserAction::Advise { message: "route ML via CoreML / MLX → ANE".into() }),
+        3 => Some(UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 2 }),
         4 => Some(UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 4 }),
-        // ram×gpu — close tabs
         5 => Some(UserAction::AdviseCloseTabs),
-        // ram×power — kill Slack/Electron helpers on battery
+        6 => Some(UserAction::Advise { message: "quantize model to 4-bit (MLX q4 / llama.cpp Q4_K_M)".into() }),
         7 => Some(UserAction::KillProcess { pattern: "Slack Helper".into() }),
-        // ram×io — same tab guidance
         8 => Some(UserAction::AdviseCloseTabs),
-        // power×io — same tab guidance
+        9 => Some(UserAction::Advise { message: "partition workloads: graphics → Metal, ML → ANE".into() }),
+        10 => Some(UserAction::Advise { message: "cap frame rate; lower GPU clock on battery".into() }),
+        11 => Some(UserAction::Advise { message: "enable mipmaps + stream textures from disk".into() }),
+        12 => Some(UserAction::Advise { message: "batch inference; reduce ANE duty cycle".into() }),
+        13 => Some(UserAction::Advise { message: "mmap model weights; preload to RAM".into() }),
         14 => Some(UserAction::AdviseCloseTabs),
         _ => None,
     }
@@ -87,6 +92,7 @@ impl UserAction {
             UserAction::AdviseCloseTabs => "close browser tabs (manual)".into(),
             UserAction::AdviseReduceParallelism { tool, from, to } =>
                 format!("reduce {} parallelism {} → {}", tool, from, to),
+            UserAction::Advise { message } => message.clone(),
         }
     }
 
@@ -95,6 +101,7 @@ impl UserAction {
         match self {
             UserAction::AdviseCloseTabs => Ok(()),
             UserAction::AdviseReduceParallelism { .. } => Ok(()),
+            UserAction::Advise { .. } => Ok(()),
             UserAction::KillProcess { pattern } => {
                 let pat = pattern.trim();
                 if pat.is_empty() { return Err(AbortReason::EmptyPattern); }
@@ -129,6 +136,7 @@ impl UserAction {
             UserAction::AdviseReduceParallelism { tool, from, to } => {
                 format!("# invoke {} with -j{} instead of -j{}", tool, to, from)
             }
+            UserAction::Advise { message } => format!("# {}", message),
         }
     }
 }
@@ -174,7 +182,9 @@ pub fn execute(action: &UserAction) -> Result<ExecResult, AbortReason> {
                 Err(e) => (None, String::new(), e.to_string(), false),
             }
         }
-        UserAction::AdviseCloseTabs | UserAction::AdviseReduceParallelism { .. } => {
+        UserAction::AdviseCloseTabs
+        | UserAction::AdviseReduceParallelism { .. }
+        | UserAction::Advise { .. } => {
             (None, String::new(), String::new(), true)
         }
     };
@@ -198,11 +208,13 @@ pub fn plan(action: &UserAction) -> Result<PreSnapshot, AbortReason> {
         UserAction::KillProcess { .. } => "kill",
         UserAction::AdviseCloseTabs => "advise-close-tabs",
         UserAction::AdviseReduceParallelism { .. } => "advise-parallelism",
+        UserAction::Advise { .. } => "advise",
     }.to_string();
     let target = match action {
         UserAction::KillProcess { pattern } => pattern.clone(),
         UserAction::AdviseCloseTabs => "browser".into(),
         UserAction::AdviseReduceParallelism { tool, .. } => tool.clone(),
+        UserAction::Advise { message } => message.clone(),
     };
     Ok(PreSnapshot { ts, kind, target, observed: action.as_command() })
 }
@@ -289,17 +301,12 @@ mod tests {
     }
 
     #[test]
-    fn plan_for_pair_covers_known_pairs() {
-        // Known Tier 1 mappings.
-        assert!(plan_for_pair(0).is_some());   // cpu×ram
-        assert!(plan_for_pair(4).is_some());   // cpu×io
-        assert!(plan_for_pair(5).is_some());   // ram×gpu
-        assert!(plan_for_pair(7).is_some());   // ram×power
-        assert!(plan_for_pair(8).is_some());   // ram×io
-        assert!(plan_for_pair(14).is_some());  // power×io
-        // Non-mapped pairs return None.
-        assert!(plan_for_pair(9).is_none());   // gpu×npu (structural)
-        assert!(plan_for_pair(99).is_none());  // out of range
+    fn plan_for_pair_covers_all_fifteen() {
+        // v3.18 brings Tier 1 coverage to every pair via Advise stubs.
+        for k in 0..crate::gate::PAIR_COUNT {
+            assert!(plan_for_pair(k).is_some(), "pair {} missing Tier 1 action", k);
+        }
+        assert!(plan_for_pair(99).is_none());  // still out of range
     }
 
     #[test]
