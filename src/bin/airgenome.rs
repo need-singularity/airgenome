@@ -46,6 +46,7 @@ fn main() {
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "fingerprints" | "fp" => fingerprints_cmd(),
+        "fingerprint-save" | "fp-save" => fingerprint_save_cmd(&args),
         "match" => match_cmd(&args),
         "match-distribution" | "match-dist" => match_distribution_cmd(),
         "profile" => profile_cmd(&args),
@@ -315,6 +316,47 @@ fn fingerprints_cmd() {
         }
         println!("]");
     }
+
+    // List custom fingerprints.
+    let path = home_dir().join(".airgenome").join("custom_fingerprints.jsonl");
+    if let Ok(body) = std::fs::read_to_string(&path) {
+        let lines: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+        if !lines.is_empty() {
+            println!();
+            println!("Custom fingerprints ({}):  {}", lines.len(), path.display());
+            for line in lines {
+                // naive parse: pull "name" and "axes" fields
+                let name = line.split("\"name\":\"").nth(1)
+                    .and_then(|s| s.split('"').next()).unwrap_or("?");
+                println!("  {}", name);
+            }
+        }
+    }
+}
+
+fn fingerprint_save_cmd(args: &[String]) {
+    let Some(name) = args.get(2) else {
+        eprintln!("usage: airgenome fingerprint-save <name>");
+        std::process::exit(2);
+    };
+    if name.chars().any(|c| c == '"' || c == '\\' || c == '\n') {
+        eprintln!("invalid characters in name");
+        std::process::exit(2);
+    }
+    let v = airgenome::sample();
+    let path = home_dir().join(".airgenome").join("custom_fingerprints.jsonl");
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let mut f = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => { eprintln!("cannot open {}: {}", path.display(), e); std::process::exit(1); }
+    };
+    use std::io::Write as _;
+    let _ = writeln!(f,
+        "{{\"ts\":{},\"name\":\"{}\",\"axes\":[{},{},{},{},{},{}]}}",
+        v.ts, name,
+        v.axes[0], v.axes[1], v.axes[2], v.axes[3], v.axes[4], v.axes[5]);
+    println!("saved fingerprint '{}' at ts={}", name, v.ts);
+    println!("  axes: {:?}", v.axes);
 }
 
 fn match_cmd(args: &[String]) {
@@ -2648,7 +2690,8 @@ fn print_help() {
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
-    println!("  fingerprints                              list built-in workload fingerprints");
+    println!("  fingerprints                              list built-in + custom fingerprints");
+    println!("  fingerprint-save <name>                   save current vitals as custom fingerprint");
     println!("  match [--append|--json]                   match current vitals → nearest fingerprint");
     println!("  match-distribution                        workload distribution from matches.jsonl");
     println!("  profile list        list built-in profiles");
