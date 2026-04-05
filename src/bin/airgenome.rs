@@ -23,7 +23,7 @@ fn main() {
         "pairs" => list_pairs(),
         "rules" => list_rules(),
         "diag" => diag(),
-        "dash" | "dashboard" => dash(),
+        "dash" | "dashboard" => dash_cmd(&args),
         "metrics" | "m" => metrics(),
         "explain" => explain_cmd(&args),
         "profile" => profile_cmd(&args),
@@ -236,6 +236,36 @@ fn metrics() {
     println!("# HELP airgenome_sample_timestamp Unix timestamp of the vitals sample.");
     println!("# TYPE airgenome_sample_timestamp gauge");
     println!("airgenome_sample_timestamp {}", v.ts);
+}
+
+fn dash_cmd(args: &[String]) {
+    let mut watch = false;
+    let mut interval_s: u64 = 2;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--watch" | "-w" => watch = true,
+            "--interval" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) { interval_s = v.parse().unwrap_or(2).max(1); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if !watch {
+        dash();
+        return;
+    }
+    // Watch mode: clear screen and redraw.
+    loop {
+        // ESC[2J clears screen; ESC[H moves cursor to home.
+        print!("\x1b[2J\x1b[H");
+        let _ = std::io::stdout().flush();
+        dash();
+        println!("  (refresh every {}s — Ctrl+C to exit)", interval_s);
+        std::thread::sleep(std::time::Duration::from_secs(interval_s));
+    }
 }
 
 fn dash() {
@@ -1251,7 +1281,7 @@ fn print_help() {
     println!("  pairs               list the 15 canonical pair gates");
     println!("  rules               list the 15 rules with mesh neighbors");
     println!("  diag                fire rules on current vitals + dry-run proposals");
-    println!("  dash                ascii hexagon dashboard (axes + 15 pair gates)");
+    println!("  dash [--watch -i N] ascii hexagon dashboard (axes + 15 pair gates)");
     println!("  metrics             Prometheus text-format exposition");
     println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  profile list        list built-in profiles");
