@@ -49,14 +49,14 @@ pub enum UserAction {
 /// is not required.
 pub fn plan_for_pair(pair: usize) -> Option<UserAction> {
     match pair {
-        0 => Some(UserAction::KillProcess { pattern: "Google Chrome Helper (Renderer)".into() }),
+        0 => Some(UserAction::KillProcess { pattern: "Chrome Helper.*Renderer".into() }),
         1 => Some(UserAction::Advise { message: "offload CPU hot path to Metal / GPU compute".into() }),
         2 => Some(UserAction::Advise { message: "route ML via CoreML / MLX → ANE".into() }),
         3 => Some(UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 2 }),
         4 => Some(UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 4 }),
         5 => Some(UserAction::AdviseCloseTabs),
         6 => Some(UserAction::Advise { message: "quantize model to 4-bit (MLX q4 / llama.cpp Q4_K_M)".into() }),
-        7 => Some(UserAction::KillProcess { pattern: "Slack Helper".into() }),
+        7 => Some(UserAction::KillProcess { pattern: "Slack Helper.*Renderer".into() }),
         8 => Some(UserAction::AdviseCloseTabs),
         9 => Some(UserAction::Advise { message: "partition workloads: graphics → Metal, ML → ANE".into() }),
         10 => Some(UserAction::Advise { message: "cap frame rate; lower GPU clock on battery".into() }),

@@ -55,16 +55,24 @@ pub fn cpu_load() -> f64 {
 
 /// Memory pressure fraction in `[0.0, 1.0]` from `memory_pressure` or
 /// `vm_stat` fallback.
+///
+/// Semantic: **0.0 = no pressure (plenty free), 1.0 = system thrashing.**
+/// `memory_pressure -Q` reports *free* percentage, so we invert:
+/// `pressure = 1.0 - (free% / 100)`.
 pub fn ram_pressure() -> f64 {
-    // Prefer memory_pressure if available.
+    // Prefer memory_pressure if available. It prints "free percentage";
+    // we invert to get pressure.
     if let Some(out) = run("memory_pressure", &["-Q"]) {
         for line in out.lines() {
-            if let Some(pct) = line
-                .split(':')
-                .nth(1)
-                .and_then(|v| v.trim().trim_end_matches('%').parse::<f64>().ok())
-            {
-                return (pct / 100.0).clamp(0.0, 1.0);
+            if line.contains("free percentage") {
+                if let Some(pct) = line
+                    .split(':')
+                    .nth(1)
+                    .and_then(|v| v.trim().trim_end_matches('%').parse::<f64>().ok())
+                {
+                    let free = (pct / 100.0).clamp(0.0, 1.0);
+                    return (1.0 - free).clamp(0.0, 1.0);
+                }
             }
         }
     }
