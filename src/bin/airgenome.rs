@@ -211,8 +211,11 @@ fn diag(args: &[String]) {
 }
 
 fn action_cmd(args: &[String]) {
-    // if no pair given, show actions for all currently-firing pairs
-    let target = args.get(2).and_then(|s| s.parse::<usize>().ok());
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
+    // if no pair given (and no flags), show actions for all currently-firing pairs
+    let target = args.iter().skip(2).find_map(|s| {
+        if s.starts_with('-') { None } else { s.parse::<usize>().ok() }
+    });
     let v = airgenome::sample();
 
     let pairs: Vec<usize> = match target {
@@ -220,6 +223,26 @@ fn action_cmd(args: &[String]) {
         Some(_) => { eprintln!("pair must be in 0..{}", PAIR_COUNT); std::process::exit(2); }
         None => airgenome::firing(&v),
     };
+
+    if json {
+        print!("{{\"pairs\":[");
+        for (i, &k) in pairs.iter().enumerate() {
+            if i > 0 { print!(","); }
+            print!("{{\"pair\":{},\"commands\":[", k);
+            if let Some(actions) = airgenome::commands_for(k) {
+                for (j, c) in actions.iter().enumerate() {
+                    if j > 0 { print!(","); }
+                    let esc = c.cmd.replace('\\', "\\\\").replace('"', "\\\"");
+                    let eff = c.effect.replace('\\', "\\\\").replace('"', "\\\"");
+                    print!("{{\"cmd\":\"{}\",\"effect\":\"{}\",\"sudo\":{}}}",
+                        esc, eff, c.needs_sudo);
+                }
+            }
+            print!("]}}");
+        }
+        println!("]}}");
+        return;
+    }
 
     if pairs.is_empty() {
         println!("no pairs firing — nothing to act on.");
