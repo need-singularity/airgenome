@@ -354,10 +354,41 @@ fn profile_cmd(args: &[String]) {
 }
 
 fn profile_list() {
-    println!("Built-in profiles ({} total):", airgenome::PROFILES.len());
+    println!("Built-in profiles ({}):", airgenome::PROFILES.len());
     for p in airgenome::PROFILES.iter() {
         println!("  {:<14} {:>2} pairs  — {}",
             p.name, p.active_count(), p.description);
+    }
+
+    // Scan user profiles from ~/.airgenome/profiles/*.genome.
+    let user_dir = home_dir().join(".airgenome").join("profiles");
+    let entries = match std::fs::read_dir(&user_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut users: Vec<(String, usize)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("genome") { continue; }
+        let Ok(bytes) = std::fs::read(&path) else { continue; };
+        if bytes.len() != GENOME_BYTES { continue; }
+        let mut arr = [0u8; GENOME_BYTES];
+        arr.copy_from_slice(&bytes);
+        let g = airgenome::Genome::from_bytes(&arr);
+        let active = (0..PAIR_COUNT).filter(|&k| g.pairs[k].engaged()).count();
+        let stem = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        users.push((stem, active));
+    }
+    if !users.is_empty() {
+        users.sort();
+        println!();
+        println!("User profiles ({}):  {}", users.len(), user_dir.display());
+        for (name, active) in &users {
+            println!("  {:<14} {:>2} pairs", name, active);
+        }
     }
 }
 
