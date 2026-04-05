@@ -18,6 +18,7 @@ fn main() {
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
         "trace" => trace_cmd(&args),
+        "replay" => replay_cmd(&args),
         "policy" => policy_cmd(&args),
         "init" => init_cmd(&args),
         "uninit" => uninit_cmd(),
@@ -464,6 +465,92 @@ fn trace_cmd(args: &[String]) {
     println!("  Battery: {:.1}% of samples on battery", stats.on_battery_frac * 100.0);
 }
 
+fn replay_cmd(args: &[String]) {
+    let mut input: Option<std::path::PathBuf> = None;
+    let mut capacity: usize = 12;
+    let mut verbose = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) { input = Some(std::path::PathBuf::from(v)); }
+            }
+            "--capacity" | "-c" => {
+                i += 1;
+                if let Some(v) = args.get(i) { capacity = v.parse().unwrap_or(12).max(3); }
+            }
+            "--verbose" | "-v" => verbose = true,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let path = input.unwrap_or_else(|| home_dir().join(".airgenome").join("vitals.jsonl"));
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", path.display(), e); std::process::exit(1); }
+    };
+
+    let records = airgenome::parse_log(&body);
+    if records.is_empty() {
+        eprintln!("no valid records in {}", path.display());
+        std::process::exit(1);
+    }
+
+    let mut engine = airgenome::PolicyEngine::with_defaults(capacity);
+    let mut total_reactive = 0usize;
+    let mut total_preempt = 0usize;
+    let mut per_pair = [0usize; 15];
+    let mut ticks_with_proposals = 0usize;
+
+    for r in &records {
+        let mut axes = [0.0; 6];
+        axes[Axis::Cpu.index()] = r.cpu;
+        axes[Axis::Ram.index()] = r.ram;
+        axes[Axis::Gpu.index()] = r.gpu;
+        axes[Axis::Npu.index()] = r.npu;
+        axes[Axis::Power.index()] = r.power;
+        axes[Axis::Io.index()] = r.io;
+        let proposals = engine.tick(airgenome::Vitals { ts: r.ts, axes });
+
+        if !proposals.is_empty() { ticks_with_proposals += 1; }
+        for p in &proposals {
+            per_pair[p.pair] += 1;
+            match p.reason {
+                airgenome::Reason::Reactive => total_reactive += 1,
+                airgenome::Reason::Preemptive => total_preempt += 1,
+            }
+            if verbose {
+                let tag = match p.reason {
+                    airgenome::Reason::Reactive => "REACT ",
+                    airgenome::Reason::Preemptive => "PREEMP",
+                };
+                println!("[{}] {} [{:>2}] {}", r.ts, tag, p.pair, p.action);
+            }
+        }
+    }
+
+    println!("=== airgenome — replay ===");
+    println!("  Source       : {}", path.display());
+    println!("  Records      : {}", records.len());
+    println!("  Ticks firing : {} ({:.1}%)",
+        ticks_with_proposals,
+        100.0 * ticks_with_proposals as f64 / records.len() as f64);
+    println!("  Reactive     : {}", total_reactive);
+    println!("  Preemptive   : {}", total_preempt);
+    println!("  Total        : {}", total_reactive + total_preempt);
+    println!();
+    println!("  Per-pair fire counts (sorted):");
+    let mut pairs: Vec<(usize, usize)> = per_pair.iter().copied().enumerate().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, n) in &pairs {
+        if *n == 0 { continue; }
+        let (a, b) = airgenome::PAIRS[*k];
+        println!("    [{:>2}] {:<6}×{:<6}  {:>5}", k, a.name(), b.name(), n);
+    }
+}
+
 fn policy_cmd(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("watch");
     match sub {
@@ -720,6 +807,7 @@ fn print_help() {
     println!("  diff A B            show per-pair genome differences between profiles");
     println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
+    println!("  replay [-v]         replay log through PolicyEngine, tally fires");
     println!("  policy watch        live PolicyEngine loop (preemptive + reactive)");
     println!("  policy tick         one-shot: seed from log + evaluate current vitals");
     println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
