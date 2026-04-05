@@ -14,11 +14,20 @@ use serde::{Deserialize, Serialize};
 
 pub const GATE_GENOME_BYTES: usize = 60;
 
+/// Index of the process-count counter in `GateGenome::counters`.
+pub const COUNTER_PROCS: usize = 0;
+/// Index of the RSS (MB) counter in `GateGenome::counters`.
+pub const COUNTER_RSS_MB: usize = 1;
+/// Index of the CPU percent counter in `GateGenome::counters`.
+pub const COUNTER_CPU_PCT: usize = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GateGenome {
     pub axes: [f32; 6],
     pub firing_bits: u16,
     pub ts: u32,
+    /// Interface-specific counters: [procs, rss_mb, cpu_pct].
+    /// Use COUNTER_PROCS / COUNTER_RSS_MB / COUNTER_CPU_PCT indexes.
     pub counters: [f32; 3],
     pub stats: [f32; 4],
 }
@@ -151,5 +160,6 @@ mod tests {
         assert_eq!(g.stats[0], 1.0); // min
         assert_eq!(g.stats[1], 6.0); // max
         assert!((g.stats[2] - 3.5).abs() < 1e-5); // mean
+        assert!((g.stats[3] - 1.7078).abs() < 1e-3); // stddev (population, sqrt(35/12))
     }
 }
