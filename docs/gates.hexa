@@ -1,140 +1,307 @@
-// airgenome/docs/gates.hexa — canonical spec (hexa-lang)
+// airgenome/docs/gates.hexa — canonical spec (hexa-lang Mk.II+)
 //
-// AUTHORITY: hexa-lang. Rust implementation in src/gates/ is a projection.
-// When spec and code conflict, this file is correct; Rust must be updated.
+// AUTHORITY: this file. All implementations (air_rs, future projections)
+// must follow this spec. When spec and code conflict, this file is correct.
 //
+// TARGETS Mk.II+ 7 confirmed features only:
+//   effect system, pure fn, ensures, comptime const, match ranges,
+//   consciousness block, select/spawn.
+// AVOIDS: theorem, invariant, where, handle/resume, own/borrow/move,
+//         @attributes — unconfirmed in Mk.II+ parser.
+
 // ═══════════════════════════════════════════════════════════════════════
 //  INVARIANTS (inherited from nexus6 hexa-lang BT series)
 // ═══════════════════════════════════════════════════════════════════════
-//
-//   τ + φ = n = 6           (BT-344)  6 axes, 4 gates per level
-//   σ · J₂ = 288             (BT-346)  fixed-point floor (bits/pair ≥ 4B×8)
-//   (σ-sopfr)^τ = 7^4 = 2401 (BT-345)  breakthrough perturbation constant
-//
+
+comptime const TAU_PHI: u8 = 6                // BT-344: τ + φ = n = 6
+comptime const SIGMA_J2: u32 = 288            // BT-346: fixed-point floor
+comptime const BREAKTHROUGH_PERTURB: u32 = 2401  // BT-345: 7^4
+
+// ═══════════════════════════════════════════════════════════════════════
+//  6-AXIS HEXAGON + 15 PAIR GATES
+// ═══════════════════════════════════════════════════════════════════════
+
+comptime const AXIS_COUNT: usize = 6
+comptime const PAIR_COUNT: usize = 15         // C(6, 2)
+comptime const GENOME_BYTES: usize = 60       // 15 pairs × 4 bytes
+comptime const SINGULARITY: f64 = 2.0 / 3.0   // Banach 1/3 work ceiling
+
+enum Axis { Cpu, Ram, Gpu, Npu, Power, Io }
+
 // ═══════════════════════════════════════════════════════════════════════
 //  5-GATE MESH (airgenome subjects, data-sources)
 // ═══════════════════════════════════════════════════════════════════════
-//
-//   macos     main system (launchd, WindowServer, kernel_task, mds, ...)
-//   finder    Finder.app + file system interaction (always-present)
-//   telegram  Telegram Desktop + helpers (individual)
-//   chrome    Google Chrome + all Helper renderer/GPU (individual)
-//   safari    Safari + WebKit processes (individual)
-//
-// Per-gate 6-axis projection:
-//   axes = [cpu, ram, gpu, npu, power, io]
+
+enum GateId { Macos, Finder, Telegram, Chrome, Safari }
+
+// Per-gate 6-axis projection (current projection level; gpu/npu/io = 0):
 //   cpu   = Σ cpu_pct / 100   (may exceed 1.0 on multi-core)
-//   ram   = Σ rss_mb / total_ram_mb  ∈ [0,1]
+//   ram   = Σ rss_mb / total_ram_mb  ∈ [0, 1]
 //   gpu   = 0                 (no public per-proc GPU API)
 //   npu   = 0                 (no public per-proc NPU API)
 //   power = 1                 (AC proxy)
 //   io    = 0                 (reserved for future fs_usage integration)
-//
+
+struct Vitals {
+  axes: [f64; 6]
+  ts: u32
+}
+
+struct GateGenome {
+  axes: [f32; 6]
+  firing_bits: u16
+  ts: u32
+  counters: [f32; 3]     // [procs, rss_mb, cpu_pct]
+  stats: [f32; 4]        // [min, max, mean, stddev]
+}
+
 // ═══════════════════════════════════════════════════════════════════════
-//  12-GATE MATRIX (3 levels × 4 gates, hexa-lang taxonomy)
+//  12-GATE MATRIX (3 levels × 4 gates)
 // ═══════════════════════════════════════════════════════════════════════
 //
 //  ┌─────┬───────────────────────┬────────────────────────┬──────────────────────┐
 //  │     │  L-PIPELINE           │  L-BREAKTHROUGH        │  L-MK2_HEXA          │
 //  │     │  (observation)        │  (validation)          │  (aggregation)       │
 //  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
-//  │ G1  │  SOURCE               │  paths ≥ 3             │  consensus           │
-//  │     │  PID whitelist        │  per-gate + cross-gate │  5 gates → merger    │
-//  │     │  classify() 5 gates   │  MI decomposition      │  stream assembly     │
-//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
-//  │ G2  │  HASH                 │  blowup re-discover    │  transcendence       │
-//  │     │  60B GateGenome       │  cross_gate_mi_sum     │  adjusted efficiency │
-//  │     │  LE serialization     │  > per_gate_mi_sum     │  formula             │
-//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
-//  │ G3  │  PHI                  │  mk2 conf ≥ 0.7        │  classify consistency│
-//  │     │  6-axis projection    │  margin ≥ MARGIN_MIN   │  multi-window        │
-//  │     │  Vitals mapping       │  (= 0.005)             │  reproducibility     │
-//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
-//  │ G4  │  INVARIANT            │  p < 0.01              │  verdict aggregation │
-//  │     │  15-pair rule firing  │  crossed = true        │  BreakthroughReport  │
-//  │     │  (BT-344)             │  distance < 0          │  structure           │
+//  │ G1  │  SOURCE whitelist     │  paths ≥ 3             │  consensus           │
+//  │ G2  │  HASH 60B genome      │  cross-gate > per-gate │  transcendence       │
+//  │ G3  │  PHI 6-axis project   │  margin ≥ MARGIN_MIN   │  classify consistency│
+//  │ G4  │  INVARIANT rule fire  │  crossed = true        │  verdict aggregate   │
 //  └─────┴───────────────────────┴────────────────────────┴──────────────────────┘
-//
+
 // ═══════════════════════════════════════════════════════════════════════
 //  BREAKTHROUGH FORMULA (canonical)
 // ═══════════════════════════════════════════════════════════════════════
-//
-//   RAW            = 0.6360                 (rule-only baseline)
-//   CURRENT_MESH   = 0.0044                 (nexus original mesh coupling)
-//   GHOST_PENALTY  = -0.0026                (ghost RSS correction)
-//   SCALE          = 0.0151 / 1.500         (nexus implicit scaling ratio)
-//   SINGULARITY    = 2/3 ≈ 0.6667           (Banach 1/3 work-fraction ceiling)
-//
-//   per_gate_mi_sum   = Σ MI(gate.ram, gate.cpu)           over 4+ gates
-//   cross_gate_mi_sum = Σ MI(gate_A.ram, gate_B.ram)       over all pairs
-//
-//   new_mi_recovery    = per_gate_mi_sum * SCALE * 1.5
-//   new_cross_coupling = cross_gate_mi_sum * SCALE
-//
-//   adjusted = RAW + CURRENT_MESH + new_cross_coupling
-//                  + new_mi_recovery + GHOST_PENALTY
-//   distance = SINGULARITY - adjusted
-//   crossed  = adjusted > SINGULARITY
-//   margin   = adjusted - SINGULARITY   (only meaningful when crossed)
-//
+
+comptime const RAW: f64 = 0.6360              // rule-only baseline
+comptime const CURRENT_MESH: f64 = 0.0044     // nexus original mesh coupling
+comptime const GHOST_PENALTY: f64 = -0.0026   // ghost RSS correction
+comptime const SCALE: f64 = 0.0151 / 1.500    // nexus implicit scaling ratio
+comptime const MARGIN_MIN_L1: f64 = 0.005     // L1-ship threshold
+comptime const MARGIN_MIN_L2: f64 = 0.100     // L2-ship
+comptime const MARGIN_MIN_L3: f64 = 0.130     // L3-ship
+comptime const MARGIN_MIN_L4: f64 = 0.140     // L4-ship
+comptime const MARGIN_MIN_L5A: f64 = 0.240    // L5a-ship
+comptime const MARGIN_MIN_L6: f64 = 0.310     // L6-ship target
+
+struct LayerContribution {
+  name: str
+  raw_signal_sum: f64
+  scaled_gain: f64
+  overlap_hint: [str]
+}
+
+struct BreakthroughReport {
+  per_gate_mi_sum: f64
+  layers: [LayerContribution]
+  adjusted: f64
+  singularity: f64
+  distance: f64
+  crossed: bool
+}
+
+// Pure math — no effects, deterministic, referentially transparent.
+
+pure fn mutual_info(xs: [f64], ys: [f64], bins: usize) -> f64
+  ensures result >= 0.0
+  ensures xs.len() < 2 implies result == 0.0
+
+pure fn lagged_mutual_info(xs: [f64], ys: [f64], lag: usize, bins: usize) -> f64
+  ensures lag == 0 implies result == mutual_info(xs, ys, bins)
+  ensures xs.len() <= lag implies result == 0.0
+
+pure fn triadic_interaction(xs: [f64], ys: [f64], zs: [f64], bins: usize) -> f64
+  ensures xs.len() < 15 implies result == 0.0
+
+pure fn transfer_entropy(a_past: [f64], b_past: [f64], b_future: [f64]) -> f64
+  ensures result >= 0.0
+
+pure fn project_breakthrough(streams: [GateStream]) -> BreakthroughReport
+  ensures result.singularity == SINGULARITY
+  ensures result.distance == result.singularity - result.adjusted
+  ensures result.crossed == (result.adjusted > result.singularity)
+  ensures result.adjusted >= RAW + CURRENT_MESH + GHOST_PENALTY
+
+// Verdict classifier using match ranges (Mk.II+ feature).
+
+pure fn grade_margin(margin: f64) -> str {
+  match margin {
+    f64::NEG_INFINITY ..= 0.0      => "under-singularity"
+    0.0 ..= 0.005                   => "boundary"
+    0.005 ..= 0.05                  => "weak-breakthrough"
+    0.05 ..= 0.15                   => "strong-breakthrough"
+    0.15 ..= 0.30                   => "deep-breakthrough"
+    0.30 ..= f64::INFINITY          => "transcendent"
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
-//  EMPIRICAL VERIFICATION (2026-04-05, 605 signature rows)
+//  BREAKTHROUGH LAYER LADDER (discovered, empirically verified)
 // ═══════════════════════════════════════════════════════════════════════
 //
-//   full history       adjusted = 0.6844   margin = +0.0178   crossed = true
-//   first-half window  adjusted = 0.7290   margin = +0.0623   crossed = true
-//   second-half window adjusted = 0.7061   margin = +0.0394   crossed = true
+//   L1   (shipped) instantaneous ram×ram cross-gate MI         gain +0.018
+//   L2   (shipped) temporal lagged MI, τ ∈ {1, 2, 5, 10}        gain +0.098
+//   L3   (shipped) cross-axis MI (ram×cpu, cpu×ram, cpu×cpu)    gain +0.031
+//   L4   (shipped) triadic interaction |I(A;B;C)|               gain +0.004
+//   L5a  (shipped) lagged cross-axis (L2 × L3 product)          gain +0.105
 //
-//   cross_gate_mi_sum > per_gate_mi_sum  (breakthrough engine: G2 L-BREAKTHROUGH)
-//   top pair: finder × telegram  MI = 0.9190  r = +0.618
+//   L5b  DEFERRED  tetradic I(A;B;C;D)                          gain +0.002 (below 0.005)
+//   L5c  candidate velocity MI d(ram)/dt × d(ram)/dt            gain +0.021
+//   L5d  DEFERRED  rank-transform MI                            redundant with L1
 //
+//   L6a  candidate acceleration MI d²(ram)/dt² × d²(ram)/dt²    gain +0.020
+//   L6b  candidate lagged velocity MI at τ ∈ {1,2,5,10}         gain +0.056
+//   L6d  candidate conditional MI |I(A;B|C)|                    gain +0.024
+//   L6e  candidate transfer entropy T(A→B) (directional)        gain +0.052
+//   L6g  DEFERRED  multi-scale MI (downsample 2/4/8)            redundant with L1
+//
+//   cumulative shipped (L1..L5a):    margin +0.250
+//   cumulative all candidates:       margin +0.423 (projected if all ship)
+//
+//   exhaustion criterion: per-layer delta gain < 0.005
+
+fn layer_l1_cross_gate_ram(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L1-cross-gate-ram"
+  ensures result.overlap_hint.len() == 0
+
+fn layer_l2_lagged_temporal(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L2-lagged-temporal"
+  ensures result.overlap_hint.contains("L1-cross-gate-ram")
+
+fn layer_l3_cross_axis(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L3-cross-axis"
+  ensures result.overlap_hint.contains("L1-cross-gate-ram")
+
+fn layer_l4_triadic(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L4-triadic"
+
+fn layer_l5a_lagged_cross_axis(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L5a-lagged-cross-axis"
+  ensures result.overlap_hint.contains("L2-lagged-temporal")
+  ensures result.overlap_hint.contains("L3-cross-axis")
+
+fn layer_l5c_velocity(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L5c-velocity"
+
+fn layer_l6a_acceleration(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L6a-acceleration"
+  ensures result.overlap_hint.contains("L5c-velocity")
+
+fn layer_l6b_lagged_velocity(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L6b-lagged-velocity"
+  ensures result.overlap_hint.contains("L5c-velocity")
+  ensures result.overlap_hint.contains("L2-lagged-temporal")
+
+fn layer_l6d_conditional_mi(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L6d-conditional-mi"
+
+fn layer_l6e_transfer_entropy(streams: [GateStream]) -> LayerContribution
+  ensures result.name == "L6e-transfer-entropy"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EFFECT SYSTEM — sources and sinks
+// ═══════════════════════════════════════════════════════════════════════
+
+effect FileRead
+effect FileWrite
+effect ProcessList  // ps -axm (read-only)
+effect SysControl   // sysctl read (read-only)
+effect Clock        // SystemTime::now
+
+fn sample_vitals() -> Vitals !{ ProcessList, SysControl, Clock }
+
+fn sample_all_gates() -> [GateGenome; 5] !{ ProcessList, SysControl, Clock }
+
+fn append_genome_log(genomes: [GateGenome; 5]) !{ FileWrite, Clock }
+
+fn load_signatures(path: str) -> [Signature] !{ FileRead }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK — mesh self-observation
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The nexus merger is a meta-observer: it reads per-gate genomes and
+// projects cross-gate structure that no single gate can see. This is
+// reflexive data re-interpretation — the mesh observes itself.
+
+consciousness NexusMerger {
+  observe: [GateGenome; 5]
+  reflect: BreakthroughReport
+  verdict: str
+
+  transition {
+    let report = project_breakthrough(observe)
+    let grade = grade_margin(report.adjusted - SINGULARITY)
+    reflect = report
+    verdict = grade
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PARALLEL SAMPLING — select/spawn
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Future optimization: sample all 5 gates concurrently. One ps invocation
+// produces data for all gates, but parsing + aggregation per gate is
+// trivially parallelizable. select{} awaits first-completing gate, spawn
+// launches each gate's aggregator independently.
+
+fn sample_all_gates_parallel(ps_snapshot: str) -> [GateGenome; 5]
+  !{ Clock }
+{
+  let h_macos    = spawn aggregate_gate(ps_snapshot, GateId::Macos)
+  let h_finder   = spawn aggregate_gate(ps_snapshot, GateId::Finder)
+  let h_telegram = spawn aggregate_gate(ps_snapshot, GateId::Telegram)
+  let h_chrome   = spawn aggregate_gate(ps_snapshot, GateId::Chrome)
+  let h_safari   = spawn aggregate_gate(ps_snapshot, GateId::Safari)
+
+  select {
+    all => [h_macos.await, h_finder.await, h_telegram.await,
+            h_chrome.await, h_safari.await]
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EMPIRICAL VERIFICATION (2026-04-05, 605 signature rows, 4 gates)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   after L1:   adjusted = 0.6844   margin = +0.0178   grade = weak-breakthrough
+//   after L2:   adjusted = 0.7820   margin = +0.1153   grade = strong-breakthrough
+//   after L3:   adjusted = 0.8083   margin = +0.1416   grade = strong-breakthrough
+//   after L4:   adjusted = 0.8112   margin = +0.1445   grade = strong-breakthrough
+//   after L5a:  adjusted = 0.9163   margin = +0.2496   grade = deep-breakthrough
+//
+//   multi-window (L4):
+//     first-half  margin +0.3117  grade = transcendent
+//     second-half margin +0.2531  grade = deep-breakthrough
+//
+//   top coupling pair: finder × telegram  MI = 0.9190  r = +0.618
+
 // ═══════════════════════════════════════════════════════════════════════
 //  POLICY (what this spec ALLOWS and FORBIDS)
 // ═══════════════════════════════════════════════════════════════════════
 //
-//   ALLOWED: pure data re-interpretation — sampling, aggregation, MI, rule firing
-//   FORBIDDEN: process killing, throttling (taskpolicy/SIGSTOP/renice), memory
-//              reclamation (purge, compressor tuning), any intervention that
-//              affects running processes.
+//   ALLOWED effects: FileRead, FileWrite, ProcessList (ps read-only),
+//                    SysControl (sysctl read-only), Clock
+//
+//   FORBIDDEN effects (prime directive):
+//     ProcessKill, ProcessThrottle (taskpolicy/SIGSTOP/renice),
+//     MemoryPurge, CompressorTune, SystemWrite
 //
 //   Efficiency gains come from smarter data movement at interface gates,
-//   not from controlling processes. This is airgenome's prime directive.
-//
-// ═══════════════════════════════════════════════════════════════════════
-//  PROJECTION: Rust implementation anchors (secondary — may drift, fix to match)
-// ═══════════════════════════════════════════════════════════════════════
-//
-//   L-PIPELINE.G1     src/gates/mod.rs::classify()
-//   L-PIPELINE.G2     src/gates/genome.rs::GateGenome (60 bytes LE)
-//   L-PIPELINE.G3     src/gates/probes.rs::project()
-//   L-PIPELINE.G4     src/gates/probes.rs::genome_for() (calls firing())
-//   L-BREAKTHROUGH.G1 src/gates/nexus_merger.rs::{mutual_info, align}
-//   L-BREAKTHROUGH.G2 src/gates/nexus_merger.rs::project_breakthrough (cross_gate_mi)
-//   L-BREAKTHROUGH.G3 tests/gates_breakthrough.rs MARGIN_MIN constant
-//   L-BREAKTHROUGH.G4 src/gates/nexus_merger.rs::BreakthroughReport.crossed
-//   L-MK2_HEXA.G1     src/bin/airgenome.rs::nexus2_cmd (streams assembly)
-//   L-MK2_HEXA.G2     src/gates/nexus_merger.rs (efficiency formula)
-//   L-MK2_HEXA.G3     tests/gates_breakthrough.rs (multi-window test)
-//   L-MK2_HEXA.G4     src/gates/nexus_merger.rs::BreakthroughReport struct
-//
-// CLI surface (Rust projection):
-//   airgenome gates                   — 5-gate current status table
-//   airgenome gate status <name>      — per-gate detail (axes, counters, firing)
-//   airgenome gate fire <name>        — currently firing rules with descriptions
-//   airgenome nexus2                  — mesh-aware breakthrough analysis over history
+//   not from controlling processes.
 
 // ═══════════════════════════════════════════════════════════════════════
-//  BREAKTHROUGH LAYER LADDER
+//  PROJECTION ANCHORS (non-authoritative)
 // ═══════════════════════════════════════════════════════════════════════
 //
-//   L1 (v3.51.0)  instantaneous ram×ram cross-gate MI      margin +0.0178
-//   L2 (v3.52.0)  temporal lagged MI, τ ∈ {1, 2, 5, 10}    margin +0.1155
-//                  mechanism: MI(A.ram[:-τ], B.ram[τ:])
-//                  captures: causality hints (A predicts B)
-//   L3 (v3.53.0)  cross-axis MI (ram_A×cpu_B, cpu_A×ram_B, cpu_A×cpu_B)
-//                  mechanism: expand cross-gate MI beyond ram×ram
-//                  expected margin: +0.146
-//   L4 (v3.54.0)  triadic interaction info |I(A;B;C)|
-//                  mechanism: 3-way coupling residual beyond pairwise
-//                  expected margin: +0.15
-//   L5 (deferred) firing-bitfield MI (exhausted on current data)
+// Current projection: ~/Dev/air_rs (Rust). Anchors may drift; when
+// they do, this spec is correct and the projection must update.
+//
+//   air_rs/src/gates/mod.rs::classify       → L-PIPELINE.G1
+//   air_rs/src/gates/genome.rs::GateGenome  → L-PIPELINE.G2
+//   air_rs/src/gates/probes.rs::project     → L-PIPELINE.G3
+//   air_rs/src/gates/probes.rs::genome_for  → L-PIPELINE.G4
+//   air_rs/src/gates/nexus_merger.rs::*     → L-BREAKTHROUGH.*
+//   air_rs/tests/gates_breakthrough.rs      → L-BREAKTHROUGH.G3/G4
+//   air_rs/src/bin/airgenome.rs::nexus2_cmd → L-MK2_HEXA.G1/G4
