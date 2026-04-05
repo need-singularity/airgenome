@@ -32,6 +32,34 @@ pub enum UserAction {
     /// Kill all user-owned processes matching this pattern.
     /// Refuses system processes. Not reversible — snapshot only.
     KillProcess { pattern: String },
+    /// No-op stub: advise the user to close browser tabs manually.
+    /// Tier 1 cannot actually do this (requires scripting each browser).
+    AdviseCloseTabs,
+    /// No-op stub: advise the user to lower parallelism in a build tool.
+    AdviseReduceParallelism { tool: String, from: u32, to: u32 },
+}
+
+/// For each firing pair, what Tier 1 UserAction (if any) would we suggest?
+///
+/// Returns `None` for pairs whose remedies are all sudo-only (no Tier 1
+/// path yet). Returned actions are fully validated — call `.validate()`
+/// is not required.
+pub fn plan_for_pair(pair: usize) -> Option<UserAction> {
+    match pair {
+        // cpu×ram — suggest killing Chrome helpers (biggest RAM hogs)
+        0 => Some(UserAction::KillProcess { pattern: "Google Chrome Helper (Renderer)".into() }),
+        // cpu×io — suggest reducing build parallelism
+        4 => Some(UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 4 }),
+        // ram×gpu — close tabs
+        5 => Some(UserAction::AdviseCloseTabs),
+        // ram×power — kill Slack/Electron helpers on battery
+        7 => Some(UserAction::KillProcess { pattern: "Slack Helper".into() }),
+        // ram×io — same tab guidance
+        8 => Some(UserAction::AdviseCloseTabs),
+        // power×io — same tab guidance
+        14 => Some(UserAction::AdviseCloseTabs),
+        _ => None,
+    }
 }
 
 /// Why a Tier 1 apply was refused.
@@ -51,9 +79,21 @@ pub const BANNED_PROCESS_NAMES: &[&str] = &[
 ];
 
 impl UserAction {
+    /// Human-readable label.
+    pub fn label(&self) -> String {
+        match self {
+            UserAction::KillProcess { pattern } => format!("kill '{}'", pattern),
+            UserAction::AdviseCloseTabs => "close browser tabs (manual)".into(),
+            UserAction::AdviseReduceParallelism { tool, from, to } =>
+                format!("reduce {} parallelism {} → {}", tool, from, to),
+        }
+    }
+
     /// Validate the action; return `Ok(())` if safe to dry-run.
     pub fn validate(&self) -> Result<(), AbortReason> {
         match self {
+            UserAction::AdviseCloseTabs => Ok(()),
+            UserAction::AdviseReduceParallelism { .. } => Ok(()),
             UserAction::KillProcess { pattern } => {
                 let pat = pattern.trim();
                 if pat.is_empty() { return Err(AbortReason::EmptyPattern); }
@@ -82,6 +122,12 @@ impl UserAction {
             UserAction::KillProcess { pattern } => {
                 format!("pkill -TERM -f '{}'", escape_shell(pattern))
             }
+            UserAction::AdviseCloseTabs => {
+                "# close background browser tabs (manual)".into()
+            }
+            UserAction::AdviseReduceParallelism { tool, from, to } => {
+                format!("# invoke {} with -j{} instead of -j{}", tool, to, from)
+            }
         }
     }
 }
@@ -96,12 +142,17 @@ pub fn plan(action: &UserAction) -> Result<PreSnapshot, AbortReason> {
     let ts = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs()).unwrap_or(0);
-    Ok(PreSnapshot {
-        ts,
-        kind: match action { UserAction::KillProcess { .. } => "kill" }.to_string(),
-        target: match action { UserAction::KillProcess { pattern } => pattern.clone() },
-        observed: action.as_command(),
-    })
+    let kind = match action {
+        UserAction::KillProcess { .. } => "kill",
+        UserAction::AdviseCloseTabs => "advise-close-tabs",
+        UserAction::AdviseReduceParallelism { .. } => "advise-parallelism",
+    }.to_string();
+    let target = match action {
+        UserAction::KillProcess { pattern } => pattern.clone(),
+        UserAction::AdviseCloseTabs => "browser".into(),
+        UserAction::AdviseReduceParallelism { tool, .. } => tool.clone(),
+    };
+    Ok(PreSnapshot { ts, kind, target, observed: action.as_command() })
 }
 
 #[cfg(test)]
@@ -175,5 +226,47 @@ mod tests {
     fn plan_refuses_invalid_action() {
         assert!(plan(&kill("")).is_err());
         assert!(plan(&kill("Finder")).is_err());
+    }
+
+    #[test]
+    fn advise_actions_always_valid() {
+        assert!(UserAction::AdviseCloseTabs.validate().is_ok());
+        assert!(UserAction::AdviseReduceParallelism {
+            tool: "cargo".into(), from: 8, to: 4
+        }.validate().is_ok());
+    }
+
+    #[test]
+    fn plan_for_pair_covers_known_pairs() {
+        // Known Tier 1 mappings.
+        assert!(plan_for_pair(0).is_some());   // cpu×ram
+        assert!(plan_for_pair(4).is_some());   // cpu×io
+        assert!(plan_for_pair(5).is_some());   // ram×gpu
+        assert!(plan_for_pair(7).is_some());   // ram×power
+        assert!(plan_for_pair(8).is_some());   // ram×io
+        assert!(plan_for_pair(14).is_some());  // power×io
+        // Non-mapped pairs return None.
+        assert!(plan_for_pair(9).is_none());   // gpu×npu (structural)
+        assert!(plan_for_pair(99).is_none());  // out of range
+    }
+
+    #[test]
+    fn plan_for_pair_actions_all_validate() {
+        for k in 0..crate::gate::PAIR_COUNT {
+            if let Some(action) = plan_for_pair(k) {
+                assert!(action.validate().is_ok(),
+                    "plan_for_pair({}) returned invalid action: {:?}", k, action);
+            }
+        }
+    }
+
+    #[test]
+    fn labels_are_non_empty() {
+        let actions = vec![
+            kill("Slack"),
+            UserAction::AdviseCloseTabs,
+            UserAction::AdviseReduceParallelism { tool: "cargo".into(), from: 8, to: 4 },
+        ];
+        for a in actions { assert!(!a.label().is_empty()); }
     }
 }

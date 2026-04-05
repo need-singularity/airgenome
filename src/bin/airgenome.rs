@@ -31,6 +31,7 @@ fn main() {
         "metrics" | "m" => metrics(),
         "explain" => explain_cmd(&args),
         "action" | "actions" => action_cmd(&args),
+        "plan" => plan_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -208,6 +209,40 @@ fn diag(args: &[String]) {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn plan_cmd(_args: &[String]) {
+    let v = airgenome::sample();
+    let firing = airgenome::firing(&v);
+    if firing.is_empty() {
+        println!("no rules firing — no Tier 1 plan needed.");
+        return;
+    }
+
+    println!("=== airgenome — Tier 1 plan (dry-run) ===");
+    println!();
+    for &k in &firing {
+        let (a, b) = PAIRS[k];
+        match airgenome::plan_for_pair(k) {
+            Some(action) => {
+                match airgenome::plan(&action) {
+                    Ok(snap) => {
+                        println!("  [{:>2}] {}×{}", k, a.name(), b.name());
+                        println!("       action: {}", action.label());
+                        println!("       {}", dim(&format!("cmd: {}", snap.observed)));
+                    }
+                    Err(e) => {
+                        println!("  [{:>2}] {}×{} — {} {:?}", k, a.name(), b.name(), red("abort:"), e);
+                    }
+                }
+            }
+            None => {
+                println!("  [{:>2}] {}×{}  {}", k, a.name(), b.name(), dim("(no Tier 1 path)"));
+            }
+        }
+    }
+    println!();
+    println!("{}", dim("Tier 1 plans are dry-run; no action is executed."));
 }
 
 fn action_cmd(args: &[String]) {
@@ -1542,6 +1577,7 @@ fn print_help() {
     println!("  metrics             Prometheus text-format exposition");
     println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
+    println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
