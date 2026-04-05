@@ -387,11 +387,7 @@ fn profile_show(name: Option<&str>) {
 
 fn profile_apply(name: Option<&str>) {
     let Some(name) = name else {
-        eprintln!("usage: airgenome profile apply <name>");
-        std::process::exit(2);
-    };
-    let Some(p) = airgenome::by_name(name) else {
-        eprintln!("unknown profile: '{}'", name);
+        eprintln!("usage: airgenome profile apply <name-or-path>");
         std::process::exit(2);
     };
 
@@ -400,14 +396,50 @@ fn profile_apply(name: Option<&str>) {
         eprintln!("cannot create {}: {}", dir.display(), e);
         std::process::exit(1);
     }
-    let path = dir.join("active.genome");
-    let bytes = p.genome().to_bytes();
-    if let Err(e) = std::fs::write(&path, bytes) {
-        eprintln!("cannot write {}: {}", path.display(), e);
+    let active = dir.join("active.genome");
+
+    // Resolve `name` as one of:
+    //   1. built-in profile name
+    //   2. user profile at ~/.airgenome/profiles/<name>.genome
+    //   3. filesystem path to a .genome file
+    let (bytes, source): (Vec<u8>, String) = if let Some(p) = airgenome::by_name(name) {
+        (p.genome().to_bytes().to_vec(),
+         format!("built-in profile '{}' ({} pairs)", p.name, p.active_count()))
+    } else {
+        let user_path = dir.join("profiles").join(format!("{}.genome", name));
+        let candidate = if user_path.exists() {
+            user_path
+        } else {
+            std::path::PathBuf::from(name)
+        };
+        let bytes = match std::fs::read(&candidate) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("'{}' is neither a built-in profile name nor a readable file: {}",
+                    name, e);
+                eprintln!("available built-ins:");
+                for p in airgenome::PROFILES { eprintln!("  {}", p.name); }
+                std::process::exit(2);
+            }
+        };
+        if bytes.len() != GENOME_BYTES {
+            eprintln!("bad genome at {}: expected {} bytes, got {}",
+                candidate.display(), GENOME_BYTES, bytes.len());
+            std::process::exit(1);
+        }
+        let mut arr = [0u8; GENOME_BYTES];
+        arr.copy_from_slice(&bytes);
+        let g = airgenome::Genome::from_bytes(&arr);
+        let active_count = (0..PAIR_COUNT).filter(|&k| g.pairs[k].engaged()).count();
+        (bytes, format!("custom genome at {} ({} pairs)", candidate.display(), active_count))
+    };
+
+    if let Err(e) = std::fs::write(&active, &bytes) {
+        eprintln!("cannot write {}: {}", active.display(), e);
         std::process::exit(1);
     }
-    println!("applied profile '{}' → {}", p.name, path.display());
-    println!("  {} pairs engaged (60 bytes written)", p.active_count());
+    println!("applied: {}", source);
+    println!("  → {}", active.display());
     println!("  (dry-run: this records the selection; no sysctl changes are made)");
 }
 
@@ -987,7 +1019,7 @@ fn print_help() {
     println!("  metrics             Prometheus text-format exposition");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
-    println!("  profile apply NAME  write profile to ~/.airgenome/active.genome");
+    println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
     println!("  profile active      show the currently applied profile");
     println!("  diff A B            show per-pair genome differences between profiles");
     println!("  genome save|cat|hex genome file I/O (save/load 60-byte binary .genome)");
