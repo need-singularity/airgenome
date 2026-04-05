@@ -65,6 +65,9 @@ fn main() {
         "processes" | "proc" => processes_cmd(),
         "ghost" => ghost_cmd(),
         "nexus" => nexus_cmd(&args),
+        "gates" => gates_cmd(&args),
+        "gate" => gate_cmd(&args),
+        "nexus2" => nexus2_cmd(&args),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "fingerprints" | "fp" => fingerprints_cmd(),
@@ -1122,6 +1125,143 @@ fn nexus_cmd(args: &[String]) {
             println!("  hint: gate [{}] {}×{} is the top leaker — threshold may be too strict",
                 worst_k, a.name(), b.name());
         }
+    }
+}
+
+fn gates_cmd(_args: &[String]) {
+    let Some(genomes) = airgenome::gates::sample_all() else {
+        eprintln!("ps failed"); std::process::exit(1);
+    };
+    println!("=== airgenome — gate mesh ({} gates) ===", 5);
+    println!();
+    println!("  gate        procs   rss_mb     cpu%   firing  axes(cpu,ram)");
+    println!("  ──────────────────────────────────────────────────────────────");
+    for (i, g) in genomes.iter().enumerate() {
+        let name = airgenome::gates::GateId::ALL[i].name();
+        println!("  {:<10}  {:>5}  {:>7.1}  {:>6.1}  {:>5}    {:.3}, {:.3}",
+            name,
+            g.counters[0] as u32, g.counters[1], g.counters[2],
+            g.firing_count(),
+            g.axes[0], g.axes[1]);
+    }
+    println!();
+    println!("  {}", dim("tip: airgenome gate status <name> for detail"));
+}
+
+fn gate_cmd(args: &[String]) {
+    // args[0]=binary, args[1]="gate", args[2]=subcmd, args[3]=gate-name
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("");
+    let name = args.get(3).map(|s| s.as_str()).unwrap_or("");
+    let Some(gid) = airgenome::gates::GateId::from_name(name) else {
+        eprintln!("unknown gate '{}' — valid: macos, finder, telegram, chrome, safari", name);
+        std::process::exit(1);
+    };
+    let Some(genomes) = airgenome::gates::sample_all() else {
+        eprintln!("ps failed"); std::process::exit(1);
+    };
+    let idx = airgenome::gates::GateId::ALL.iter().position(|g| *g == gid).unwrap();
+    let g = &genomes[idx];
+    match sub {
+        "status" => {
+            println!("=== gate {} @ ts={} ===", gid.name(), g.ts);
+            println!("  axes: cpu={:.4} ram={:.4} gpu={:.4} npu={:.4} power={:.4} io={:.4}",
+                g.axes[0], g.axes[1], g.axes[2], g.axes[3], g.axes[4], g.axes[5]);
+            println!("  counters: procs={}  rss_mb={:.1}  cpu_pct={:.1}",
+                g.counters[0] as u32, g.counters[1], g.counters[2]);
+            println!("  firing: {} / 15  bits={:015b}", g.firing_count(), g.firing_bits);
+            println!("  stats: min={:.3} max={:.3} mean={:.3} stddev={:.3}",
+                g.stats[0], g.stats[1], g.stats[2], g.stats[3]);
+        }
+        "fire" => {
+            for k in 0..15 {
+                if g.fires(k) {
+                    let rule = &airgenome::rules::RULES[k];
+                    println!("  [{:>2}] {}  — {}", k, rule.name, rule.description);
+                }
+            }
+            if g.firing_count() == 0 { println!("  (no pairs firing)"); }
+        }
+        _ => {
+            eprintln!("usage: airgenome gate <status|fire> <name>");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn nexus2_cmd(_args: &[String]) {
+    // Load signatures.jsonl and run breakthrough projection on 4 gates
+    // (macos=system, finder=finder, telegram=im, browser=browser).
+    use airgenome::gates::nexus_merger::{GateSample, project_breakthrough};
+    let path = home_dir().join(".airgenome").join("signatures.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        eprintln!("cannot read {}", path.display()); std::process::exit(1);
+    };
+    let mut streams: std::collections::BTreeMap<&'static str, Vec<GateSample>> =
+        std::collections::BTreeMap::new();
+    streams.insert("macos", Vec::new());
+    streams.insert("finder", Vec::new());
+    streams.insert("telegram", Vec::new());
+    streams.insert("browser", Vec::new());
+    for line in text.lines() {
+        if line.trim().is_empty() { continue; }
+        // minimal parse: expect keys ts, category, rss_pct, cpu_pct
+        let get = |k: &str| -> Option<&str> {
+            let needle = format!("\"{}\":", k);
+            let idx = line.find(&needle)?;
+            let rest = &line[idx + needle.len()..];
+            Some(rest.trim_start().trim_start_matches('"'))
+        };
+        let ts: u64 = get("ts").and_then(|s| s.split(|c: char| !c.is_ascii_digit())
+            .next().unwrap_or("").parse().ok()).unwrap_or(0);
+        let cat = get("category").unwrap_or("");
+        let cat = cat.split('"').next().unwrap_or("");
+        let rss_pct: f64 = get("rss_pct").and_then(|s| s.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .next().unwrap_or("").parse().ok()).unwrap_or(0.0);
+        let cpu_pct: f64 = get("cpu_pct").and_then(|s| s.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .next().unwrap_or("").parse().ok()).unwrap_or(0.0);
+        let mapped = match cat {
+            "system" => "macos",
+            "finder" => "finder",
+            "im"     => "telegram",
+            "browser"=> "browser",
+            _ => continue,
+        };
+        if let Some(v) = streams.get_mut(mapped) {
+            v.push(GateSample { ts, ram: rss_pct, cpu: cpu_pct / 100.0 });
+        }
+    }
+    let ordered: Vec<(String, Vec<GateSample>)> = ["macos", "finder", "telegram", "browser"]
+        .iter().map(|k| (k.to_string(), streams.remove(*k).unwrap_or_default())).collect();
+    let r = project_breakthrough(&ordered);
+
+    println!("=== airgenome nexus2 — mesh-aware breakthrough (4 gates) ===");
+    println!("  per-gate MI (ram × cpu):");
+    for (name, mi) in &r.per_gate_mi {
+        println!("    {:<10}  MI={:.4}", name, mi);
+    }
+    println!("  cross-gate MI (ram_A × ram_B):");
+    for (a, b, mi, corr, n) in &r.pair_mi {
+        println!("    {:>9} × {:<9}  MI={:.4}  r={:+.3}  n={}", a, b, mi, corr, n);
+    }
+    println!();
+    println!("  scaling factor:              {:.5}", r.scaling_factor);
+    println!("  per-gate MI sum:             {:.4}", r.per_gate_mi_sum);
+    println!("  cross-gate MI sum:           {:.4}", r.cross_gate_mi_sum);
+    println!();
+    println!("  raw (rule-only):             {:.4}", r.raw);
+    println!("  + mesh coupling (orig):     +{:.4}", r.current_mesh);
+    println!("  + cross-gate coupling:      +{:.4}", r.new_cross_coupling);
+    println!("  + per-gate MI recovery:     +{:.4}", r.new_mi_recovery);
+    println!("  - ghost penalty:             {:+.4}", r.ghost_penalty);
+    println!("  ─────────────────────────────────────");
+    println!("  adjusted:                    {:.4}", r.adjusted);
+    println!("  singularity (2/3):           {:.4}", r.singularity);
+    println!("  distance:                    {:+.4}", r.distance);
+    println!();
+    if r.crossed {
+        println!("  {} singularity crossed (margin {:+.4})", "BREAKTHROUGH:", -r.distance);
+    } else {
+        println!("  still under singularity (distance {:+.4})", r.distance);
     }
 }
 
@@ -4001,6 +4141,10 @@ fn print_help() {
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  ghost                                     information sink scan (zombie/orphan/rss-ghost)");
     println!("  nexus [--bins N]                          singularity breakthrough analysis (A+B+C)");
+    println!("  gates                                     list all 5 gates + status");
+    println!("  gate status <name>                        detailed gate status");
+    println!("  gate fire <name>                          list firing pairs with rule text");
+    println!("  nexus2                                    mesh-aware breakthrough (4 gates)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
     println!("  fingerprints                              list built-in + custom fingerprints");
