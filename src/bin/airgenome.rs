@@ -43,6 +43,8 @@ fn main() {
         "quiet-tune" | "quiet" => quiet_tune_cmd(&args),
         "restore" => restore_cmd(&args),
         "modes" => modes_cmd(),
+        "schedule-quiet" => schedule_quiet_cmd(&args),
+        "unschedule-quiet" => unschedule_quiet_cmd(),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1268,6 +1270,74 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Refused { reason }) => { println!("refused: {}", reason); std::process::exit(1); }
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
+    }
+}
+
+fn schedule_quiet_cmd(args: &[String]) {
+    // Parse --interval <hours>, default 1.
+    let interval_h: u32 = args.iter().position(|a| a == "--interval" || a == "-i")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    if !(1..=24).contains(&interval_h) {
+        eprintln!("interval must be 1..=24 hours");
+        std::process::exit(2);
+    }
+    let bin = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("current_exe: {}", e); std::process::exit(1); }
+    };
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.quiet.plist");
+    let _ = std::fs::create_dir_all(plist.parent().unwrap());
+    let data = home_dir().join(".airgenome");
+    let _ = std::fs::create_dir_all(&data);
+
+    let contents = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.airgenome.quiet</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+        <string>quiet-tune</string>
+        <string>--yes</string>
+    </array>
+    <key>StartInterval</key><integer>{seconds}</integer>
+    <key>RunAtLoad</key><false/>
+    <key>StandardOutPath</key><string>{data}/quiet.out.log</string>
+    <key>StandardErrorPath</key><string>{data}/quiet.err.log</string>
+    <key>Nice</key><integer>15</integer>
+    <key>LowPriorityIO</key><true/>
+</dict>
+</plist>
+"#,
+        bin = bin.display(),
+        seconds = interval_h * 3600,
+        data = data.display());
+
+    if let Err(e) = std::fs::write(&plist, contents) {
+        eprintln!("write {}: {}", plist.display(), e); std::process::exit(1);
+    }
+    let _ = std::process::Command::new("launchctl").args(["unload", &plist.to_string_lossy()]).status();
+    let status = std::process::Command::new("launchctl").args(["load", &plist.to_string_lossy()]).status();
+    match status {
+        Ok(s) if s.success() => {
+            println!("scheduled: quiet-tune every {}h", interval_h);
+            println!("  plist: {}", plist.display());
+        }
+        _ => { eprintln!("launchctl load failed"); std::process::exit(1); }
+    }
+}
+
+fn unschedule_quiet_cmd() {
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.quiet.plist");
+    if plist.exists() {
+        let _ = std::process::Command::new("launchctl").args(["unload", &plist.to_string_lossy()]).status();
+        let _ = std::fs::remove_file(&plist);
+        println!("unscheduled: {}", plist.display());
+    } else {
+        println!("no schedule at {}", plist.display());
     }
 }
 
@@ -3184,6 +3254,8 @@ fn print_help() {
     println!("  quiet-tune [--yes] [--measure]            kill-free combo: purge + compressor (default)");
     println!("  restore [--yes]                           re-enable Spotlight + TimeMachine");
     println!("  modes                                     show current kill-free tuning state");
+    println!("  schedule-quiet [-i H]                     auto quiet-tune every H hours (default 1)");
+    println!("  unschedule-quiet                          remove quiet-tune LaunchAgent");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
