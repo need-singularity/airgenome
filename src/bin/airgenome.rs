@@ -596,6 +596,9 @@ fn signature_cmd(args: &[String]) {
         if l.contains("chrome") || l.contains("safari") || l.contains("firefox") || l.contains("arc")
            || l.contains("webkit") { "browser" }
         else if l.contains("slack") || l.contains("discord") || l.contains("telegram") { "im" }
+        else if l.contains("claude") || l.contains("codex") || l.contains("gemini cli")
+             || l.contains("cline") { "ai-agent" }
+        else if l.contains("nexus6") || l.contains("airgenome") { "nexus" }
         else if l.contains("vscode") || l.contains("code helper") || l.contains("cursor")
              || l.contains("zed") { "ide" }
         else if l.contains("terminal") || l.contains("iterm") || l.contains("warp") { "terminal" }
@@ -719,6 +722,9 @@ fn processes_cmd() {
            || l.contains("webkit") { "browser" }
         else if l.contains("slack") || l.contains("discord") || l.contains("telegram")
              || l.contains("whatsapp") { "im" }
+        else if l.contains("claude") || l.contains("codex") || l.contains("gemini cli")
+             || l.contains("cline") { "ai-agent" }
+        else if l.contains("nexus6") || l.contains("airgenome") { "nexus" }
         else if l.contains("vscode") || l.contains("code helper") || l.contains("cursor")
              || l.contains("zed") || l.contains("xcode") { "ide" }
         else if l.contains("terminal") || l.contains("iterm") || l.contains("warp")
