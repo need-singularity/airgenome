@@ -13,6 +13,7 @@ fn main() {
         "pairs" => list_pairs(),
         "rules" => list_rules(),
         "diag" => diag(),
+        "dash" | "dashboard" => dash(),
         "profile" => profile_cmd(&args),
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
@@ -110,6 +111,88 @@ fn diag() {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn dash() {
+    let v = airgenome::sample();
+    let fire_set: std::collections::HashSet<usize> =
+        airgenome::firing(&v).into_iter().collect();
+
+    // helper: 10-cell bar for a value in [0, max].
+    fn bar(val: f64, max: f64) -> String {
+        let filled = ((val / max).clamp(0.0, 1.0) * 10.0).round() as usize;
+        let mut s = String::with_capacity(12);
+        s.push('[');
+        for i in 0..10 {
+            s.push(if i < filled { '█' } else { '░' });
+        }
+        s.push(']');
+        s
+    }
+
+    println!("┌─ airgenome — hexagon dashboard ────────────────────────┐");
+    println!("│                                                        │");
+    println!("│  Axes:                                                 │");
+    let cpu = v.get(Axis::Cpu);
+    let ram = v.get(Axis::Ram);
+    let gpu = v.get(Axis::Gpu);
+    let npu = v.get(Axis::Npu);
+    let pow = v.get(Axis::Power);
+    let io  = v.get(Axis::Io);
+    println!("│    cpu   {} {:>6.2}                          │", bar(cpu, 8.0), cpu);
+    println!("│    ram   {} {:>6.2}                          │", bar(ram, 1.0), ram);
+    println!("│    gpu   {} {:>6.2}                          │", bar(gpu, 8.0), gpu);
+    println!("│    npu   {} {:>6.2}                          │", bar(npu, 8.0), npu);
+    println!("│    power {} {:>6.2}                          │", bar(pow, 1.0), pow);
+    println!("│    io    {} {:>6.2}                          │", bar(io,  3.0), io);
+    println!("│                                                        │");
+    println!("│  15 Pair Gates:                                        │");
+
+    let cells: Vec<String> = (0..PAIR_COUNT).map(|k| {
+        let sev = airgenome::severity(k, &v);
+        let tag = match sev {
+            airgenome::Severity::Ok => "ok ",
+            airgenome::Severity::Warn => "wrn",
+            airgenome::Severity::Critical => "CRI",
+        };
+        let (a, b) = PAIRS[k];
+        let short_a: String = a.name().chars().take(3).collect();
+        let short_b: String = b.name().chars().take(3).collect();
+        format!("[{:>2}{:>3}×{:<3}{}]", k, short_a, short_b, tag)
+    }).collect();
+
+    for chunk in cells.chunks(3) {
+        print!("│  ");
+        for c in chunk { print!(" {}", c); }
+        // pad row to card width
+        let used = chunk.len();
+        for _ in used..3 { print!("            "); }
+        println!(" │");
+    }
+
+    let firing_count = fire_set.len();
+    let work_fraction = 1.0 - (firing_count as f64) / (PAIR_COUNT as f64);
+
+    println!("│                                                        │");
+    println!("│  Firing: {:>2}/{}    Work fraction: {:.3}  (ceil {:.3})  │",
+        firing_count, PAIR_COUNT, work_fraction, airgenome::WORK_FP);
+    println!("│                                                        │");
+
+    // ascii bar: one cell per pair
+    print!("│  ");
+    for k in 0..PAIR_COUNT {
+        let c = match airgenome::severity(k, &v) {
+            airgenome::Severity::Ok => '·',
+            airgenome::Severity::Warn => '▒',
+            airgenome::Severity::Critical => '█',
+        };
+        print!("{}", c);
+        print!(" ");
+    }
+    for _ in 0..(54 - 2*PAIR_COUNT - 2) { print!(" "); }
+    println!("│");
+    println!("│  (· ok   ▒ warn   █ critical)                          │");
+    println!("└────────────────────────────────────────────────────────┘");
 }
 
 fn profile_cmd(args: &[String]) {
@@ -629,6 +712,7 @@ fn print_help() {
     println!("  pairs               list the 15 canonical pair gates");
     println!("  rules               list the 15 rules with mesh neighbors");
     println!("  diag                fire rules on current vitals + dry-run proposals");
+    println!("  dash                ascii hexagon dashboard (axes + 15 pair gates)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  write profile to ~/.airgenome/active.genome");
