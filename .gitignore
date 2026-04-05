@@ -2,3 +2,6 @@
 .DS_Store
 genomes.log
 .genome_cache
+forge/genomes/
+forge/compressed/
+forge/state.json
