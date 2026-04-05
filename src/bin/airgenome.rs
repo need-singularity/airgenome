@@ -44,6 +44,7 @@ fn main() {
         "insights" | "ins" => insights_cmd(&args),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
+        "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -296,6 +297,75 @@ fn diag(args: &[String]) {
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
+    }
+}
+
+fn signature_history_cmd(args: &[String]) {
+    let filter = args.get(2).cloned();
+    let path = home_dir().join(".airgenome").join("signatures.jsonl");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", path.display(), e);
+            eprintln!("hint: run `airgenome signature --append` first");
+            std::process::exit(1);
+        }
+    };
+
+    // Parse rows with our flat JSON reader.
+    fn f<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{}\"", key);
+        let i = s.find(&needle)?;
+        let rest = &s[i + needle.len()..];
+        let colon = rest.find(':')?;
+        let after = rest[colon + 1..].trim_start();
+        if let Some(stripped) = after.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(&stripped[..end])
+        } else {
+            let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len());
+            Some(after[..end].trim())
+        }
+    }
+
+    #[derive(Default, Clone)]
+    struct Stat { n: usize, rss_sum: f64, rss_max: f64, cpu_sum: f64, cpu_max: f64, ts_first: u64, ts_last: u64 }
+    let mut stats: std::collections::BTreeMap<String, Stat> = std::collections::BTreeMap::new();
+    let mut total_rows = 0usize;
+
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        total_rows += 1;
+        let cat = match f(line, "category") { Some(c) => c.to_string(), None => continue };
+        if let Some(q) = &filter { if &cat != q { continue; } }
+        let rss: f64 = f(line, "rss_pct").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let cpu: f64 = f(line, "cpu_pct").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let ts: u64 = f(line, "ts").and_then(|s| s.parse().ok()).unwrap_or(0);
+
+        let s = stats.entry(cat).or_default();
+        s.n += 1;
+        s.rss_sum += rss;
+        if rss > s.rss_max { s.rss_max = rss; }
+        s.cpu_sum += cpu;
+        if cpu > s.cpu_max { s.cpu_max = cpu; }
+        if s.ts_first == 0 || ts < s.ts_first { s.ts_first = ts; }
+        if ts > s.ts_last { s.ts_last = ts; }
+    }
+
+    println!("=== airgenome — signature history ({} rows) ===", total_rows);
+    println!();
+    println!("  category     n   rss%_μ  rss%_max  cpu%_μ  cpu%_max  span");
+    println!("  ──────────────────────────────────────────────────────────");
+    let mut rows: Vec<_> = stats.iter().collect();
+    rows.sort_by(|a,b| b.1.rss_sum.partial_cmp(&a.1.rss_sum).unwrap_or(std::cmp::Ordering::Equal));
+    for (cat, s) in rows {
+        let n = s.n as f64;
+        let rss_mu = s.rss_sum / n;
+        let cpu_mu = s.cpu_sum / n;
+        let span_h = (s.ts_last - s.ts_first) as f64 / 3600.0;
+        println!("  {:<10}  {:>4}  {:>5.1}%  {:>7.1}%  {:>5.1}  {:>7.1}   {:.1}h",
+            cat, s.n, rss_mu * 100.0, s.rss_max * 100.0, cpu_mu, s.cpu_max, span_h);
     }
 }
 
@@ -2458,6 +2528,7 @@ fn print_help() {
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
+    println!("  signature-history [cat]                   aggregate signatures.jsonl history");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
