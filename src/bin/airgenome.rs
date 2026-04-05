@@ -41,6 +41,8 @@ fn main() {
         "sysctl" => sysctl_cmd(&args),
         "reap" => reap_cmd(&args),
         "coverage" | "cov" => coverage_cmd(),
+        "insights" | "ins" => insights_cmd(&args),
+        "processes" | "proc" => processes_cmd(),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -293,6 +295,188 @@ fn diag(args: &[String]) {
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
+    }
+}
+
+fn processes_cmd() {
+    // Read `ps -axm -o rss,pcpu,comm` (sorted by RSS descending).
+    let output = match std::process::Command::new("ps")
+        .args(["-axm", "-o", "rss=,pcpu=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => { eprintln!("ps failed"); std::process::exit(1); }
+    };
+
+    #[derive(Default)]
+    struct Bucket { procs: usize, rss_kb: u64, cpu: f64 }
+    let mut buckets: std::collections::BTreeMap<&'static str, Bucket> = std::collections::BTreeMap::new();
+    let categorize = |path: &str| -> &'static str {
+        let l = path.to_lowercase();
+        if l.contains("chrome") || l.contains("safari") || l.contains("firefox") || l.contains("arc")
+           || l.contains("webkit") { "browser" }
+        else if l.contains("slack") || l.contains("discord") || l.contains("telegram")
+             || l.contains("whatsapp") { "im" }
+        else if l.contains("vscode") || l.contains("code helper") || l.contains("cursor")
+             || l.contains("zed") || l.contains("xcode") { "ide" }
+        else if l.contains("terminal") || l.contains("iterm") || l.contains("warp")
+             || l.contains("alacritty") { "terminal" }
+        else if l.contains("rustc") || l.contains("cargo") { "rust" }
+        else if l.contains("python") { "python" }
+        else if l.contains("node") { "node" }
+        else if l.contains("java") || l.contains("jvm") { "java" }
+        else if l.contains("finder") { "finder" }
+        else if l.contains("docker") || l.contains("orb") { "container" }
+        else if l.contains("ollama") || l.contains("llama") { "llm" }
+        else if l.starts_with("/system/") || l.contains("windowserver") || l.contains("coreaudio")
+             || l.contains("launchd") || l.contains("mdworker") || l.contains("cfprefs") { "system" }
+        else { "other" }
+    };
+
+    let mut rows: Vec<(u64, f64, String)> = Vec::new();
+    for line in output.lines().skip(0) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let mut it = trimmed.split_whitespace();
+        let rss_kb: u64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let cpu: f64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let comm: String = it.collect::<Vec<_>>().join(" ");
+        if comm.is_empty() { continue; }
+        rows.push((rss_kb, cpu, comm));
+    }
+
+    // Bucket aggregate.
+    for (rss_kb, cpu, comm) in &rows {
+        let cat = categorize(comm);
+        let b = buckets.entry(cat).or_default();
+        b.procs += 1;
+        b.rss_kb += rss_kb;
+        b.cpu += cpu;
+    }
+
+    println!("=== airgenome — processes ({} total) ===", rows.len());
+    println!();
+    println!("  Category     procs     RSS     CPU%");
+    println!("  ─────────────────────────────────────");
+    let mut bv: Vec<_> = buckets.iter().collect();
+    bv.sort_by(|a,b| b.1.rss_kb.cmp(&a.1.rss_kb));
+    for (cat, b) in &bv {
+        let mb = b.rss_kb / 1024;
+        let mb_str = if mb >= 1024 { format!("{:.1}GB", mb as f64 / 1024.0) }
+                     else { format!("{}MB", mb) };
+        println!("  {:<10}  {:>5}  {:>7}  {:>6.1}", cat, b.procs, mb_str, b.cpu);
+    }
+
+    println!();
+    println!("  Top 10 RSS:");
+    rows.sort_by(|a,b| b.0.cmp(&a.0));
+    for (rss_kb, cpu, comm) in rows.iter().take(10) {
+        let mb = rss_kb / 1024;
+        let name = comm.split('/').next_back().unwrap_or(comm);
+        let name_short: String = name.chars().take(40).collect();
+        println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
+    }
+}
+
+fn insights_cmd(_args: &[String]) {
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+    if records.is_empty() {
+        println!("no records yet — run daemon first.");
+        return;
+    }
+
+    // Per-pair firing history via replay through a fresh engine.
+    let mut per_pair = [0usize; 15];
+    let mut engine = airgenome::PolicyEngine::with_defaults(12);
+    let mut ram_hist: Vec<f64> = Vec::with_capacity(records.len());
+    let mut hourly = [0usize; 24];        // firing count per hour
+    let mut hourly_n = [0usize; 24];
+    for r in &records {
+        let mut axes = [0.0; 6];
+        axes[Axis::Cpu.index()] = r.cpu;
+        axes[Axis::Ram.index()] = r.ram;
+        axes[Axis::Gpu.index()] = r.gpu;
+        axes[Axis::Npu.index()] = r.npu;
+        axes[Axis::Power.index()] = r.power;
+        axes[Axis::Io.index()] = r.io;
+        let v = airgenome::Vitals { ts: r.ts, axes };
+        for p in engine.tick(v) { per_pair[p.pair] += 1; }
+        ram_hist.push(r.ram);
+        let h = ((r.ts / 3600) % 24) as usize;
+        hourly[h] += r.firing;
+        hourly_n[h] += 1;
+    }
+
+    println!("=== airgenome — insights ({} samples, {:.1}h span) ===",
+        records.len(),
+        (records.last().unwrap().ts - records.first().unwrap().ts) as f64 / 3600.0);
+    println!();
+
+    // 1. Top firing pairs
+    let mut ranked: Vec<(usize, usize)> = per_pair.iter().copied().enumerate().collect();
+    ranked.sort_by(|a,b| b.1.cmp(&a.1));
+    println!("Top firing pairs (all time):");
+    for (k, n) in ranked.iter().take(5) {
+        if *n == 0 { continue; }
+        let (a, b) = PAIRS[*k];
+        println!("  [{:>2}] {:<6}×{:<6}  {:>5} fires", k, a.name(), b.name(), n);
+    }
+    println!();
+
+    // 2. RAM trend (simple: first-third mean vs last-third mean)
+    let n = ram_hist.len();
+    if n >= 3 {
+        let t1: f64 = ram_hist[..n/3].iter().sum::<f64>() / (n/3) as f64;
+        let t3: f64 = ram_hist[n-n/3..].iter().sum::<f64>() / (n/3) as f64;
+        let delta = t3 - t1;
+        let trend = if delta > 0.02 { "rising" }
+                    else if delta < -0.02 { "falling" }
+                    else { "stable" };
+        println!("RAM trend: {} ({:.3} → {:.3}, Δ{:+.3})", trend, t1, t3, delta);
+    }
+    println!();
+
+    // 3. Hourly firing mean (UTC hour bucket — approximate local)
+    let mut max_h = 0;
+    let mut min_h = 24;
+    let mut max_v = 0usize;
+    let mut min_v = usize::MAX;
+    println!("Hour-of-day firing (UTC):");
+    for h in 0..24 {
+        if hourly_n[h] == 0 { continue; }
+        let mean = hourly[h] / hourly_n[h];
+        if mean > max_v { max_v = mean; max_h = h; }
+        if mean < min_v { min_v = mean; min_h = h; }
+    }
+    if max_v > 0 {
+        println!("  peak hour : {:02}:00 UTC  ({} firing avg)", max_h, max_v);
+        println!("  quiet hour: {:02}:00 UTC  ({} firing avg)", min_h, min_v);
+    }
+    println!();
+
+    // 4. Profile recommendation (based on top firing pairs)
+    // If battery-related pairs dominate → battery-save
+    // If gpu/npu dominate → ml-inference
+    // Default → balanced
+    let battery_sum: usize = [3,7,10,12,14].iter().map(|&k| per_pair[k]).sum();
+    let ml_sum: usize = [1,2,6,9,13].iter().map(|&k| per_pair[k]).sum();
+    let dev_sum: usize = [0,4,8].iter().map(|&k| per_pair[k]).sum();
+    let total: usize = per_pair.iter().sum();
+    if total > 0 {
+        println!("Profile fit:");
+        println!("  battery-save : {:>5.1}%", 100.0 * battery_sum as f64 / total as f64);
+        println!("  ml-inference : {:>5.1}%", 100.0 * ml_sum as f64 / total as f64);
+        println!("  dev-work     : {:>5.1}%", 100.0 * dev_sum as f64 / total as f64);
+        let recommended = if battery_sum > ml_sum && battery_sum > dev_sum { "battery-save" }
+                          else if ml_sum > dev_sum { "ml-inference" }
+                          else if dev_sum > 0 { "dev-work" }
+                          else { "balanced" };
+        println!("  recommended  : {}", green(recommended));
     }
 }
 
@@ -2137,6 +2321,8 @@ fn print_help() {
     println!("  sysctl <key>                              read a whitelisted sysctl via helper");
     println!("  reap [--yes] [--measure]                  RAM-focused combo: kill Chrome/Slack + purge");
     println!("  coverage                                  15-pair × tier coverage matrix");
+    println!("  insights                                  extract patterns from vitals.jsonl history");
+    println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
