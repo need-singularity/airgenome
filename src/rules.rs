@@ -11,7 +11,7 @@
 //! Without learning, the 15-rule mesh attains efficiency `0.636 ≈ 2/3 − 0.031`,
 //! i.e. 95.4 % of the theoretical singularity ceiling.
 
-use crate::gate::{Axis, PAIRS, PAIR_COUNT};
+use crate::gate::{Axis, PAIR_COUNT};
 use crate::vitals::Vitals;
 
 /// One hexagon-edge rule.
@@ -172,7 +172,7 @@ mod tests {
     fn rules_match_canonical_pair_order() {
         for (k, rule) in RULES.iter().enumerate() {
             assert_eq!(rule.pair, k);
-            let (a, b) = PAIRS[k];
+            let (a, b) = crate::gate::PAIRS[k];
             let expected_name = format!("{}×{}", a.name(), b.name());
             assert_eq!(rule.name, expected_name);
         }

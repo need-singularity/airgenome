@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
-use crate::gate::{Axis, PAIRS, PAIR_COUNT};
+use crate::gate::{Axis, PAIR_COUNT};
 
 /// A single proposed actuation — an axis pair targeting some knob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,7 +35,7 @@ impl Action {
 
     /// Return the pair of axes this action targets, if `pair` is in range.
     pub fn axes(&self) -> Option<(Axis, Axis)> {
-        PAIRS.get(self.pair).copied()
+        crate::gate::PAIRS.get(self.pair).copied()
     }
 }
 
@@ -168,7 +168,7 @@ mod tests {
     fn action_axes_matches_canonical_pairs() {
         let a = Action::new(0, "k", "a", "b");
         let (x, y) = a.axes().unwrap();
-        assert_eq!((x, y), PAIRS[0]);
+        assert_eq!((x, y), crate::gate::PAIRS[0]);
     }
 
     #[test]
