@@ -3325,6 +3325,26 @@ fn doctor_cmd() {
         warn += 1;
     }
 
+    // 8. signature schedule
+    let sig_plist = home_dir().join("Library/LaunchAgents/com.airgenome.signature.plist");
+    if sig_plist.exists() {
+        ok("signature schedule", &sig_plist.display().to_string());
+        pass += 1;
+    } else {
+        wrn("signature schedule", "not registered (run `airgenome schedule-signature`)");
+        warn += 1;
+    }
+
+    // 9. quiet-tune schedule
+    let quiet_plist = home_dir().join("Library/LaunchAgents/com.airgenome.quiet.plist");
+    if quiet_plist.exists() {
+        ok("quiet-tune schedule", &quiet_plist.display().to_string());
+        pass += 1;
+    } else {
+        wrn("quiet-tune schedule", "not registered (run `airgenome schedule-quiet`)");
+        warn += 1;
+    }
+
     println!();
     println!("Summary: {} pass · {} warn · {} fail", pass, warn, fail);
     if fail > 0 {
