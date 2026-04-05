@@ -102,6 +102,8 @@ pub fn req_mdutil_off() -> String { r#"{"op":"mdutil_off"}"#.to_string() }
 pub fn req_mdutil_on() -> String { r#"{"op":"mdutil_on"}"#.to_string() }
 pub fn req_tmutil_disable() -> String { r#"{"op":"tmutil_disable"}"#.to_string() }
 pub fn req_tmutil_enable() -> String { r#"{"op":"tmutil_enable"}"#.to_string() }
+pub fn req_mdutil_status() -> String { r#"{"op":"mdutil_status"}"#.to_string() }
+pub fn req_tmutil_status() -> String { r#"{"op":"tmutil_status"}"#.to_string() }
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")

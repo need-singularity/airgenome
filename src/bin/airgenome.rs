@@ -42,6 +42,7 @@ fn main() {
         "reap" => reap_cmd(&args),
         "quiet-tune" | "quiet" => quiet_tune_cmd(&args),
         "restore" => restore_cmd(&args),
+        "modes" => modes_cmd(),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1268,6 +1269,35 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
+}
+
+fn modes_cmd() {
+    use airgenome::client::{dial, req_sysctl_get, req_mdutil_status, req_tmutil_status, HelperResponse, DEFAULT_SOCKET_PATH};
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    println!("=== airgenome modes — current kill-free tuning state ===");
+    println!();
+
+    let fetch = |req: &str| -> String {
+        match dial(&socket, req) {
+            Ok(HelperResponse::Ok { detail }) => detail,
+            Ok(r) => format!("{:?}", r),
+            Err(_) => "(helper not installed)".to_string(),
+        }
+    };
+
+    let compressor = fetch(&req_sysctl_get("vm.compressor_mode"));
+    let spotlight = fetch(&req_mdutil_status());
+    let timemachine = fetch(&req_tmutil_status());
+
+    println!("  vm.compressor_mode : {}", compressor);
+    println!("  spotlight (mdutil) : {}", spotlight.lines().next().unwrap_or(&spotlight));
+    println!("  time machine       : {}", timemachine.lines().next().unwrap_or(&timemachine));
+    println!();
+    println!("  commands:");
+    println!("    airgenome quiet-tune --yes   # apply kill-free tune");
+    println!("    airgenome restore --yes      # re-enable Spotlight + TM");
 }
 
 fn restore_cmd(args: &[String]) {
@@ -3153,6 +3183,7 @@ fn print_help() {
     println!("  reap [--yes] [--measure]                  kill-mode combo: kill Chrome/Slack + purge");
     println!("  quiet-tune [--yes] [--measure]            kill-free combo: purge + compressor (default)");
     println!("  restore [--yes]                           re-enable Spotlight + TimeMachine");
+    println!("  modes                                     show current kill-free tuning state");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");

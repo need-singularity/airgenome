@@ -175,6 +175,24 @@ fn handle_request(raw: &str) -> String {
                 Err(e) => error_resp(&format!("tmutil spawn: {}", e)),
             }
         }
+        "mdutil_status" => {
+            match Command::new("/usr/bin/mdutil").args(["-s", "/"]).output() {
+                Ok(o) => {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    ok_resp(&escape_json(&s))
+                }
+                Err(e) => error_resp(&format!("mdutil: {}", e)),
+            }
+        }
+        "tmutil_status" => {
+            match Command::new("/usr/bin/tmutil").arg("status").output() {
+                Ok(o) => {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    ok_resp(&escape_json(&s))
+                }
+                Err(e) => error_resp(&format!("tmutil: {}", e)),
+            }
+        }
         "" => error_resp("missing op"),
         other => refused(&format!("unknown op: {}", other)),
     }
