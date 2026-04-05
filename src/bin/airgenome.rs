@@ -40,6 +40,7 @@ fn main() {
         "tune" => tune_cmd(&args),
         "sysctl" => sysctl_cmd(&args),
         "reap" => reap_cmd(&args),
+        "coverage" | "cov" => coverage_cmd(),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -293,6 +294,37 @@ fn diag(args: &[String]) {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn coverage_cmd() {
+    println!("=== airgenome — coverage matrix ===");
+    println!();
+    println!("  pair              Tier 1     Tier 2     actions  rules");
+    println!("  ─────────────────────────────────────────────────────────");
+    let mut t1 = 0;
+    let mut t2 = 0;
+    for k in 0..PAIR_COUNT {
+        let (a, b) = PAIRS[k];
+        let tier1 = airgenome::plan_for_pair(k).is_some();
+        let sudo_cmds = airgenome::commands_for(k)
+            .map(|cs| cs.iter().any(|c| c.needs_sudo))
+            .unwrap_or(false);
+        let action_count = airgenome::commands_for(k).map(|cs| cs.len()).unwrap_or(0);
+        let has_rule = true; // every pair has a rule
+        if tier1 { t1 += 1; }
+        if sudo_cmds { t2 += 1; }
+        let t1_mark = if tier1 { green("●") } else { dim("·") };
+        let t2_mark = if sudo_cmds { yellow("●") } else { dim("·") };
+        let rule_mark = if has_rule { green("●") } else { dim("·") };
+        println!("  [{:>2}] {:<6}×{:<6}  {}          {}          {:>3}      {}",
+            k, a.name(), b.name(), t1_mark, t2_mark, action_count, rule_mark);
+    }
+    println!();
+    println!("  Tier 1 (user-space) coverage : {}/{} pairs ({:.0}%)",
+        t1, PAIR_COUNT, 100.0 * t1 as f64 / PAIR_COUNT as f64);
+    println!("  Tier 2 (sudo actions) avail  : {}/{} pairs ({:.0}%)",
+        t2, PAIR_COUNT, 100.0 * t2 as f64 / PAIR_COUNT as f64);
+    println!("  Rules                        : 15/{} pairs (100%)", PAIR_COUNT);
 }
 
 fn sysctl_cmd(args: &[String]) {
@@ -2101,6 +2133,7 @@ fn print_help() {
     println!("  tune <key> <value> [--measure]            sysctl tune via helper (whitelisted)");
     println!("  sysctl <key>                              read a whitelisted sysctl via helper");
     println!("  reap [--yes] [--measure]                  RAM-focused combo: kill Chrome/Slack + purge");
+    println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
