@@ -1,6 +1,6 @@
 [package]
 name = "airgenome"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 description = "Mac Air resource optimizer — 6-axis hexagon, 15 pair gates, 60-byte genome, Banach 1/3 fixed point."
 license = "MIT"

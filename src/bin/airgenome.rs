@@ -316,11 +316,14 @@ fn genome_cmd(args: &[String]) {
         "save" => genome_save(args.get(3).map(|s| s.as_str()), args.get(4).map(|s| s.as_str())),
         "cat" | "show" => genome_cat(args.get(3).map(|s| s.as_str())),
         "hex" => genome_hex(args.get(3).map(|s| s.as_str())),
+        "from-hex" => genome_from_hex(args.get(3).map(|s| s.as_str()),
+                                      args.get(4).map(|s| s.as_str())),
         _ => {
-            eprintln!("usage: airgenome genome <save|cat|hex> [args]");
-            eprintln!("  save <profile> <path>   write built-in profile's 60 bytes to file");
-            eprintln!("  cat  <path>             display a genome file");
-            eprintln!("  hex  <profile>          print 60-byte genome as hex");
+            eprintln!("usage: airgenome genome <save|cat|hex|from-hex> [args]");
+            eprintln!("  save     <profile> <path>    write built-in profile's 60 bytes to file");
+            eprintln!("  cat      <path>              display a genome file");
+            eprintln!("  hex      <profile>           print 60-byte genome as hex");
+            eprintln!("  from-hex <120-char> [path]   parse hex; write to path (or display)");
             std::process::exit(2);
         }
     }
@@ -372,6 +375,50 @@ fn genome_cat(path: Option<&str>) {
     print!("  hex: ");
     for b in bytes.iter() { print!("{:02x}", b); }
     println!();
+}
+
+fn genome_from_hex(hex: Option<&str>, path: Option<&str>) {
+    let Some(hex) = hex else {
+        eprintln!("usage: airgenome genome from-hex <120-char> [path]");
+        std::process::exit(2);
+    };
+    let hex = hex.trim();
+    if hex.len() != GENOME_BYTES * 2 {
+        eprintln!("hex must be exactly {} chars (got {})", GENOME_BYTES * 2, hex.len());
+        std::process::exit(2);
+    }
+    let mut bytes = [0u8; GENOME_BYTES];
+    for i in 0..GENOME_BYTES {
+        let s = &hex[i*2..i*2+2];
+        match u8::from_str_radix(s, 16) {
+            Ok(b) => bytes[i] = b,
+            Err(_) => {
+                eprintln!("invalid hex at position {}: '{}'", i*2, s);
+                std::process::exit(2);
+            }
+        }
+    }
+
+    let g = airgenome::Genome::from_bytes(&bytes);
+    let mut name = "(custom)";
+    for p in airgenome::PROFILES.iter() {
+        if p.genome() == g { name = p.name; break; }
+    }
+    let active: Vec<usize> = (0..PAIR_COUNT).filter(|&k| g.pairs[k].engaged()).collect();
+
+    if let Some(path) = path {
+        if let Err(e) = std::fs::write(path, bytes) {
+            eprintln!("cannot write {}: {}", path, e);
+            std::process::exit(1);
+        }
+        println!("wrote {} bytes to {}", GENOME_BYTES, path);
+        println!("  matches: {}", name);
+        println!("  engaged pairs ({}): {:?}", active.len(), active);
+    } else {
+        println!("Genome (from hex):");
+        println!("  matches: {}", name);
+        println!("  engaged pairs ({}): {:?}", active.len(), active);
+    }
 }
 
 fn genome_hex(profile: Option<&str>) {
