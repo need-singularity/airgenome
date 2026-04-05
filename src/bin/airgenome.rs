@@ -40,6 +40,7 @@ fn main() {
         "tune" => tune_cmd(&args),
         "sysctl" => sysctl_cmd(&args),
         "reap" => reap_cmd(&args),
+        "quiet-tune" | "quiet" => quiet_tune_cmd(&args),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1266,6 +1267,70 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
+}
+
+fn quiet_tune_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_purge, req_sysctl_set, HelperResponse, DEFAULT_SOCKET_PATH};
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+
+    println!("=== airgenome quiet-tune — kill-free optimization (default mode) ===");
+    println!();
+    println!("  contract: NO processes killed, NO apps closed");
+    println!("  levers  : purge + vm.compressor_mode=4");
+    println!();
+
+    let before = if measure { Some(airgenome::sample()) } else { None };
+
+    if !yes {
+        println!("  plan:");
+        println!("    1. helper purge                  — reclaim inactive pages");
+        println!("    2. helper sysctl vm.compressor_mode=4  — aggressive compression");
+        println!();
+        println!("  additional (manual sudo, outside airgenome scope):");
+        println!("    sudo mdutil -i off /             # Spotlight pause");
+        println!("    sudo tmutil disable              # TimeMachine pause");
+        println!();
+        println!("  {}", dim("dry-run. pass --yes to execute helper-based steps."));
+        return;
+    }
+
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    // Step 1: purge
+    match dial(&socket, &req_purge()) {
+        Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green("purge"), detail),
+        Ok(r) => println!("  {} {:?}", yellow("purge skipped"), r),
+        Err(_) => println!("  {} (helper not installed, skipped)", dim("purge")),
+    }
+
+    // Step 2: vm.compressor_mode=4
+    match dial(&socket, &req_sysctl_set("vm.compressor_mode", "4")) {
+        Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green("sysctl"), detail),
+        Ok(r) => println!("  {} {:?}", yellow("sysctl skipped"), r),
+        Err(_) => println!("  {} (helper not installed, skipped)", dim("sysctl")),
+    }
+
+    if let Some(before) = before {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let after = airgenome::sample();
+        let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+        let bf = airgenome::firing(&before).len();
+        let af = airgenome::firing(&after).len();
+        println!();
+        println!("{}", dim("--- delta ---"));
+        println!("  ram       {:.3} → {:.3}  ({:+.3})",
+            before.get(Axis::Ram), after.get(Axis::Ram), dram);
+        println!("  firing    {} → {}  ({:+})", bf, af, (af as i64) - (bf as i64));
+        let verdict = if dram < -0.01 || af < bf { green("improved") }
+                      else if dram > 0.01 || af > bf { red("worse") }
+                      else { dim("unchanged") };
+        println!("  verdict  : {}", verdict);
+    }
+
+    println!();
+    println!("  {}", dim("no processes were killed. complement with `reap` for kill-mode."));
 }
 
 fn reap_cmd(args: &[String]) {
@@ -3056,7 +3121,8 @@ fn print_help() {
     println!("  purge [--measure]                         request memory purge via helper");
     println!("  tune <key> <value> [--measure]            sysctl tune via helper (whitelisted)");
     println!("  sysctl <key>                              read a whitelisted sysctl via helper");
-    println!("  reap [--yes] [--measure]                  RAM-focused combo: kill Chrome/Slack + purge");
+    println!("  reap [--yes] [--measure]                  kill-mode combo: kill Chrome/Slack + purge");
+    println!("  quiet-tune [--yes] [--measure]            kill-free combo: purge + compressor (default)");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
