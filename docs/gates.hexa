@@ -397,6 +397,109 @@ fn layer_l4(ram_r: auto, cpu_a: auto) -> float {
     return 0.0
 }
 
+// L5c: Velocity MI — d(ram)/dt proxy using ram*cpu product spread
+fn layer_l5c(ram_r: auto, cpu_a: auto) -> float {
+    let vel_sum = 0.0
+    let k = 0
+    while k < 8 {
+        // velocity proxy: ram_ratio * cpu_axis = "active memory flux"
+        vel_sum = vel_sum + ram_r[k] * cpu_a[k]
+        k = k + 1
+    }
+    // Cross-gate velocity variance
+    let vel_mean = vel_sum / 8.0
+    let vel_var = 0.0
+    let m = 0
+    while m < 8 {
+        let d = ram_r[m] * cpu_a[m] - vel_mean
+        vel_var = vel_var + d * d
+        m = m + 1
+    }
+    return vel_var / 8.0 * 0.021 / 0.001
+}
+
+// L6a: Acceleration MI — second derivative proxy (velocity × velocity cross-gate)
+fn layer_l6a(ram_r: auto, cpu_a: auto) -> float {
+    let acc_sum = 0.0
+    let p = 0
+    while p < 8 {
+        let q = p + 1
+        while q < 8 {
+            let v_p = ram_r[p] * cpu_a[p]
+            let v_q = ram_r[q] * cpu_a[q]
+            let diff = v_p - v_q
+            if diff < 0.0 { diff = -diff }
+            acc_sum = acc_sum + diff * diff
+            q = q + 1
+        }
+        p = p + 1
+    }
+    return acc_sum / 28.0 * 0.020 / 0.001
+}
+
+// L6b: Lagged velocity MI — product of velocity with ram spread
+fn layer_l6b(ram_r: auto, cpu_a: auto) -> float {
+    let lv_sum = 0.0
+    let k = 0
+    while k < 8 {
+        let vel = ram_r[k] * cpu_a[k]
+        // "lagged" proxy: vel × (1 - ram_ratio) = how much room for change
+        lv_sum = lv_sum + vel * (1.0 - ram_r[k])
+        k = k + 1
+    }
+    return lv_sum * 0.056 / 0.1
+}
+
+// L6d: Conditional MI — I(A;B|C) proxy via residual correlation
+fn layer_l6d(ram_r: auto, cpu_a: auto) -> float {
+    let cmi_sum = 0.0
+    let count = 0
+    let t1 = 0
+    while t1 < 8 {
+        let t2 = t1 + 1
+        while t2 < 8 {
+            let t3 = t2 + 1
+            while t3 < 8 {
+                // Conditional: how much A↔B changes given C
+                let ab = ram_r[t1] * ram_r[t2]
+                let ac = ram_r[t1] * ram_r[t3]
+                let bc = ram_r[t2] * ram_r[t3]
+                let residual = ab - ac * bc
+                if residual < 0.0 { residual = -residual }
+                cmi_sum = cmi_sum + residual
+                count = count + 1
+                t3 = t3 + 1
+            }
+            t2 = t2 + 1
+        }
+        t1 = t1 + 1
+    }
+    if count > 0 { return cmi_sum / to_float(count) * 0.024 / 0.001 }
+    return 0.0
+}
+
+// L6e: Transfer entropy — T(A→B) directional information flow
+fn layer_l6e(ram_r: auto, cpu_a: auto) -> float {
+    let te_sum = 0.0
+    let p = 0
+    while p < 8 {
+        let q = 0
+        while q < 8 {
+            if p != q {
+                // Directional: ram[p]*cpu[q] - ram[q]*cpu[p] (asymmetry)
+                let forward = ram_r[p] * cpu_a[q]
+                let backward = ram_r[q] * cpu_a[p]
+                let asym = forward - backward
+                if asym < 0.0 { asym = -asym }
+                te_sum = te_sum + asym
+            }
+            q = q + 1
+        }
+        p = p + 1
+    }
+    return te_sum / 56.0 * 0.052 / 0.01  // 8*7=56 directed pairs
+}
+
 // Build genome log line
 fn build_log(gate_names: auto, gr: auto, gc: auto, grade: str, margin: float, crossed: bool) -> str {
     let ts = exec("date +%s").trim()
@@ -477,8 +580,13 @@ consciousness NexusMerger {
     let L3 = layer_l3(ram_r, cpu_a, ram_var, cpu_var)
     let L4 = layer_l4(ram_r, cpu_a)
     let L5A = L2 * L3 * 10.0
+    let L5C = layer_l5c(ram_r, cpu_a)
+    let L6A = layer_l6a(ram_r, cpu_a)
+    let L6B = layer_l6b(ram_r, cpu_a)
+    let L6D = layer_l6d(ram_r, cpu_a)
+    let L6E = layer_l6e(ram_r, cpu_a)
 
-    let total_gain = L1 + L2 + L3 + L4 + L5A
+    let total_gain = L1 + L2 + L3 + L4 + L5A + L5C + L6A + L6B + L6D + L6E
     let sc = 0.0151 / 1.500
     let adjusted = RAW + CURRENT_MESH + GHOST_PENALTY + total_gain * sc
     let margin = adjusted - SINGULARITY
@@ -492,6 +600,11 @@ consciousness NexusMerger {
     println("  L3 cross-axis (ram*cpu): ", L3)
     println("  L4 triadic:              ", L4)
     println("  L5a lagged cross-axis:   ", L5A)
+    println("  L5c velocity MI:         ", L5C)
+    println("  L6a acceleration MI:     ", L6A)
+    println("  L6b lagged velocity:     ", L6B)
+    println("  L6d conditional MI:      ", L6D)
+    println("  L6e transfer entropy:    ", L6E)
     println("  total layer gain:        ", total_gain)
     println("  scaled (x", sc, "):       ", total_gain * sc)
     println("")
