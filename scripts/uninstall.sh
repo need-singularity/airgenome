@@ -15,11 +15,12 @@ DATA_DIR="${HOME}/.airgenome"
 
 say() { printf "\033[1;36m[airgenome]\033[0m %s\n" "$*"; }
 
-if [[ -f "${AGENT_PLIST}" ]]; then
-  say "unloading LaunchAgent"
-  launchctl unload "${AGENT_PLIST}" 2>/dev/null || true
-  rm -f "${AGENT_PLIST}"
-fi
+for plist in "${HOME}/Library/LaunchAgents/com.airgenome."*.plist; do
+  [[ -f "$plist" ]] || continue
+  say "unloading $(basename "$plist")"
+  launchctl unload "$plist" 2>/dev/null || true
+  rm -f "$plist"
+done
 
 if command -v cargo >/dev/null 2>&1; then
   if cargo install --list 2>/dev/null | grep -q '^airgenome '; then

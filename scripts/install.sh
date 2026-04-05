@@ -90,14 +90,28 @@ else
   exit 1
 fi
 
+# Register signature + quiet-tune automations via bootstrap.
+if command -v "${BIN}" >/dev/null 2>&1; then
+  say "registering additional automations (signature + quiet-tune)…"
+  "${BIN}" schedule-signature -i 5 >/dev/null 2>&1 || true
+  "${BIN}" schedule-quiet -i 1 >/dev/null 2>&1 || true
+fi
+
 say "done."
+echo
+echo "Active automations (all kill-free):"
+echo "  com.airgenome.daemon      — 60s vitals log"
+echo "  com.airgenome.signature   — 5m per-category accumulation"
+echo "  com.airgenome.quiet       — 1h kill-free quiet-tune"
 echo
 echo "Try:"
 echo "  airgenome status                  # hexagon state + vitals"
-echo "  airgenome diag                    # rule firing + proposals"
-echo "  airgenome policy tick             # one-shot policy evaluation"
-echo "  airgenome policy watch -i 10      # live monitoring"
-echo "  airgenome trace                   # summarise collected log"
+echo "  airgenome quiet-tune --yes        # run kill-free tuning now"
+echo "  airgenome chart --tail 60         # ASCII vitals sparklines"
+echo "  airgenome doctor                  # health check"
+echo
+echo "Tier 2 (optional, needs sudo) — enables purge + Spotlight/TM/DNS levers:"
+echo "  curl -fsSL ${REPO}/raw/main/scripts/install-helper.sh | sudo bash -s install"
 echo
 echo "Uninstall:"
 echo "  curl -fsSL ${REPO}/raw/main/scripts/uninstall.sh | bash"
