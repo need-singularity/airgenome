@@ -25,6 +25,7 @@ fn main() {
         "policy" => policy_cmd(&args),
         "init" => init_cmd(&args),
         "uninit" => uninit_cmd(),
+        "doctor" | "doc" => doctor_cmd(),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -969,6 +970,103 @@ fn policy_tick_once(args: &[String]) {
     }
 }
 
+fn doctor_cmd() {
+    let mut pass = 0usize;
+    let mut warn = 0usize;
+    let mut fail = 0usize;
+
+    fn ok(label: &str, detail: &str) { println!("  [ok  ] {:<22} {}", label, detail); }
+    fn wrn(label: &str, detail: &str) { println!("  [warn] {:<22} {}", label, detail); }
+    fn bad(label: &str, detail: &str) { println!("  [fail] {:<22} {}", label, detail); }
+
+    println!("=== airgenome — doctor ===");
+    println!();
+
+    // 1. binary path
+    match std::env::current_exe() {
+        Ok(p) => { ok("binary", &p.display().to_string()); pass += 1; }
+        Err(e) => { bad("binary", &format!("{}", e)); fail += 1; }
+    }
+
+    // 2. data dir
+    let data_dir = home_dir().join(".airgenome");
+    if data_dir.exists() {
+        ok("data dir", &data_dir.display().to_string());
+        pass += 1;
+    } else {
+        wrn("data dir", "missing (run `airgenome daemon` or `init`)");
+        warn += 1;
+    }
+
+    // 3. LaunchAgent plist
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.daemon.plist");
+    if plist.exists() {
+        ok("LaunchAgent", &plist.display().to_string());
+        pass += 1;
+    } else {
+        wrn("LaunchAgent", "not registered (run `airgenome init`)");
+        warn += 1;
+    }
+
+    // 4. LaunchAgent loaded
+    let loaded = std::process::Command::new("launchctl")
+        .arg("list").arg("com.airgenome.daemon").output()
+        .map(|o| o.status.success()).unwrap_or(false);
+    if loaded {
+        ok("agent loaded", "com.airgenome.daemon");
+        pass += 1;
+    } else {
+        wrn("agent loaded", "not running (launchctl list says no)");
+        warn += 1;
+    }
+
+    // 5. vitals.jsonl freshness
+    let log = data_dir.join("vitals.jsonl");
+    if let Ok(meta) = std::fs::metadata(&log) {
+        let age_s = meta.modified().ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(u64::MAX);
+        if age_s < 180 {
+            ok("vitals log", &format!("fresh ({}s old, {} bytes)", age_s, meta.len()));
+            pass += 1;
+        } else if age_s < 3600 {
+            wrn("vitals log", &format!("{}s old — daemon may be stopped", age_s));
+            warn += 1;
+        } else {
+            bad("vitals log", &format!("stale ({} min old)", age_s / 60));
+            fail += 1;
+        }
+    } else {
+        wrn("vitals log", "not written yet");
+        warn += 1;
+    }
+
+    // 6. active genome
+    let active = data_dir.join("active.genome");
+    if let Ok(bytes) = std::fs::read(&active) {
+        if bytes.len() == GENOME_BYTES {
+            let engaged = bytes.chunks(4)
+                .filter(|c| c.iter().any(|&b| b != 0)).count();
+            ok("active profile", &format!("{} pairs engaged", engaged));
+            pass += 1;
+        } else {
+            bad("active profile", &format!("bad size {} (expected {})",
+                bytes.len(), GENOME_BYTES));
+            fail += 1;
+        }
+    } else {
+        wrn("active profile", "none set (run `airgenome profile apply <name>`)");
+        warn += 1;
+    }
+
+    println!();
+    println!("Summary: {} pass · {} warn · {} fail", pass, warn, fail);
+    if fail > 0 {
+        std::process::exit(1);
+    }
+}
+
 fn init_cmd(args: &[String]) {
     // Parse --interval N (seconds).
     let mut interval_s: u64 = 60;
@@ -1111,5 +1209,6 @@ fn print_help() {
     println!("  policy tick         one-shot: seed from log + evaluate current vitals");
     println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
     println!("  uninit              unload + remove the LaunchAgent");
+    println!("  doctor              self-diagnostic (binary/agent/log/profile)");
     println!("  help                print this help");
 }
