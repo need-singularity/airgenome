@@ -1,4 +1,6 @@
-// airgenome stub — API compatible with nexus6
+// airgenome — API compatible with nexus6
+
+pub mod resource_guard;
 
 pub mod rules {
     use crate::Vitals;
