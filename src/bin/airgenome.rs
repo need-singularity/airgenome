@@ -36,6 +36,7 @@ fn main() {
         "daemon" => daemon_cmd(&args),
         "trace" => trace_cmd(&args),
         "replay" => replay_cmd(&args),
+        "export" => export_cmd(&args),
         "policy" => policy_cmd(&args),
         "init" => init_cmd(&args),
         "uninit" => uninit_cmd(),
@@ -901,6 +902,65 @@ fn trace_cmd(args: &[String]) {
     println!("  Battery: {:.1}% of samples on battery", stats.on_battery_frac * 100.0);
 }
 
+fn export_cmd(args: &[String]) {
+    let mut input: Option<std::path::PathBuf> = None;
+    let mut output: Option<std::path::PathBuf> = None;
+    let mut format = "csv".to_string();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" | "-i" => { i += 1; if let Some(v) = args.get(i) { input = Some(std::path::PathBuf::from(v)); } }
+            "--output" | "-o" => { i += 1; if let Some(v) = args.get(i) { output = Some(std::path::PathBuf::from(v)); } }
+            "--format" | "-f" => { i += 1; if let Some(v) = args.get(i) { format = v.clone(); } }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let path = input.unwrap_or_else(|| home_dir().join(".airgenome").join("vitals.jsonl"));
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", path.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+
+    let mut out: String = String::new();
+    match format.as_str() {
+        "csv" => {
+            out.push_str("ts,cpu,ram,gpu,npu,power,io,firing\n");
+            for r in &records {
+                out.push_str(&format!("{},{},{},{},{},{},{},{}\n",
+                    r.ts, r.cpu, r.ram, r.gpu, r.npu, r.power, r.io, r.firing));
+            }
+        }
+        "json" => {
+            out.push('[');
+            for (i, r) in records.iter().enumerate() {
+                if i > 0 { out.push(','); }
+                out.push_str(&format!(
+                    "{{\"ts\":{},\"cpu\":{},\"ram\":{},\"gpu\":{},\"npu\":{},\"power\":{},\"io\":{},\"firing\":{}}}",
+                    r.ts, r.cpu, r.ram, r.gpu, r.npu, r.power, r.io, r.firing));
+            }
+            out.push_str("]\n");
+        }
+        other => {
+            eprintln!("unknown format '{}': use csv or json", other);
+            std::process::exit(2);
+        }
+    }
+
+    match output {
+        Some(p) => {
+            if let Err(e) = std::fs::write(&p, &out) {
+                eprintln!("cannot write {}: {}", p.display(), e);
+                std::process::exit(1);
+            }
+            eprintln!("wrote {} records ({}) → {}", records.len(), format, p.display());
+        }
+        None => { print!("{}", out); }
+    }
+}
+
 fn replay_cmd(args: &[String]) {
     let mut input: Option<std::path::PathBuf> = None;
     let mut capacity: usize = 12;
@@ -1421,6 +1481,7 @@ fn print_help() {
     println!("  daemon --once       append one sample + exit (for cron)");
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
     println!("  replay [-v]         replay log through PolicyEngine, tally fires");
+    println!("  export -f csv|json  export vitals.jsonl as CSV or JSON array");
     println!("  policy watch        live PolicyEngine loop (preemptive + reactive)");
     println!("  policy tick         one-shot: seed from log + evaluate current vitals");
     println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
