@@ -15,6 +15,7 @@ fn main() {
         "diag" => diag(),
         "dash" | "dashboard" => dash(),
         "metrics" | "m" => metrics(),
+        "explain" => explain_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -129,6 +130,54 @@ fn diag() {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn explain_cmd(args: &[String]) {
+    let Some(arg) = args.get(2) else {
+        eprintln!("usage: airgenome explain <pair-index 0..14>");
+        std::process::exit(2);
+    };
+    let k: usize = match arg.parse() {
+        Ok(n) if n < PAIR_COUNT => n,
+        _ => {
+            eprintln!("pair index must be in 0..{}", PAIR_COUNT);
+            std::process::exit(2);
+        }
+    };
+
+    let r = &RULES[k];
+    let (ax, bx) = PAIRS[k];
+    let n = airgenome::neighbors(k);
+    let v = airgenome::sample();
+    let a_val = v.get(ax);
+    let b_val = v.get(bx);
+    let firing = airgenome::fires(k, &v);
+    let sev = airgenome::severity(k, &v);
+    let sev_str = match sev {
+        airgenome::Severity::Ok => "ok",
+        airgenome::Severity::Warn => "warn",
+        airgenome::Severity::Critical => "CRITICAL",
+    };
+
+    println!("=== Pair Gate [{}] — {} × {} ===", k, ax.name(), bx.name());
+    println!();
+    println!("  Description:");
+    println!("    {}", r.description);
+    println!();
+    println!("  Proposed action (dry-run):");
+    println!("    {}", r.action);
+    println!();
+    println!("  Mesh neighbors: pair {:?}", n);
+    for &m in &n {
+        let (mx, my) = PAIRS[m];
+        println!("    [{:>2}] {}×{}: {}", m, mx.name(), my.name(), RULES[m].description);
+    }
+    println!();
+    println!("  Current vitals:");
+    println!("    {:<6} = {:>6.2}", ax.name(), a_val);
+    println!("    {:<6} = {:>6.2}", bx.name(), b_val);
+    println!();
+    println!("  State: {} (firing={})", sev_str, firing);
 }
 
 fn metrics() {
@@ -1048,6 +1097,7 @@ fn print_help() {
     println!("  diag                fire rules on current vitals + dry-run proposals");
     println!("  dash                ascii hexagon dashboard (axes + 15 pair gates)");
     println!("  metrics             Prometheus text-format exposition");
+    println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
