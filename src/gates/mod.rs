@@ -5,6 +5,7 @@
 pub mod genome;
 pub mod probes;
 pub mod log;
+pub mod nexus_merger;
 
 pub use genome::{GateGenome, GATE_GENOME_BYTES};
 
