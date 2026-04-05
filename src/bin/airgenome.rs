@@ -30,6 +30,7 @@ fn main() {
         "dash" | "dashboard" => dash_cmd(&args),
         "metrics" | "m" => metrics(),
         "explain" => explain_cmd(&args),
+        "action" | "actions" => action_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -207,6 +208,37 @@ fn diag(args: &[String]) {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn action_cmd(args: &[String]) {
+    // if no pair given, show actions for all currently-firing pairs
+    let target = args.get(2).and_then(|s| s.parse::<usize>().ok());
+    let v = airgenome::sample();
+
+    let pairs: Vec<usize> = match target {
+        Some(k) if k < PAIR_COUNT => vec![k],
+        Some(_) => { eprintln!("pair must be in 0..{}", PAIR_COUNT); std::process::exit(2); }
+        None => airgenome::firing(&v),
+    };
+
+    if pairs.is_empty() {
+        println!("no pairs firing — nothing to act on.");
+        return;
+    }
+
+    for k in pairs {
+        let (a, b) = PAIRS[k];
+        println!("[{:>2}] {}×{}  ({})", k, a.name(), b.name(), RULES[k].description);
+        if let Some(actions) = airgenome::commands_for(k) {
+            for c in actions {
+                let tag = if c.needs_sudo { red("sudo") } else { dim("user") };
+                println!("  [{}] {}", tag, c.cmd);
+                println!("       → {}", c.effect);
+            }
+        }
+        println!();
+    }
+    println!("{}", dim("airgenome never runs these commands itself — audit then execute."));
 }
 
 fn explain_cmd(args: &[String]) {
@@ -1476,6 +1508,7 @@ fn print_help() {
     println!("  dash [--watch -i N] ascii hexagon dashboard (axes + 15 pair gates)");
     println!("  metrics             Prometheus text-format exposition");
     println!("  explain K           explain pair gate K (0..14) + current state");
+    println!("  action [K]          concrete shell commands per firing pair (or pair K)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
