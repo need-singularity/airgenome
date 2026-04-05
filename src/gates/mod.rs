@@ -3,6 +3,7 @@
 //! Pure data re-interpretation. No process control, no memory reclamation.
 
 pub mod genome;
+pub mod probes;
 
 pub use genome::{GateGenome, GATE_GENOME_BYTES};
 
