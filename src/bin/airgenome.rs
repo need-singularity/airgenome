@@ -14,6 +14,7 @@ fn main() {
         "rules" => list_rules(),
         "diag" => diag(),
         "dash" | "dashboard" => dash(),
+        "metrics" | "m" => metrics(),
         "profile" => profile_cmd(&args),
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
@@ -127,6 +128,53 @@ fn diag() {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn metrics() {
+    let v = airgenome::sample();
+    let firing = airgenome::firing(&v);
+    let firing_count = firing.len();
+    let work_fraction = 1.0 - (firing_count as f64) / (PAIR_COUNT as f64);
+
+    // Prometheus text format (https://prometheus.io/docs/instrumenting/exposition_formats/)
+    println!("# HELP airgenome_axis_value Current value of a hexagon axis.");
+    println!("# TYPE airgenome_axis_value gauge");
+    for axis in Axis::ALL {
+        println!("airgenome_axis_value{{axis=\"{}\"}} {}", axis.name(), v.get(axis));
+    }
+
+    println!("# HELP airgenome_firing_total Number of rules currently firing.");
+    println!("# TYPE airgenome_firing_total gauge");
+    println!("airgenome_firing_total {}", firing_count);
+
+    println!("# HELP airgenome_pair_count Total number of pair gates.");
+    println!("# TYPE airgenome_pair_count gauge");
+    println!("airgenome_pair_count {}", PAIR_COUNT);
+
+    println!("# HELP airgenome_work_fraction Work fraction (1 - firing/15).");
+    println!("# TYPE airgenome_work_fraction gauge");
+    println!("airgenome_work_fraction {}", work_fraction);
+
+    println!("# HELP airgenome_work_fraction_ceiling Theoretical 2/3 ceiling.");
+    println!("# TYPE airgenome_work_fraction_ceiling gauge");
+    println!("airgenome_work_fraction_ceiling {}", airgenome::WORK_FP);
+
+    println!("# HELP airgenome_pair_severity Per-pair severity: 0=ok 1=warn 2=critical.");
+    println!("# TYPE airgenome_pair_severity gauge");
+    for k in 0..PAIR_COUNT {
+        let (a, b) = PAIRS[k];
+        let sev = match airgenome::severity(k, &v) {
+            airgenome::Severity::Ok => 0,
+            airgenome::Severity::Warn => 1,
+            airgenome::Severity::Critical => 2,
+        };
+        println!("airgenome_pair_severity{{pair=\"{}\",a=\"{}\",b=\"{}\"}} {}",
+            k, a.name(), b.name(), sev);
+    }
+
+    println!("# HELP airgenome_sample_timestamp Unix timestamp of the vitals sample.");
+    println!("# TYPE airgenome_sample_timestamp gauge");
+    println!("airgenome_sample_timestamp {}", v.ts);
 }
 
 fn dash() {
@@ -857,6 +905,7 @@ fn print_help() {
     println!("  rules               list the 15 rules with mesh neighbors");
     println!("  diag                fire rules on current vitals + dry-run proposals");
     println!("  dash                ascii hexagon dashboard (axes + 15 pair gates)");
+    println!("  metrics             Prometheus text-format exposition");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  write profile to ~/.airgenome/active.genome");
