@@ -41,6 +41,7 @@ fn main() {
         "sysctl" => sysctl_cmd(&args),
         "reap" => reap_cmd(&args),
         "quiet-tune" | "quiet" => quiet_tune_cmd(&args),
+        "restore" => restore_cmd(&args),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1267,6 +1268,38 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
+}
+
+fn restore_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_mdutil_on, req_tmutil_enable, HelperResponse, DEFAULT_SOCKET_PATH};
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+
+    println!("=== airgenome restore — reverse quiet-tune ===");
+    println!();
+    println!("  re-enables Spotlight indexing + TimeMachine snapshots");
+    println!();
+
+    if !yes {
+        println!("  plan:");
+        println!("    1. mdutil -i on /    — Spotlight indexing on");
+        println!("    2. tmutil enable     — TimeMachine on");
+        println!();
+        println!("  {}", dim("dry-run. pass --yes to execute."));
+        return;
+    }
+
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    let run = |label: &str, req: &str| {
+        match dial(&socket, req) {
+            Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green(label), detail),
+            Ok(r) => println!("  {} {:?}", yellow(&format!("{} skipped", label)), r),
+            Err(_) => println!("  {} (helper not installed, skipped)", dim(label)),
+        }
+    };
+    run("spotlight ", &req_mdutil_on());
+    run("timemachine", &req_tmutil_enable());
 }
 
 fn quiet_tune_cmd(args: &[String]) {
@@ -3119,6 +3152,7 @@ fn print_help() {
     println!("  sysctl <key>                              read a whitelisted sysctl via helper");
     println!("  reap [--yes] [--measure]                  kill-mode combo: kill Chrome/Slack + purge");
     println!("  quiet-tune [--yes] [--measure]            kill-free combo: purge + compressor (default)");
+    println!("  restore [--yes]                           re-enable Spotlight + TimeMachine");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
