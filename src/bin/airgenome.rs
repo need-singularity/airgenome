@@ -212,6 +212,8 @@ fn diag(args: &[String]) {
 
 fn action_cmd(args: &[String]) {
     let json = args.iter().any(|a| a == "--json" || a == "-j");
+    let no_sudo = args.iter().any(|a| a == "--no-sudo");
+    let sudo_only = args.iter().any(|a| a == "--sudo-only");
     // if no pair given (and no flags), show actions for all currently-firing pairs
     let target = args.iter().skip(2).find_map(|s| {
         if s.starts_with('-') { None } else { s.parse::<usize>().ok() }
@@ -224,14 +226,22 @@ fn action_cmd(args: &[String]) {
         None => airgenome::firing(&v),
     };
 
+    let keep = |c: &airgenome::ActionCommand| -> bool {
+        if no_sudo && c.needs_sudo { return false; }
+        if sudo_only && !c.needs_sudo { return false; }
+        true
+    };
+
     if json {
         print!("{{\"pairs\":[");
         for (i, &k) in pairs.iter().enumerate() {
             if i > 0 { print!(","); }
             print!("{{\"pair\":{},\"commands\":[", k);
             if let Some(actions) = airgenome::commands_for(k) {
-                for (j, c) in actions.iter().enumerate() {
-                    if j > 0 { print!(","); }
+                let mut first = true;
+                for c in actions.iter().filter(|c| keep(c)) {
+                    if !first { print!(","); }
+                    first = false;
                     let esc = c.cmd.replace('\\', "\\\\").replace('"', "\\\"");
                     let eff = c.effect.replace('\\', "\\\\").replace('"', "\\\"");
                     print!("{{\"cmd\":\"{}\",\"effect\":\"{}\",\"sudo\":{}}}",
@@ -253,7 +263,7 @@ fn action_cmd(args: &[String]) {
         let (a, b) = PAIRS[k];
         println!("[{:>2}] {}×{}  ({})", k, a.name(), b.name(), RULES[k].description);
         if let Some(actions) = airgenome::commands_for(k) {
-            for c in actions {
+            for c in actions.iter().filter(|c| keep(c)) {
                 let tag = if c.needs_sudo { red("sudo") } else { dim("user") };
                 println!("  [{}] {}", tag, c.cmd);
                 println!("       → {}", c.effect);
@@ -1531,7 +1541,7 @@ fn print_help() {
     println!("  dash [--watch -i N] ascii hexagon dashboard (axes + 15 pair gates)");
     println!("  metrics             Prometheus text-format exposition");
     println!("  explain K           explain pair gate K (0..14) + current state");
-    println!("  action [K]          concrete shell commands per firing pair (or pair K)");
+    println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
