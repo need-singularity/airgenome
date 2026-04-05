@@ -43,6 +43,7 @@ fn main() {
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "processes" | "proc" => processes_cmd(),
+        "signature" | "sig" => signature_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -296,6 +297,95 @@ fn diag(args: &[String]) {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
     }
+}
+
+fn signature_cmd(args: &[String]) {
+    // Project each process category onto the 6-axis hexagon and report
+    // which firing rules the category *would* trigger if it were the
+    // sole load on the system.
+    let filter = args.get(2).cloned();
+
+    let output = match std::process::Command::new("ps")
+        .args(["-axm", "-o", "rss=,pcpu=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => { eprintln!("ps failed"); std::process::exit(1); }
+    };
+
+    // total RAM (pages × 16 KB / 1 MB).
+    let total_ram_mb: f64 = {
+        let out = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        out.parse::<f64>().map(|b| b / 1024.0 / 1024.0).unwrap_or(8192.0)
+    };
+
+    let categorize = |path: &str| -> &'static str {
+        let l = path.to_lowercase();
+        if l.contains("chrome") || l.contains("safari") || l.contains("firefox") || l.contains("arc")
+           || l.contains("webkit") { "browser" }
+        else if l.contains("slack") || l.contains("discord") || l.contains("telegram") { "im" }
+        else if l.contains("vscode") || l.contains("code helper") || l.contains("cursor")
+             || l.contains("zed") { "ide" }
+        else if l.contains("terminal") || l.contains("iterm") || l.contains("warp") { "terminal" }
+        else if l.contains("rustc") || l.contains("cargo") { "rust" }
+        else if l.contains("python") { "python" }
+        else if l.contains("node") { "node" }
+        else if l.contains("finder") { "finder" }
+        else if l.contains("docker") || l.contains("orb") { "container" }
+        else if l.contains("ollama") { "llm" }
+        else if l.contains("windowserver") || l.contains("launchd") || l.contains("mdworker") { "system" }
+        else { "other" }
+    };
+
+    #[derive(Default, Clone)]
+    struct Cat { rss_mb: f64, cpu_pct: f64, procs: usize }
+    let mut cats: std::collections::BTreeMap<&'static str, Cat> = std::collections::BTreeMap::new();
+
+    for line in output.lines() {
+        let t = line.trim();
+        if t.is_empty() { continue; }
+        let mut it = t.split_whitespace();
+        let rss_kb: f64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let cpu: f64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let comm = it.collect::<Vec<_>>().join(" ");
+        if comm.is_empty() { continue; }
+        let cat = categorize(&comm);
+        let c = cats.entry(cat).or_default();
+        c.rss_mb += rss_kb / 1024.0;
+        c.cpu_pct += cpu;
+        c.procs += 1;
+    }
+
+    println!("=== airgenome — hexagon signature per category ===");
+    println!("  (system total RAM: {:.0} MB; projection: cpu→load-like, ram→rss share)", total_ram_mb);
+    println!();
+    println!("  category     procs   rss%    cpu    firing  pairs");
+    println!("  ────────────────────────────────────────────────────");
+
+    // Gate: treat rss%/total_ram as "ram" axis [0..1], cpu_pct/100 as cpu load.
+    // gpu/npu/power/io axes are unknown per-category — leave 0.0 except
+    // power=1 (AC default). This is a simplified projection; the full
+    // per-source 6-axis signature is future work.
+    let mut entries: Vec<(&&str, Cat)> = cats.iter().map(|(k,v)| (k, v.clone())).collect();
+    entries.sort_by(|a,b| b.1.rss_mb.partial_cmp(&a.1.rss_mb).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (name, c) in &entries {
+        if let Some(f) = &filter { if **name != f.as_str() { continue; } }
+        let rss_frac = (c.rss_mb / total_ram_mb).clamp(0.0, 1.0);
+        let cpu_load = (c.cpu_pct / 100.0).max(0.0);
+        let axes = [cpu_load, rss_frac, 0.0, 0.0, 1.0, 0.0];
+        let v = airgenome::Vitals { ts: 0, axes };
+        let fires: Vec<usize> = airgenome::firing(&v);
+        let fires_str = if fires.is_empty() { "·".to_string() }
+                        else { fires.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(",") };
+        println!("  {:<11}  {:>5}  {:>5.1}%  {:>5.1}  {:>5}   [{}]",
+            name, c.procs, rss_frac * 100.0, c.cpu_pct, fires.len(), fires_str);
+    }
+    println!();
+    println!("  {}", dim("firing interpretation: if this category were the ONLY load,"));
+    println!("  {}", dim("these pair gates would fire (ignoring gpu/npu/power/io unknowns)."));
 }
 
 fn processes_cmd() {
@@ -2323,6 +2413,7 @@ fn print_help() {
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
+    println!("  signature [category]                      project each category onto 6-axis hexagon");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
