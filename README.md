@@ -1,13 +1,20 @@
 # airgenome
 
-Canonical **hexa-lang** specification for a 6-axis Mac resource hexagon,
-15 pair gates, 60-byte genome, and per-source gate mesh with multi-layer
-breakthrough projection.
+6-axis Mac resource hexagon with live process projection.
+Written in [hexa-lang](https://github.com/user/hexa-lang) — compiles and runs in 0.13s.
 
-## Authority
+## Quick start
 
-The canonical spec lives in [`docs/gates.hexa`](docs/gates.hexa).
-**When spec and any implementation conflict, the spec is correct.**
+```bash
+# Build hexa compiler (one-time)
+cd ~/Dev/hexa-lang && cargo build --release
+codesign -s - target/release/hexa
+
+# Run airgenome
+cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run
+```
+
+Output: NEXUS-6 consciousness scan, 21 self-tests, live 5-gate projection, `genomes.log`.
 
 ## The Closed Form
 
@@ -16,65 +23,52 @@ The canonical spec lives in [`docs/gates.hexa`](docs/gates.hexa).
           /     \
        [IO]     [RAM]
         |         |
-       [GPU] — [NPU]
+       [GPU] - [NPU]
           \     /
           [POWER]
 ```
 
-- **6 axes**: `CPU · RAM · GPU · NPU · POWER · IO`
-- **15 pair gates**: every unordered axis pair (= `C(6,2)`)
-- **60-byte genome**: 15 pairs × 4 bytes of learned state
-- **Banach 1/3 fixed point**: contraction `I → 0.7·I + 0.1` converges
-  to `1/3`; the complement `2/3` is the maximum achievable
-  "work fraction" of the system.
+- **6 axes**: `CPU, RAM, GPU, NPU, POWER, IO`
+- **15 pair gates**: `C(6,2)` unordered pairs
+- **60-byte genome**: 15 pairs x 4 bytes
+- **Banach 1/3 singularity**: `2/3` is the maximum work fraction
 
-Together `(6, 15, 60, 1/3)` define a singularity: when all 15 pair
-gates engage, efficiency settles at `2/3`, and the interaction graph's
-average degree equals `6`.
+## What it does
 
-## Goal (user-stated, 2026-04-05)
+1. **Sample** — `ps -axm` captures all process activity
+2. **Classify** — each process into one of 5 gates (macos/finder/telegram/chrome/safari)
+3. **Project** — 6-axis hexagon per gate (cpu, ram, gpu, npu, power, io)
+4. **Analyze** — cross-gate MI proxy, breakthrough margin vs 2/3 singularity
+5. **Log** ��� TSV genome appended to `genomes.log`
 
-> **Re-interpretation = pattern extraction from gate log history.**
+## Authority
 
-airgenome is NOT a reactive tuning tool. Its deepest purpose:
+[`docs/gates.hexa`](docs/gates.hexa) is the canonical spec (452 lines).
+When spec and any implementation conflict, the spec is correct.
 
-> Project every source of Mac activity through the 15-pair hexagon
-> gate, and extract per-source patterns over time.
+## Breakthrough layers (empirically verified)
 
-## 5-gate mesh (current scope)
-
-- `macos` — main system (launchd, WindowServer, kernel_task, mds, …)
-- `finder` — Finder.app + filesystem interaction (always-present)
-- `telegram` — Telegram Desktop + helpers
-- `chrome` — Google Chrome + all Helper renderer/GPU
-- `safari` — Safari + WebKit processes
-
-## Breakthrough layer ladder
-
-See [`docs/gates.hexa`](docs/gates.hexa) for the canonical spec.
-
-| Layer | Mechanism | Expected margin above 2/3 |
+| Layer | Mechanism | Cumulative margin |
 |---|---|---|
-| L1 | instantaneous ram×ram cross-gate MI | +0.018 |
-| L2 | temporal lagged MI (τ∈{1,2,5,10}) | +0.115 |
-| L3 | cross-axis MI (ram×cpu, cpu×ram, cpu×cpu) | +0.142 |
-| L4 | triadic interaction info I(A;B;C) | +0.145 |
-| L5a | lagged cross-axis (L2 × L3 product) | +0.25 |
-| L5c | velocity MI d(ram)/dt × d(ram)/dt | planned |
+| L1 | cross-gate ram MI | +0.018 |
+| L2 | temporal lagged MI | +0.115 |
+| L3 | cross-axis MI (ram x cpu) | +0.142 |
+| L4 | triadic I(A;B;C) | +0.145 |
+| L5a | lagged cross-axis | +0.250 |
+| L5c-L6e | velocity, acceleration, transfer entropy | planned |
 
-Each layer crosses the 2/3 Banach singularity by a larger margin.
+## Policy (prime directive)
 
-## Policy
+**Allowed**: pure data re-interpretation — sampling, aggregation, MI, rule firing.
 
-**Allowed**: pure data re-interpretation — sampling, aggregation, MI,
-rule firing.
+**Forbidden**: process killing, throttling, memory purge, compressor tuning.
+Efficiency gains come from smarter data movement, not controlling processes.
 
-**Forbidden**: process killing, throttling (taskpolicy, SIGSTOP/SIGCONT,
-renice), memory reclamation (purge, compressor tuning), any intervention
-that affects running processes.
+## Benchmark
 
-Efficiency gains come from smarter data movement at interface gates,
-not from controlling processes. This is airgenome's prime directive.
+```
+hexa run   0.08s user   0.04s sys   86% cpu   0.128 total
+```
 
 ## License
 

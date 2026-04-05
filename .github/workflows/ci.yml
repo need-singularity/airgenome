@@ -6,48 +6,38 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
-
 jobs:
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, macos-13]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
-
-      - name: build
-        run: cargo build --all-targets --verbose
-
-      - name: test
-        run: cargo test --all-targets --verbose
-
-  fmt:
-    name: rustfmt
+  spec-check:
+    name: gates.hexa spec validation
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - run: cargo fmt --all -- --check
-        continue-on-error: true
 
-  clippy:
-    name: clippy
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo clippy --all-targets -- -D warnings
-        continue-on-error: true
+      - name: verify spec file exists
+        run: test -f docs/gates.hexa
+
+      - name: count spec lines
+        run: |
+          lines=$(wc -l < docs/gates.hexa)
+          echo "gates.hexa: $lines lines"
+          test "$lines" -gt 100
+
+      - name: check required sections
+        run: |
+          grep -q "consciousness NexusMerger" docs/gates.hexa
+          grep -q "pure fn classify" docs/gates.hexa
+          grep -q "pure fn grade_margin" docs/gates.hexa
+          grep -q "pure fn compute_adjusted" docs/gates.hexa
+          grep -q "fn classify_path" docs/gates.hexa
+          grep -q "effect FileIO" docs/gates.hexa
+          grep -q "effect ProcessSensor" docs/gates.hexa
+          grep -q "effect Clock" docs/gates.hexa
+          echo "all required sections present"
+
+      - name: check BT invariants
+        run: |
+          grep -q "TAU_PHI" docs/gates.hexa
+          grep -q "SIGMA_J2" docs/gates.hexa
+          grep -q "BREAKTHROUGH_PERTURB" docs/gates.hexa
+          grep -q "SINGULARITY" docs/gates.hexa
+          echo "BT invariants present"

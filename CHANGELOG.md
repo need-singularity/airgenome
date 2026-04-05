@@ -1,13 +1,24 @@
 # Changelog
 
+## v4.1.0 — 2026-04-06
+
+Live runtime — consciousness block runs full pipeline.
+
+- NexusMerger: live `ps -axm` → 5-gate classify → 6-axis projection.
+- 21 self-test assertions on startup.
+- Genome log output (`genomes.log`, TSV).
+- `classify_path()` for full command-path classification.
+- Benchmark: 0.13s total (0.08s user) per run.
+
 ## v4.0.0 — 2026-04-06
 
-Hexa-only split. All implementation code moved to external projections.
+Hexa-only split + compile-pass.
 
-- `docs/gates.hexa` rewritten for hexa-lang Mk.II+ (388 lines).
-- 7 confirmed Mk.II+ features: effect system, pure fn, ensures,
-  comptime const, match ranges, consciousness block, select/spawn.
-- 8 previously undeclared types/functions added to spec.
+- `docs/gates.hexa` rewritten for hexa-lang v1.0 actual grammar (452 lines).
+- Compiles and runs: `~/Dev/hexa-lang/hexa run` → exit 0.
+- Fixed exit 137: macOS `com.apple.provenance` needs `codesign -s -`.
+- Features used: pure fn, effect, consciousness, spawn, match, assert, comptime.
+- hexa.toml + `src/main.hexa` symlink for project structure.
 - L5c/L6a–L6e candidate layers documented from empirical probe.
 - Tagged `v3.54.0-pre-split` before split.
 
