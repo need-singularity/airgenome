@@ -681,9 +681,10 @@ fn diff_cmd(args: &[String]) {
 }
 
 fn daemon_cmd(args: &[String]) {
-    // parse --interval N (seconds), --output PATH
+    // parse --interval N (seconds), --output PATH, --once
     let mut interval_s: u64 = 30;
     let mut output: Option<std::path::PathBuf> = None;
+    let mut once = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -699,6 +700,7 @@ fn daemon_cmd(args: &[String]) {
                     output = Some(std::path::PathBuf::from(v));
                 }
             }
+            "--once" => once = true,
             _ => {}
         }
         i += 1;
@@ -720,10 +722,12 @@ fn daemon_cmd(args: &[String]) {
         }
     };
 
-    eprintln!("airgenome daemon — interval {}s, log {}", interval_s, out_path.display());
-    eprintln!("Ctrl+C to stop.");
+    if !once {
+        eprintln!("airgenome daemon — interval {}s, log {}", interval_s, out_path.display());
+        eprintln!("Ctrl+C to stop.");
+    }
 
-    loop {
+    let write_one = |file: &mut std::fs::File| -> bool {
         let v = airgenome::sample();
         let firing = airgenome::firing(&v).len();
         let line = format!(
@@ -733,13 +737,25 @@ fn daemon_cmd(args: &[String]) {
             v.get(Axis::Power), v.get(Axis::Io), firing
         );
         if writeln!(file, "{}", line).is_err() {
-            eprintln!("write failed; exiting");
-            std::process::exit(1);
+            eprintln!("write failed");
+            return false;
         }
         let _ = file.flush();
-        eprintln!("[{}] firing={}/{}  cpu={:.2} ram={:.2} io={:.2}",
-            v.ts, firing, PAIR_COUNT,
-            v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+        if !once {
+            eprintln!("[{}] firing={}/{}  cpu={:.2} ram={:.2} io={:.2}",
+                v.ts, firing, PAIR_COUNT,
+                v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+        }
+        true
+    };
+
+    if once {
+        if !write_one(&mut file) { std::process::exit(1); }
+        return;
+    }
+
+    loop {
+        if !write_one(&mut file) { std::process::exit(1); }
         std::thread::sleep(std::time::Duration::from_secs(interval_s));
     }
 }
@@ -1291,6 +1307,7 @@ fn print_help() {
     println!("  diff A B            show per-pair genome differences between profiles");
     println!("  genome save|cat|hex genome file I/O (save/load 60-byte binary .genome)");
     println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
+    println!("  daemon --once       append one sample + exit (for cron)");
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
     println!("  replay [-v]         replay log through PolicyEngine, tally fires");
     println!("  policy watch        live PolicyEngine loop (preemptive + reactive)");
