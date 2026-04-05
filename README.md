@@ -1,14 +1,17 @@
 # airgenome
 
-[![ci](https://github.com/need-singularity/airgenome/actions/workflows/ci.yml/badge.svg)](https://github.com/need-singularity/airgenome/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+Canonical **hexa-lang** specification for a 6-axis Mac resource hexagon,
+15 pair gates, 60-byte genome, and per-source gate mesh with multi-layer
+breakthrough projection.
 
-> A 6-axis resource hexagon for MacBook optimization.
-> 60 bytes of DNA. 2/3 maximum work. 1/3 Banach fixed point.
+## Authority
 
-`airgenome` models your Mac's resource state as a hexagon of six axes —
-`CPU · RAM · GPU · NPU · POWER · IO` — wired together by `C(6,2) = 15`
-pair gates. The full learnable state fits in **60 bytes** (15 pairs × 4).
+The canonical spec lives in [`docs/gates.hexa`](docs/gates.hexa).
+**When spec and any implementation conflict, the spec is correct.**
+
+## Implementations (projections)
+
+- **`~/Dev/air_rs`** — Rust CLI projection (was this repo through `v3.54.0-pre-split`)
 
 ## The Closed Form
 
@@ -19,156 +22,64 @@ pair gates. The full learnable state fits in **60 bytes** (15 pairs × 4).
         |         |
        [GPU] — [NPU]
           \     /
-         [POWER]
+          [POWER]
 ```
 
-- **6 axes** — one per resource dimension
-- **15 pair gates** — every unordered axis pair
-- **60-byte genome** — 15 × u32 learned states
-- **1/3 fixed point** — the contraction `I → 0.7·I + 0.1` converges
-  uniquely to `1/3`; the complement `2/3` is the maximum achievable
-  "work fraction" of the system
+- **6 axes**: `CPU · RAM · GPU · NPU · POWER · IO`
+- **15 pair gates**: every unordered axis pair (= `C(6,2)`)
+- **60-byte genome**: 15 pairs × 4 bytes of learned state
+- **Banach 1/3 fixed point**: contraction `I → 0.7·I + 0.1` converges
+  to `1/3`; the complement `2/3` is the maximum achievable
+  "work fraction" of the system.
 
-These four numbers `(6, 15, 60, 1/3)` define a singularity: when all
-15 pair gates engage and the efficiency score settles at `2/3`, the
-interaction graph's average degree equals `6`.
+Together `(6, 15, 60, 1/3)` define a singularity: when all 15 pair
+gates engage, efficiency settles at `2/3`, and the interaction graph's
+average degree equals `6`.
 
-## Install
+## Goal (user-stated, 2026-04-05)
 
-**One-shot installer** (recommended) — installs the binary, creates the data
-directory, and registers a LaunchAgent that runs the daemon at 60 s intervals:
+> **Re-interpretation = pattern extraction from gate log history.**
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/scripts/install.sh | bash
-```
+airgenome is NOT a reactive tuning tool. Its deepest purpose:
 
-**Manual**:
+> Project every source of Mac activity through the 15-pair hexagon
+> gate, and extract per-source patterns over time.
 
-```sh
-cargo install --git https://github.com/need-singularity/airgenome
-```
+## 5-gate mesh (current scope)
 
-**Uninstall**:
+- `macos` — main system (launchd, WindowServer, kernel_task, mds, …)
+- `finder` — Finder.app + filesystem interaction (always-present)
+- `telegram` — Telegram Desktop + helpers
+- `chrome` — Google Chrome + all Helper renderer/GPU
+- `safari` — Safari + WebKit processes
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/scripts/uninstall.sh | bash
-```
+## Breakthrough layer ladder
 
-## Usage
+See [`docs/gates.hexa`](docs/gates.hexa) for the canonical spec.
 
-### Observe
+| Layer | Mechanism | Expected margin above 2/3 |
+|---|---|---|
+| L1 | instantaneous ram×ram cross-gate MI | +0.018 |
+| L2 | temporal lagged MI (τ∈{1,2,5,10}) | +0.115 |
+| L3 | cross-axis MI (ram×cpu, cpu×ram, cpu×cpu) | +0.142 |
+| L4 | triadic interaction info I(A;B;C) | +0.145 |
+| L5a | lagged cross-axis (L2 × L3 product) | +0.25 |
+| L5c | velocity MI d(ram)/dt × d(ram)/dt | planned |
 
-```sh
-airgenome status               # hexagon + vitals + firing count
-airgenome status --json        # same as JSON (pipelineable)
-airgenome probe                # single JSON vitals sample
-airgenome dash                 # ASCII hexagon dashboard (bars + severity)
-airgenome diag                 # fire 15 rules + dry-run proposals
-airgenome explain K            # describe pair gate K + live values
-airgenome metrics              # Prometheus text-format exposition
-airgenome doctor               # self-diagnostic of install + daemon
-```
+Each layer crosses the 2/3 Banach singularity by a larger margin.
 
-### Policy
+## Policy
 
-```sh
-airgenome policy tick          # one-shot PolicyEngine evaluation
-airgenome policy watch -i 10   # live loop (preemptive + reactive)
-airgenome trace                # summarise ~/.airgenome/vitals.jsonl
-airgenome replay               # tally what policy WOULD have fired
-```
+**Allowed**: pure data re-interpretation — sampling, aggregation, MI,
+rule firing.
 
-### Profiles & genomes
+**Forbidden**: process killing, throttling (taskpolicy, SIGSTOP/SIGCONT,
+renice), memory reclamation (purge, compressor tuning), any intervention
+that affects running processes.
 
-```sh
-airgenome profile list              # built-ins + user profiles
-airgenome profile show  NAME        # engaged pairs + hex
-airgenome profile apply NAME|PATH   # set active (built-in / user / file)
-airgenome profile active            # current active profile
-airgenome diff A B                  # compare two built-in profiles
-airgenome genome hex      PROFILE   # 120-char hex string
-airgenome genome from-hex HEX [P]   # parse hex; optionally write to path
-airgenome genome save PROFILE PATH  # write 60-byte .genome file
-airgenome genome cat PATH           # inspect a .genome file
-```
-
-### Daemon
-
-```sh
-airgenome daemon -i 60              # periodic vitals → JSONL
-airgenome init [-i SEC]             # register as LaunchAgent
-airgenome uninit                    # unload + remove LaunchAgent
-```
-
-`--json` on `status` / `trace` / `replay` / `policy tick`.
-Colors on `doctor` / `dash` TTY output (respects `NO_COLOR`).
-
-### Example
-
-```console
-$ airgenome status
-=== airgenome — Mac Air Implant Status ===
-  Hexagon: 6 axes × 15 pairs | genome = 60 bytes
-
-  Axes (vitals sample @ ts=1775350321):
-    cpu        4.5300
-    ram        0.9000
-    gpu        8.0000
-    npu        8.0000
-    power      1.0000
-    io         1.3185
-
-  Meta fixed point: 1/3 ≈ 0.333333  (work = 2/3 ≈ 0.666667)
-```
-
-```console
-$ airgenome probe
-{"ts":1775350321,"axes":{"cpu":4.53,"ram":0.9,"gpu":8,"npu":8,"power":1,"io":1.31856}}
-```
-
-## Library
-
-```rust
-use airgenome::{ResourceGate, Genome, Axis, mutual_info_hist};
-
-let gate = ResourceGate::new();
-assert_eq!(gate.active_pairs(), 0);
-
-// genome serializes to exactly 60 bytes
-let bytes = Genome::empty().to_bytes();
-assert_eq!(bytes.len(), 60);
-
-// Banach 1/3 fixed point
-assert!((airgenome::META_FP - 1.0 / 3.0).abs() < 1e-15);
-```
-
-## Library layers
-
-| Module | Purpose |
-| --- | --- |
-| `gate` | hexagon topology, 15 pair gates, 60-byte genome, singularity predicate |
-| `vitals` | macOS sensor layer (`sysctl`, `vm_stat`, `pmset`, `memory_pressure`) — read-only |
-| `efficiency` | Banach 1/3 fixed-point tracker + mutual-information estimator |
-| `actuator` | dry-run actuator with rollback snapshots |
-| `rules` | 15 deterministic if-then rules + 3-neighbor triangular mesh |
-| `profile` | five built-in 60-byte profiles (balanced / battery-save / performance / dev-work / ml-inference) |
-| `buffer` | `VitalsBuffer` — derivatives, ratios, oscillation detection |
-| `policy` | `PolicyEngine` — rules + buffer + preemptive + cooldown + oscillation lockout |
-| `trace` | pure-std JSONL parser for `vitals.jsonl` logs |
-
-## Safety
-
-All actuator calls are **dry-run by default**. Every proposed change is
-recorded into a `Snapshot`, never written to the system. Live actuation
-is an explicit, opt-in extension. Rollback is a one-line `Actuator::invert`.
-
-## Design origin
-
-Derived from a `nexus6` OUROBOROS scan on the `macbook-resource-gate`
-domain. Evolution saturated at 15 discoveries (= `C(6,2)`), score
-converged to `0.64 ≈ 2/3`, average graph degree settled at `6`
-(n=6 axiom reproduction).
+Efficiency gains come from smarter data movement at interface gates,
+not from controlling processes. This is airgenome's prime directive.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
