@@ -1,6 +1,7 @@
 //! airgenome CLI — probe, status, diagnostics, profile management.
 
-use airgenome::{self, Axis, AXIS_COUNT, PAIR_COUNT, PAIRS, GENOME_BYTES, RULES};
+use airgenome::{self, Axis, Genome, AXIS_COUNT, PAIR_COUNT, PAIRS, GENOME_BYTES, RULES};
+use std::io::Write;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -13,6 +14,8 @@ fn main() {
         "rules" => list_rules(),
         "diag" => diag(),
         "profile" => profile_cmd(&args),
+        "diff" => diff_cmd(&args),
+        "daemon" => daemon_cmd(&args),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -111,6 +114,7 @@ fn profile_cmd(args: &[String]) {
         "list" | "ls" => profile_list(),
         "show" => profile_show(args.get(3).map(|s| s.as_str())),
         "apply" => profile_apply(args.get(3).map(|s| s.as_str())),
+        "active" => profile_active(),
         other => {
             eprintln!("unknown profile sub-command: '{}'", other);
             eprintln!("usage: airgenome profile [list|show <name>|apply <name>]");
@@ -177,6 +181,138 @@ fn profile_apply(name: Option<&str>) {
     println!("  (dry-run: this records the selection; no sysctl changes are made)");
 }
 
+fn profile_active() {
+    let path = home_dir().join(".airgenome").join("active.genome");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no active profile at {} ({})", path.display(), e);
+            eprintln!("run `airgenome profile apply <name>` to set one");
+            std::process::exit(1);
+        }
+    };
+    if bytes.len() != GENOME_BYTES {
+        eprintln!("corrupt genome: expected {} bytes, got {}", GENOME_BYTES, bytes.len());
+        std::process::exit(1);
+    }
+    let mut arr = [0u8; GENOME_BYTES];
+    arr.copy_from_slice(&bytes);
+    let g = Genome::from_bytes(&arr);
+
+    // Try to match against built-in profiles.
+    let mut name = "(custom)";
+    for p in airgenome::PROFILES.iter() {
+        if p.genome() == g { name = p.name; break; }
+    }
+    println!("Active profile: {}", name);
+    println!("  Path: {}", path.display());
+    let active: Vec<usize> = (0..PAIR_COUNT)
+        .filter(|&k| g.pairs[k].engaged())
+        .collect();
+    println!("  Engaged pairs ({}): {:?}", active.len(), active);
+    print!("  Genome hex: ");
+    for b in bytes.iter() { print!("{:02x}", b); }
+    println!();
+}
+
+fn diff_cmd(args: &[String]) {
+    let a = args.get(2).map(|s| s.as_str());
+    let b = args.get(3).map(|s| s.as_str());
+    let (Some(a), Some(b)) = (a, b) else {
+        eprintln!("usage: airgenome diff <profile-a> <profile-b>");
+        std::process::exit(2);
+    };
+    let pa = match airgenome::by_name(a) {
+        Some(p) => p,
+        None => { eprintln!("unknown profile: {}", a); std::process::exit(2); }
+    };
+    let pb = match airgenome::by_name(b) {
+        Some(p) => p,
+        None => { eprintln!("unknown profile: {}", b); std::process::exit(2); }
+    };
+
+    let ga = pa.genome().to_bytes();
+    let gb = pb.genome().to_bytes();
+    let mut diff_pairs = 0usize;
+
+    println!("diff: {} → {}", a, b);
+    for k in 0..PAIR_COUNT {
+        let sa = u32::from_le_bytes([ga[k*4], ga[k*4+1], ga[k*4+2], ga[k*4+3]]);
+        let sb = u32::from_le_bytes([gb[k*4], gb[k*4+1], gb[k*4+2], gb[k*4+3]]);
+        if sa != sb {
+            diff_pairs += 1;
+            let (ax, bx) = PAIRS[k];
+            println!("  [{:>2}] {}×{}  0x{:08x} → 0x{:08x}",
+                k, ax.name(), bx.name(), sa, sb);
+        }
+    }
+    println!("{} / {} pairs differ", diff_pairs, PAIR_COUNT);
+}
+
+fn daemon_cmd(args: &[String]) {
+    // parse --interval N (seconds), --output PATH
+    let mut interval_s: u64 = 30;
+    let mut output: Option<std::path::PathBuf> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--interval" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    interval_s = v.parse().unwrap_or(30).max(1);
+                }
+            }
+            "--output" | "-o" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    output = Some(std::path::PathBuf::from(v));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let out_path = output.unwrap_or_else(|| {
+        let dir = home_dir().join(".airgenome");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("vitals.jsonl")
+    });
+
+    let mut file = match std::fs::OpenOptions::new()
+        .create(true).append(true).open(&out_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("cannot open {}: {}", out_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("airgenome daemon — interval {}s, log {}", interval_s, out_path.display());
+    eprintln!("Ctrl+C to stop.");
+
+    loop {
+        let v = airgenome::sample();
+        let firing = airgenome::firing(&v).len();
+        let line = format!(
+            "{{\"ts\":{},\"cpu\":{},\"ram\":{},\"gpu\":{},\"npu\":{},\"power\":{},\"io\":{},\"firing\":{}}}",
+            v.ts, v.get(Axis::Cpu), v.get(Axis::Ram),
+            v.get(Axis::Gpu), v.get(Axis::Npu),
+            v.get(Axis::Power), v.get(Axis::Io), firing
+        );
+        if writeln!(file, "{}", line).is_err() {
+            eprintln!("write failed; exiting");
+            std::process::exit(1);
+        }
+        let _ = file.flush();
+        eprintln!("[{}] firing={}/{}  cpu={:.2} ram={:.2} io={:.2}",
+            v.ts, firing, PAIR_COUNT,
+            v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+        std::thread::sleep(std::time::Duration::from_secs(interval_s));
+    }
+}
+
 fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -196,5 +332,8 @@ fn print_help() {
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  write profile to ~/.airgenome/active.genome");
+    println!("  profile active      show the currently applied profile");
+    println!("  diff A B            show per-pair genome differences between profiles");
+    println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
     println!("  help                print this help");
 }
