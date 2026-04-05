@@ -16,6 +16,7 @@ fn main() {
         "dash" | "dashboard" => dash(),
         "metrics" | "m" => metrics(),
         "profile" => profile_cmd(&args),
+        "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
         "trace" => trace_cmd(&args),
@@ -257,6 +258,84 @@ fn dash() {
     println!("│");
     println!("│  (· ok   ▒ warn   █ critical)                          │");
     println!("└────────────────────────────────────────────────────────┘");
+}
+
+fn genome_cmd(args: &[String]) {
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
+    match sub {
+        "save" => genome_save(args.get(3).map(|s| s.as_str()), args.get(4).map(|s| s.as_str())),
+        "cat" | "show" => genome_cat(args.get(3).map(|s| s.as_str())),
+        "hex" => genome_hex(args.get(3).map(|s| s.as_str())),
+        _ => {
+            eprintln!("usage: airgenome genome <save|cat|hex> [args]");
+            eprintln!("  save <profile> <path>   write built-in profile's 60 bytes to file");
+            eprintln!("  cat  <path>             display a genome file");
+            eprintln!("  hex  <profile>          print 60-byte genome as hex");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn genome_save(profile: Option<&str>, path: Option<&str>) {
+    let (Some(name), Some(path)) = (profile, path) else {
+        eprintln!("usage: airgenome genome save <profile> <path>");
+        std::process::exit(2);
+    };
+    let Some(p) = airgenome::by_name(name) else {
+        eprintln!("unknown profile: {}", name);
+        std::process::exit(2);
+    };
+    let bytes = p.genome().to_bytes();
+    if let Err(e) = std::fs::write(path, bytes) {
+        eprintln!("cannot write {}: {}", path, e);
+        std::process::exit(1);
+    }
+    println!("saved profile '{}' ({} pairs) → {}", name, p.active_count(), path);
+}
+
+fn genome_cat(path: Option<&str>) {
+    let Some(path) = path else {
+        eprintln!("usage: airgenome genome cat <path>");
+        std::process::exit(2);
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("cannot read {}: {}", path, e); std::process::exit(1); }
+    };
+    if bytes.len() != GENOME_BYTES {
+        eprintln!("bad genome: expected {} bytes, got {}", GENOME_BYTES, bytes.len());
+        std::process::exit(1);
+    }
+    let mut arr = [0u8; GENOME_BYTES];
+    arr.copy_from_slice(&bytes);
+    let g = airgenome::Genome::from_bytes(&arr);
+
+    // match against built-ins
+    let mut name = "(custom)";
+    for p in airgenome::PROFILES.iter() {
+        if p.genome() == g { name = p.name; break; }
+    }
+    let active: Vec<usize> = (0..PAIR_COUNT).filter(|&k| g.pairs[k].engaged()).collect();
+    println!("Genome: {}", path);
+    println!("  matches: {}", name);
+    println!("  engaged pairs ({}): {:?}", active.len(), active);
+    print!("  hex: ");
+    for b in bytes.iter() { print!("{:02x}", b); }
+    println!();
+}
+
+fn genome_hex(profile: Option<&str>) {
+    let Some(name) = profile else {
+        eprintln!("usage: airgenome genome hex <profile>");
+        std::process::exit(2);
+    };
+    let Some(p) = airgenome::by_name(name) else {
+        eprintln!("unknown profile: {}", name);
+        std::process::exit(2);
+    };
+    let bytes = p.genome().to_bytes();
+    for b in bytes.iter() { print!("{:02x}", b); }
+    println!();
 }
 
 fn profile_cmd(args: &[String]) {
@@ -911,6 +990,7 @@ fn print_help() {
     println!("  profile apply NAME  write profile to ~/.airgenome/active.genome");
     println!("  profile active      show the currently applied profile");
     println!("  diff A B            show per-pair genome differences between profiles");
+    println!("  genome save|cat|hex genome file I/O (save/load 60-byte binary .genome)");
     println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
     println!("  replay [-v]         replay log through PolicyEngine, tally fires");
