@@ -45,6 +45,7 @@ fn main() {
         "idle-capacity" | "idle" => idle_capacity_cmd(),
         "transitions" | "trans" => transitions_cmd(&args),
         "anomalies" | "anom" => anomalies_cmd(&args),
+        "predict" => predict_cmd(&args),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
@@ -775,6 +776,51 @@ fn processes_cmd() {
         let name = comm.split('/').next_back().unwrap_or(comm);
         let name_short: String = name.chars().take(40).collect();
         println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
+    }
+}
+
+fn predict_cmd(args: &[String]) {
+    let threshold: f64 = args.iter().position(|a| a == "--threshold" || a == "-t")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10.0);
+
+    let v = airgenome::sample();
+    let sig = airgenome::signature::Signature::new(v.axes);
+    let (best, dist) = airgenome::signature::nearest(&sig);
+
+    // Also include custom.
+    let mut min_d = dist;
+    let mut min_name = best.name.to_string();
+    for (n, s) in load_custom_fingerprints() {
+        let d = sig.euclidean(&s);
+        if d < min_d { min_d = d; min_name = n; }
+    }
+
+    let firing = airgenome::firing(&v);
+    println!("=== airgenome — predict ===");
+    println!("  now: cpu={:.2} ram={:.2} io={:.2}  firing={}/15",
+        v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io), firing.len());
+    println!("  nearest fingerprint: {} (d={:.3})", min_name, min_d);
+    println!();
+
+    if min_d > threshold {
+        println!("  status: {} (d > {})", red("ANOMALY"), threshold);
+        println!();
+        println!("  suggested preemptive actions:");
+        // Take the top-2 firing pairs and show their apply commands.
+        for &k in firing.iter().take(3) {
+            if let Some(action) = airgenome::plan_for_pair(k) {
+                println!("    airgenome apply {} --yes --measure   # {}", k, action.label());
+            }
+        }
+        // If none firing yet but anomaly, suggest reap.
+        if firing.is_empty() {
+            println!("    airgenome reap --yes --measure");
+        }
+        std::process::exit(2);
+    } else {
+        println!("  status: {} (within known patterns)", green("normal"));
     }
 }
 
@@ -2913,6 +2959,7 @@ fn print_help() {
     println!("  idle-capacity                             per-axis stats + idle axis detection");
     println!("  transitions [-t N]                        regime changes in firing count (|Δ|≥N)");
     println!("  anomalies [-t D]                          samples where min fingerprint distance > D");
+    println!("  predict [-t D]                            if current d>D, suggest preemptive apply");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
