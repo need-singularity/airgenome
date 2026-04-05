@@ -36,6 +36,7 @@ fn main() {
         "apply" => apply_cmd(&args),
         "apply-all" => apply_all_cmd(&args),
         "helper" => helper_cmd(&args),
+        "purge" => purge_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -287,6 +288,47 @@ fn diag(args: &[String]) {
         println!("  Proposed actions (dry-run):");
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
+        }
+    }
+}
+
+fn purge_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_purge, HelperResponse, DEFAULT_SOCKET_PATH};
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    let before = if measure { Some(airgenome::sample()) } else { None };
+
+    match dial(&socket, &req_purge()) {
+        Ok(HelperResponse::Ok { detail }) => {
+            println!("{} {}", green("ok"), detail);
+            if let Some(before) = before {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let after = airgenome::sample();
+                let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+                println!();
+                println!("{}", dim("--- delta ---"));
+                println!("  ram  {:.3} → {:.3}  ({:+.3})",
+                    before.get(Axis::Ram), after.get(Axis::Ram), dram);
+                let verdict = if dram < -0.02 { green("improved") }
+                              else if dram > 0.02 { red("worse") }
+                              else { dim("unchanged") };
+                println!("  verdict: {}", verdict);
+            }
+        }
+        Ok(HelperResponse::Refused { reason }) => {
+            println!("{} {}", yellow("refused"), reason);
+            std::process::exit(1);
+        }
+        Ok(HelperResponse::Error { message }) => {
+            println!("{} {}", red("error"), message);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("dial failed: {:?}", e);
+            eprintln!("install the helper first: sudo bash scripts/install-helper.sh install");
+            std::process::exit(1);
         }
     }
 }
@@ -1928,6 +1970,7 @@ fn print_help() {
     println!("  apply K [--yes|--confirm] [--measure]     execute Tier 1 action for pair K");
     println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
     println!("  helper <ping|get|set|purge> [args]        talk to privileged helper (Tier 2)");
+    println!("  purge [--measure]                         request memory purge via helper");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
