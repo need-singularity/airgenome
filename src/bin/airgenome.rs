@@ -1,7 +1,17 @@
 //! airgenome CLI — probe, status, diagnostics, profile management.
 
 use airgenome::{self, Axis, Genome, AXIS_COUNT, PAIR_COUNT, PAIRS, GENOME_BYTES, RULES};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+
+fn use_color() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() { return false; }
+    std::io::stdout().is_terminal()
+}
+
+fn green(s: &str) -> String { if use_color() { format!("\x1b[32m{}\x1b[0m", s) } else { s.to_string() } }
+fn yellow(s: &str) -> String { if use_color() { format!("\x1b[33m{}\x1b[0m", s) } else { s.to_string() } }
+fn red(s: &str) -> String { if use_color() { format!("\x1b[31m{}\x1b[0m", s) } else { s.to_string() } }
+fn dim(s: &str) -> String { if use_color() { format!("\x1b[2m{}\x1b[0m", s) } else { s.to_string() } }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -296,17 +306,18 @@ fn dash() {
     // ascii bar: one cell per pair
     print!("│  ");
     for k in 0..PAIR_COUNT {
-        let c = match airgenome::severity(k, &v) {
-            airgenome::Severity::Ok => '·',
-            airgenome::Severity::Warn => '▒',
-            airgenome::Severity::Critical => '█',
+        let cell = match airgenome::severity(k, &v) {
+            airgenome::Severity::Ok => dim("·"),
+            airgenome::Severity::Warn => yellow("▒"),
+            airgenome::Severity::Critical => red("█"),
         };
-        print!("{}", c);
+        print!("{}", cell);
         print!(" ");
     }
     for _ in 0..(54 - 2*PAIR_COUNT - 2) { print!(" "); }
     println!("│");
-    println!("│  (· ok   ▒ warn   █ critical)                          │");
+    println!("│  ({} ok   {} warn   {} critical)                          │",
+        dim("·"), yellow("▒"), red("█"));
     println!("└────────────────────────────────────────────────────────┘");
 }
 
@@ -1022,9 +1033,9 @@ fn doctor_cmd() {
     let mut warn = 0usize;
     let mut fail = 0usize;
 
-    fn ok(label: &str, detail: &str) { println!("  [ok  ] {:<22} {}", label, detail); }
-    fn wrn(label: &str, detail: &str) { println!("  [warn] {:<22} {}", label, detail); }
-    fn bad(label: &str, detail: &str) { println!("  [fail] {:<22} {}", label, detail); }
+    let ok = |label: &str, detail: &str| println!("  [{}] {:<22} {}", green("ok  "), label, detail);
+    let wrn = |label: &str, detail: &str| println!("  [{}] {:<22} {}", yellow("warn"), label, detail);
+    let bad = |label: &str, detail: &str| println!("  [{}] {:<22} {}", red("fail"), label, dim(detail));
 
     println!("=== airgenome — doctor ===");
     println!();
