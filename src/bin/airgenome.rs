@@ -51,6 +51,8 @@ fn main() {
         "unschedule-quiet" => unschedule_quiet_cmd(),
         "schedule-signature" | "schedule-sig" => schedule_signature_cmd(&args),
         "unschedule-signature" | "unschedule-sig" => unschedule_signature_cmd(),
+        "bootstrap" => bootstrap_cmd(),
+        "teardown" => teardown_cmd(),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1349,6 +1351,38 @@ fn benchmark_cmd(args: &[String]) {
                   else if a_ram > b_ram + 0.01 || a_firing > b_firing + 0.3 { red("worse") }
                   else { dim("unchanged") };
     println!("  verdict: {}", verdict);
+}
+
+fn bootstrap_cmd() {
+    println!("=== airgenome bootstrap — register all automations ===");
+    println!();
+    println!("  1. vitals daemon   (60s  interval)");
+    init_cmd(&["airgenome".to_string(), "init".to_string()]);
+    println!();
+    println!("  2. signature       (5m   interval)");
+    schedule_signature_cmd(&["airgenome".to_string(), "schedule-signature".to_string(),
+                              "-i".to_string(), "5".to_string()]);
+    println!();
+    println!("  3. quiet-tune      (1h   interval)");
+    schedule_quiet_cmd(&["airgenome".to_string(), "schedule-quiet".to_string(),
+                          "-i".to_string(), "1".to_string()]);
+    println!();
+    println!("{}", green("all automations active. current kill-free mode."));
+}
+
+fn teardown_cmd() {
+    println!("=== airgenome teardown — remove all automations ===");
+    println!();
+    println!("  1. vitals daemon");
+    uninit_cmd();
+    println!();
+    println!("  2. signature");
+    unschedule_signature_cmd();
+    println!();
+    println!("  3. quiet-tune");
+    unschedule_quiet_cmd();
+    println!();
+    println!("  data preserved at ~/.airgenome (remove manually if desired)");
 }
 
 fn schedule_signature_cmd(args: &[String]) {
@@ -3449,6 +3483,8 @@ fn print_help() {
     println!("  unschedule-quiet                          remove quiet-tune LaunchAgent");
     println!("  schedule-signature [-i MIN]               auto signature --append every N min");
     println!("  unschedule-signature                      remove signature LaunchAgent");
+    println!("  bootstrap                                 register ALL 3 automations at once");
+    println!("  teardown                                  remove all 3 airgenome automations");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
