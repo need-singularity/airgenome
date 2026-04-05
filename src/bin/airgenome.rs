@@ -44,6 +44,7 @@ fn main() {
         "restore" => restore_cmd(&args),
         "modes" => modes_cmd(),
         "schedule-quiet" => schedule_quiet_cmd(&args),
+        "benchmark" | "bench" => benchmark_cmd(&args),
         "unschedule-quiet" => unschedule_quiet_cmd(),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
@@ -1271,6 +1272,78 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
+}
+
+fn benchmark_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_purge, req_sysctl_set, req_mdutil_off, req_tmutil_disable, HelperResponse, DEFAULT_SOCKET_PATH};
+    let wait_s: u64 = args.iter().position(|a| a == "--wait" || a == "-w")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+
+    println!("=== airgenome benchmark — kill-free tuning impact ===");
+    println!();
+
+    // Sample baseline (3 samples, 2s apart).
+    println!("  sampling baseline (3 × 2s)...");
+    let mut baseline = Vec::new();
+    for _ in 0..3 {
+        baseline.push(airgenome::sample());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    let b_ram = baseline.iter().map(|v| v.get(Axis::Ram)).sum::<f64>() / 3.0;
+    let b_cpu = baseline.iter().map(|v| v.get(Axis::Cpu)).sum::<f64>() / 3.0;
+    let b_io  = baseline.iter().map(|v| v.get(Axis::Io)).sum::<f64>() / 3.0;
+    let b_firing: f64 = baseline.iter().map(|v| airgenome::firing(v).len() as f64).sum::<f64>() / 3.0;
+    println!("    ram={:.3}  cpu={:.2}  io={:.2}  firing={:.1}/15", b_ram, b_cpu, b_io, b_firing);
+    println!();
+
+    // Apply quiet-tune via helper.
+    println!("  applying quiet-tune (kill-free)...");
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    let mut applied = 0;
+    for (label, req) in [
+        ("purge", req_purge()),
+        ("compressor", req_sysctl_set("vm.compressor_mode", "4")),
+        ("spotlight_off", req_mdutil_off()),
+        ("tm_disable", req_tmutil_disable()),
+    ] {
+        match dial(&socket, &req) {
+            Ok(HelperResponse::Ok { .. }) => { applied += 1; println!("    {} ✓", label); }
+            Ok(r) => println!("    {} {:?}", label, r),
+            Err(_) => println!("    {} (helper missing)", label),
+        }
+    }
+    println!("  → {}/4 steps applied", applied);
+    println!();
+
+    // Wait and re-sample.
+    println!("  waiting {}s then sampling after (3 × 2s)...", wait_s);
+    std::thread::sleep(std::time::Duration::from_secs(wait_s));
+    let mut after = Vec::new();
+    for _ in 0..3 {
+        after.push(airgenome::sample());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    let a_ram = after.iter().map(|v| v.get(Axis::Ram)).sum::<f64>() / 3.0;
+    let a_cpu = after.iter().map(|v| v.get(Axis::Cpu)).sum::<f64>() / 3.0;
+    let a_io  = after.iter().map(|v| v.get(Axis::Io)).sum::<f64>() / 3.0;
+    let a_firing: f64 = after.iter().map(|v| airgenome::firing(v).len() as f64).sum::<f64>() / 3.0;
+    println!("    ram={:.3}  cpu={:.2}  io={:.2}  firing={:.1}/15", a_ram, a_cpu, a_io, a_firing);
+    println!();
+
+    // Delta report.
+    let pct = |b: f64, a: f64| if b.abs() < 1e-9 { 0.0 } else { 100.0 * (a - b) / b };
+    println!("{}", dim("--- delta ---"));
+    println!("  ram     {:+.3}  ({:+.1}%)", a_ram - b_ram, pct(b_ram, a_ram));
+    println!("  cpu     {:+.2}  ({:+.1}%)", a_cpu - b_cpu, pct(b_cpu, a_cpu));
+    println!("  io      {:+.2}  ({:+.1}%)", a_io - b_io, pct(b_io, a_io));
+    println!("  firing  {:+.1}", a_firing - b_firing);
+    let verdict = if a_ram < b_ram - 0.01 || a_firing < b_firing - 0.3 { green("improved") }
+                  else if a_ram > b_ram + 0.01 || a_firing > b_firing + 0.3 { red("worse") }
+                  else { dim("unchanged") };
+    println!("  verdict: {}", verdict);
 }
 
 fn schedule_quiet_cmd(args: &[String]) {
@@ -3255,6 +3328,7 @@ fn print_help() {
     println!("  restore [--yes]                           re-enable Spotlight + TimeMachine");
     println!("  modes                                     show current kill-free tuning state");
     println!("  schedule-quiet [-i H]                     auto quiet-tune every H hours (default 1)");
+    println!("  benchmark [--wait SEC]                    baseline→quiet-tune→after delta report");
     println!("  unschedule-quiet                          remove quiet-tune LaunchAgent");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");

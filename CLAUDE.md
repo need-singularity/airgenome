@@ -1,5 +1,16 @@
 # airgenome — Mission & Goals
 
+## ⚠️ Prime Directive (user-stated, 2026-04-05)
+
+> **모든 프로세스 KILL 없이 성능·자원 개선.**
+>
+> Improve performance and reduce resource use **without killing any
+> process** — macOS, Finder (always on), Telegram, Safari, Chrome, rustc,
+> python, Claude sessions, and every other running app stays alive.
+
+**Default mode: kill-free.** `quiet-tune` is the canonical path.
+`reap` / `apply --yes` kill-mode exist but are opt-in only, never default.
+
 ## Core Goal (user-stated, 2026-04-05)
 
 > **재해석 = 지나온 게이트 로그에서 패턴 추출**
