@@ -141,6 +141,40 @@ fn handle_request(raw: &str) -> String {
                 Err(e) => error_resp(&format!("purge spawn: {}", e)),
             }
         }
+        "mdutil_off" => {
+            eprintln!("[airgenome-helper] mdutil -i off /");
+            match Command::new("/usr/bin/mdutil").args(["-i", "off", "/"]).output() {
+                Ok(o) if o.status.success() => ok_resp("spotlight indexing disabled on /"),
+                Ok(o) => error_resp(&format!("mdutil exit: {:?}, stderr={}",
+                    o.status.code(),
+                    escape_json(&String::from_utf8_lossy(&o.stderr)))),
+                Err(e) => error_resp(&format!("mdutil spawn: {}", e)),
+            }
+        }
+        "mdutil_on" => {
+            eprintln!("[airgenome-helper] mdutil -i on /");
+            match Command::new("/usr/bin/mdutil").args(["-i", "on", "/"]).output() {
+                Ok(o) if o.status.success() => ok_resp("spotlight indexing re-enabled on /"),
+                Ok(o) => error_resp(&format!("mdutil exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("mdutil spawn: {}", e)),
+            }
+        }
+        "tmutil_disable" => {
+            eprintln!("[airgenome-helper] tmutil disable");
+            match Command::new("/usr/bin/tmutil").arg("disable").output() {
+                Ok(o) if o.status.success() => ok_resp("time machine disabled"),
+                Ok(o) => error_resp(&format!("tmutil exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("tmutil spawn: {}", e)),
+            }
+        }
+        "tmutil_enable" => {
+            eprintln!("[airgenome-helper] tmutil enable");
+            match Command::new("/usr/bin/tmutil").arg("enable").output() {
+                Ok(o) if o.status.success() => ok_resp("time machine enabled"),
+                Ok(o) => error_resp(&format!("tmutil exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("tmutil spawn: {}", e)),
+            }
+        }
         "" => error_resp("missing op"),
         other => refused(&format!("unknown op: {}", other)),
     }

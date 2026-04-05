@@ -98,6 +98,10 @@ pub fn req_sysctl_set(key: &str, value: &str) -> String {
 pub fn req_purge() -> String {
     r#"{"op":"purge"}"#.to_string()
 }
+pub fn req_mdutil_off() -> String { r#"{"op":"mdutil_off"}"#.to_string() }
+pub fn req_mdutil_on() -> String { r#"{"op":"mdutil_on"}"#.to_string() }
+pub fn req_tmutil_disable() -> String { r#"{"op":"tmutil_disable"}"#.to_string() }
+pub fn req_tmutil_enable() -> String { r#"{"op":"tmutil_enable"}"#.to_string() }
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")

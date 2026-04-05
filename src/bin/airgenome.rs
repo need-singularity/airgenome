@@ -1270,47 +1270,43 @@ fn sysctl_cmd(args: &[String]) {
 }
 
 fn quiet_tune_cmd(args: &[String]) {
-    use airgenome::client::{dial, req_purge, req_sysctl_set, HelperResponse, DEFAULT_SOCKET_PATH};
+    use airgenome::client::{dial, req_purge, req_sysctl_set, req_mdutil_off, req_tmutil_disable, HelperResponse, DEFAULT_SOCKET_PATH};
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let measure = args.iter().any(|a| a == "--measure" || a == "-m");
 
     println!("=== airgenome quiet-tune — kill-free optimization (default mode) ===");
     println!();
     println!("  contract: NO processes killed, NO apps closed");
-    println!("  levers  : purge + vm.compressor_mode=4");
+    println!("  levers  : purge + compressor + Spotlight + TimeMachine");
     println!();
 
     let before = if measure { Some(airgenome::sample()) } else { None };
 
     if !yes {
-        println!("  plan:");
-        println!("    1. helper purge                  — reclaim inactive pages");
-        println!("    2. helper sysctl vm.compressor_mode=4  — aggressive compression");
+        println!("  plan (all via helper, no sudo from user):");
+        println!("    1. purge                         — reclaim inactive pages");
+        println!("    2. sysctl vm.compressor_mode=4   — aggressive compression");
+        println!("    3. mdutil -i off /               — Spotlight indexing pause");
+        println!("    4. tmutil disable                — TimeMachine pause");
         println!();
-        println!("  additional (manual sudo, outside airgenome scope):");
-        println!("    sudo mdutil -i off /             # Spotlight pause");
-        println!("    sudo tmutil disable              # TimeMachine pause");
-        println!();
-        println!("  {}", dim("dry-run. pass --yes to execute helper-based steps."));
+        println!("  {}", dim("dry-run. pass --yes to execute all helper-based steps."));
         return;
     }
 
     let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
         .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
 
-    // Step 1: purge
-    match dial(&socket, &req_purge()) {
-        Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green("purge"), detail),
-        Ok(r) => println!("  {} {:?}", yellow("purge skipped"), r),
-        Err(_) => println!("  {} (helper not installed, skipped)", dim("purge")),
-    }
-
-    // Step 2: vm.compressor_mode=4
-    match dial(&socket, &req_sysctl_set("vm.compressor_mode", "4")) {
-        Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green("sysctl"), detail),
-        Ok(r) => println!("  {} {:?}", yellow("sysctl skipped"), r),
-        Err(_) => println!("  {} (helper not installed, skipped)", dim("sysctl")),
-    }
+    let run_step = |label: &str, req: &str| {
+        match dial(&socket, req) {
+            Ok(HelperResponse::Ok { detail }) => println!("  {} {}", green(label), detail),
+            Ok(r) => println!("  {} {:?}", yellow(&format!("{} skipped", label)), r),
+            Err(_) => println!("  {} (helper not installed, skipped)", dim(label)),
+        }
+    };
+    run_step("purge     ", &req_purge());
+    run_step("compressor", &req_sysctl_set("vm.compressor_mode", "4"));
+    run_step("spotlight ", &req_mdutil_off());
+    run_step("timemachine", &req_tmutil_disable());
 
     if let Some(before) = before {
         std::thread::sleep(std::time::Duration::from_secs(3));
