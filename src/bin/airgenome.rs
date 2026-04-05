@@ -299,32 +299,35 @@ fn diag(args: &[String]) {
 fn coverage_cmd() {
     println!("=== airgenome — coverage matrix ===");
     println!();
-    println!("  pair              Tier 1     Tier 2     actions  rules");
-    println!("  ─────────────────────────────────────────────────────────");
+    println!("  pair              T1  T2sh  T2sys  rule");
+    println!("  ──────────────────────────────────────────────");
     let mut t1 = 0;
-    let mut t2 = 0;
+    let mut t2sh = 0;
+    let mut t2sys = 0;
     for k in 0..PAIR_COUNT {
         let (a, b) = PAIRS[k];
         let tier1 = airgenome::plan_for_pair(k).is_some();
         let sudo_cmds = airgenome::commands_for(k)
             .map(|cs| cs.iter().any(|c| c.needs_sudo))
             .unwrap_or(false);
-        let action_count = airgenome::commands_for(k).map(|cs| cs.len()).unwrap_or(0);
-        let has_rule = true; // every pair has a rule
+        let tier2_sysctl = airgenome::privileged::plan_tier2_for_pair(k).is_some();
         if tier1 { t1 += 1; }
-        if sudo_cmds { t2 += 1; }
-        let t1_mark = if tier1 { green("●") } else { dim("·") };
-        let t2_mark = if sudo_cmds { yellow("●") } else { dim("·") };
-        let rule_mark = if has_rule { green("●") } else { dim("·") };
-        println!("  [{:>2}] {:<6}×{:<6}  {}          {}          {:>3}      {}",
-            k, a.name(), b.name(), t1_mark, t2_mark, action_count, rule_mark);
+        if sudo_cmds { t2sh += 1; }
+        if tier2_sysctl { t2sys += 1; }
+        let t1_m = if tier1 { green("●") } else { dim("·") };
+        let t2sh_m = if sudo_cmds { yellow("●") } else { dim("·") };
+        let t2sys_m = if tier2_sysctl { red("●") } else { dim("·") };
+        println!("  [{:>2}] {:<6}×{:<6}  {}    {}    {}    {}",
+            k, a.name(), b.name(), t1_m, t2sh_m, t2sys_m, green("●"));
     }
     println!();
-    println!("  Tier 1 (user-space) coverage : {}/{} pairs ({:.0}%)",
+    println!("  T1   (user-space)        : {:>2}/{} ({:.0}%)",
         t1, PAIR_COUNT, 100.0 * t1 as f64 / PAIR_COUNT as f64);
-    println!("  Tier 2 (sudo actions) avail  : {}/{} pairs ({:.0}%)",
-        t2, PAIR_COUNT, 100.0 * t2 as f64 / PAIR_COUNT as f64);
-    println!("  Rules                        : 15/{} pairs (100%)", PAIR_COUNT);
+    println!("  T2sh (sudo shell cmds)   : {:>2}/{} ({:.0}%)",
+        t2sh, PAIR_COUNT, 100.0 * t2sh as f64 / PAIR_COUNT as f64);
+    println!("  T2sys(helper sysctl auto): {:>2}/{} ({:.0}%)",
+        t2sys, PAIR_COUNT, 100.0 * t2sys as f64 / PAIR_COUNT as f64);
+    println!("  Rules                    : {:>2}/{} (100%)", PAIR_COUNT, PAIR_COUNT);
 }
 
 fn sysctl_cmd(args: &[String]) {

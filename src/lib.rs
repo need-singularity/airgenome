@@ -42,6 +42,7 @@ pub mod policy;
 pub mod actions;
 pub mod apply;
 pub mod privileged;
+pub use privileged::plan_tier2_for_pair;
 pub mod client;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
