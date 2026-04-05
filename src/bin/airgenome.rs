@@ -8,7 +8,7 @@ fn main() {
     let sub = args.get(1).map(|s| s.as_str()).unwrap_or("status");
 
     match sub {
-        "status" | "st" => status(),
+        "status" | "st" => status(&args),
         "probe" | "pr" => probe(),
         "pairs" => list_pairs(),
         "rules" => list_rules(),
@@ -31,8 +31,24 @@ fn main() {
     }
 }
 
-fn status() {
+fn status(args: &[String]) {
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
     let v = airgenome::sample();
+    let f = airgenome::firing(&v);
+
+    if json {
+        print!("{{\"ts\":{},\"axes\":{{", v.ts);
+        let mut first = true;
+        for axis in Axis::ALL {
+            if !first { print!(","); }
+            print!("\"{}\":{}", axis.name(), v.get(axis));
+            first = false;
+        }
+        println!("}},\"firing\":{},\"pair_count\":{},\"genome_bytes\":{}}}",
+            f.len(), PAIR_COUNT, GENOME_BYTES);
+        return;
+    }
+
     println!("=== airgenome — Mac Air Implant Status ===");
     println!("  Hexagon: {} axes × {} pairs | genome = {} bytes",
         AXIS_COUNT, PAIR_COUNT, GENOME_BYTES);
@@ -42,7 +58,6 @@ fn status() {
         println!("    {:<6} {:>10.4}", axis.name(), v.get(axis));
     }
     println!();
-    let f = airgenome::firing(&v);
     println!("  Rules firing: {} / {}", f.len(), PAIR_COUNT);
     println!("  Meta fixed point: 1/3 ≈ {:.6}  (work = 2/3 ≈ {:.6})",
         airgenome::META_FP, airgenome::WORK_FP);
@@ -581,7 +596,7 @@ fn policy_cmd(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("watch");
     match sub {
         "watch" | "w" => policy_watch(args),
-        "tick" | "t" => policy_tick_once(),
+        "tick" | "t" => policy_tick_once(args),
         other => {
             eprintln!("unknown policy sub-command: '{}'", other);
             eprintln!("usage: airgenome policy [watch|tick] [-i SEC] [-c CAP]");
@@ -654,7 +669,8 @@ fn policy_watch(args: &[String]) {
     }
 }
 
-fn policy_tick_once() {
+fn policy_tick_once(args: &[String]) {
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
     // Need ≥3 samples; seed from log, then add one fresh sample.
     let log = home_dir().join(".airgenome").join("vitals.jsonl");
     let body = match std::fs::read_to_string(&log) {
@@ -685,6 +701,21 @@ fn policy_tick_once() {
     }
     let v = airgenome::sample();
     let proposals = engine.tick(v);
+
+    if json {
+        print!("{{\"ts\":{},\"cpu\":{},\"ram\":{},\"io\":{},\"proposals\":[",
+            v.ts, v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+        for (i, p) in proposals.iter().enumerate() {
+            if i > 0 { print!(","); }
+            let reason = match p.reason {
+                airgenome::Reason::Reactive => "reactive",
+                airgenome::Reason::Preemptive => "preemptive",
+            };
+            print!("{{\"pair\":{},\"reason\":\"{}\"}}", p.pair, reason);
+        }
+        println!("]}}");
+        return;
+    }
 
     println!("=== airgenome — policy tick ===");
     println!("  ts={}  cpu={:.2} ram={:.2} io={:.2}",
