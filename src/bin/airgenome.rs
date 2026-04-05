@@ -38,6 +38,8 @@ fn main() {
         "helper" => helper_cmd(&args),
         "purge" => purge_cmd(&args),
         "tune" => tune_cmd(&args),
+        "sysctl" => sysctl_cmd(&args),
+        "reap" => reap_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -290,6 +292,83 @@ fn diag(args: &[String]) {
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
+    }
+}
+
+fn sysctl_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_sysctl_get, HelperResponse, DEFAULT_SOCKET_PATH};
+    let Some(key) = args.get(2) else {
+        eprintln!("usage: airgenome sysctl <key>");
+        eprintln!("whitelisted: {:?}", airgenome::privileged::SYSCTL_WHITELIST);
+        std::process::exit(2);
+    };
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    match dial(&socket, &req_sysctl_get(key)) {
+        Ok(HelperResponse::Ok { detail }) => println!("{}", detail),
+        Ok(HelperResponse::Refused { reason }) => { println!("refused: {}", reason); std::process::exit(1); }
+        Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
+        Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
+    }
+}
+
+fn reap_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_purge, HelperResponse, DEFAULT_SOCKET_PATH};
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+
+    println!("=== airgenome reap — RAM-focused combo ===");
+    println!();
+    let before = airgenome::sample();
+    println!("  before: ram={:.3} firing={}/15",
+        before.get(Axis::Ram), airgenome::firing(&before).len());
+
+    if !yes {
+        println!();
+        println!("  plan:");
+        println!("    1. Tier 1: pkill -TERM -f 'Google Chrome Helper (Renderer)'");
+        println!("    2. Tier 1: pkill -TERM -f 'Slack Helper'");
+        println!("    3. Tier 2: helper purge (if socket present)");
+        println!();
+        println!("{}", dim("dry-run. pass --yes to execute."));
+        return;
+    }
+
+    // 1. Tier 1 kills
+    for pat in &["Google Chrome Helper (Renderer)", "Slack Helper"] {
+        let a = airgenome::UserAction::KillProcess { pattern: pat.to_string() };
+        match airgenome::execute(&a) {
+            Ok(r) => println!("  tier1 kill '{}' → exit={:?}", pat, r.exit_code),
+            Err(e) => println!("  tier1 kill '{}' → abort {:?}", pat, e),
+        }
+    }
+
+    // 2. Tier 2 purge
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    match dial(&socket, &req_purge()) {
+        Ok(HelperResponse::Ok { detail }) => println!("  tier2 {} {}", green("purge"), detail),
+        Ok(HelperResponse::Refused { reason }) => println!("  tier2 {} {}", yellow("purge refused"), reason),
+        Ok(HelperResponse::Error { message }) => println!("  tier2 {} {}", red("purge error"), message),
+        Err(_) => println!("  tier2 {} (helper not installed, skipped)", dim("purge")),
+    }
+
+    if measure {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let after = airgenome::sample();
+        let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+        let before_firing = airgenome::firing(&before).len();
+        let after_firing = airgenome::firing(&after).len();
+        println!();
+        println!("{}", dim("--- delta ---"));
+        println!("  ram      {:.3} → {:.3}  ({:+.3})",
+            before.get(Axis::Ram), after.get(Axis::Ram), dram);
+        println!("  firing   {} → {}  ({:+})",
+            before_firing, after_firing, (after_firing as i64) - (before_firing as i64));
+        let verdict = if dram < -0.02 || after_firing < before_firing { green("improved") }
+                      else if dram > 0.02 || after_firing > before_firing { red("worse") }
+                      else { dim("unchanged") };
+        println!("  verdict: {}", verdict);
     }
 }
 
@@ -2020,6 +2099,8 @@ fn print_help() {
     println!("  helper <ping|get|set|purge> [args]        talk to privileged helper (Tier 2)");
     println!("  purge [--measure]                         request memory purge via helper");
     println!("  tune <key> <value> [--measure]            sysctl tune via helper (whitelisted)");
+    println!("  sysctl <key>                              read a whitelisted sysctl via helper");
+    println!("  reap [--yes] [--measure]                  RAM-focused combo: kill Chrome/Slack + purge");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
