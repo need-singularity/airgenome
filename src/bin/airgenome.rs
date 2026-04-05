@@ -906,12 +906,14 @@ fn export_cmd(args: &[String]) {
     let mut input: Option<std::path::PathBuf> = None;
     let mut output: Option<std::path::PathBuf> = None;
     let mut format = "csv".to_string();
+    let mut tail: Option<usize> = None;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--input" | "-i" => { i += 1; if let Some(v) = args.get(i) { input = Some(std::path::PathBuf::from(v)); } }
             "--output" | "-o" => { i += 1; if let Some(v) = args.get(i) { output = Some(std::path::PathBuf::from(v)); } }
             "--format" | "-f" => { i += 1; if let Some(v) = args.get(i) { format = v.clone(); } }
+            "--tail" | "-t" => { i += 1; if let Some(v) = args.get(i) { tail = v.parse().ok(); } }
             _ => {}
         }
         i += 1;
@@ -922,7 +924,10 @@ fn export_cmd(args: &[String]) {
         Ok(s) => s,
         Err(e) => { eprintln!("cannot read {}: {}", path.display(), e); std::process::exit(1); }
     };
-    let records = airgenome::parse_log(&body);
+    let mut records = airgenome::parse_log(&body);
+    if let Some(n) = tail {
+        if records.len() > n { records = records[records.len() - n..].to_vec(); }
+    }
 
     let mut out: String = String::new();
     match format.as_str() {
