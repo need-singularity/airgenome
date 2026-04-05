@@ -295,6 +295,7 @@ fn apply_all_cmd(args: &[String]) {
 fn apply_cmd(args: &[String]) {
     let pair = args.get(2).and_then(|s| s.parse::<usize>().ok());
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let confirm = args.iter().any(|a| a == "--confirm" || a == "-c");
     let measure = args.iter().any(|a| a == "--measure" || a == "-m");
     let wait_s: u64 = args.iter().position(|a| a == "--wait").and_then(|i| {
         args.get(i + 1).and_then(|s| s.parse().ok())
@@ -322,10 +323,29 @@ fn apply_cmd(args: &[String]) {
     println!("action: {}", action.label());
     println!("  {}", snap.observed);
 
-    if !yes {
+    if !yes && !confirm {
         println!();
-        println!("{}", dim("dry-run. pass --yes to actually execute."));
+        println!("{}", dim("dry-run. pass --yes (or --confirm for interactive prompt)."));
         return;
+    }
+
+    // Tier 3: interactive confirmation.
+    if confirm && !yes {
+        use std::io::{self, Write, BufRead};
+        println!();
+        print!("execute this action? [y/N] ");
+        let _ = io::stdout().flush();
+        let stdin = io::stdin();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).is_err() {
+            eprintln!("read failed");
+            std::process::exit(1);
+        }
+        let answer = line.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            println!("{}", dim("aborted."));
+            return;
+        }
     }
 
     // Measure: sample vitals before execute.
@@ -1751,7 +1771,7 @@ fn print_help() {
     println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
     println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
-    println!("  apply K [--yes] [--measure] [--wait SEC]  execute Tier 1 action for pair K");
+    println!("  apply K [--yes|--confirm] [--measure]     execute Tier 1 action for pair K");
     println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");

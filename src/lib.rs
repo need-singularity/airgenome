@@ -41,6 +41,7 @@ pub mod buffer;
 pub mod policy;
 pub mod actions;
 pub mod apply;
+pub mod privileged;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
 pub use vitals::{sample, Vitals};
