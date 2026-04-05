@@ -215,6 +215,10 @@ fn diag(args: &[String]) {
 fn apply_cmd(args: &[String]) {
     let pair = args.get(2).and_then(|s| s.parse::<usize>().ok());
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+    let wait_s: u64 = args.iter().position(|a| a == "--wait").and_then(|i| {
+        args.get(i + 1).and_then(|s| s.parse().ok())
+    }).unwrap_or(2);
     let Some(k) = pair else {
         eprintln!("usage: airgenome apply <pair 0..14> [--yes]");
         std::process::exit(2);
@@ -244,6 +248,9 @@ fn apply_cmd(args: &[String]) {
         return;
     }
 
+    // Measure: sample vitals before execute.
+    let before = if measure { Some(airgenome::sample()) } else { None };
+
     match airgenome::execute(&action) {
         Ok(r) => {
             if r.skipped {
@@ -254,6 +261,31 @@ fn apply_cmd(args: &[String]) {
             println!("executed at ts={} (exit={:?})", r.executed_ts, r.exit_code);
             if !r.stdout.is_empty() { println!("stdout: {}", r.stdout); }
             if !r.stderr.is_empty() { println!("stderr: {}", r.stderr); }
+
+            // Measure: wait, sample after, report delta.
+            if let Some(before) = before {
+                std::thread::sleep(std::time::Duration::from_secs(wait_s));
+                let after = airgenome::sample();
+                let before_firing = airgenome::firing(&before).len();
+                let after_firing = airgenome::firing(&after).len();
+                println!();
+                println!("{}", dim("--- delta ---"));
+                println!("  firing  {} → {}  ({:+})", before_firing, after_firing,
+                    (after_firing as i64) - (before_firing as i64));
+                let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+                let dcpu = after.get(Axis::Cpu) - before.get(Axis::Cpu);
+                let dio  = after.get(Axis::Io) - before.get(Axis::Io);
+                println!("  ram     {:.3} → {:.3}  ({:+.3})",
+                    before.get(Axis::Ram), after.get(Axis::Ram), dram);
+                println!("  cpu     {:.2} → {:.2}  ({:+.2})",
+                    before.get(Axis::Cpu), after.get(Axis::Cpu), dcpu);
+                println!("  io      {:.3} → {:.3}  ({:+.3})",
+                    before.get(Axis::Io), after.get(Axis::Io), dio);
+                let verdict = if after_firing < before_firing { green("improved") }
+                              else if after_firing > before_firing { red("worse") }
+                              else { dim("unchanged") };
+                println!("  verdict: {}", verdict);
+            }
             // Append to apply.log
             let log = home_dir().join(".airgenome").join("apply.log");
             let _ = std::fs::create_dir_all(log.parent().unwrap());
@@ -1639,7 +1671,7 @@ fn print_help() {
     println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
     println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
-    println!("  apply K [--yes]     execute Tier 1 action for pair K (dry-run without --yes)");
+    println!("  apply K [--yes] [--measure] [--wait SEC]  execute Tier 1 action for pair K");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
