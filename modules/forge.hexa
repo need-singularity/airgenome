@@ -19,7 +19,7 @@ let STATE_FILE        = "forge/state.json"
 let CONVERSATIONS_DIR = "~/.claude/projects"
 
 // Claude config dirs (for conversation scanning)
-let CLAUDE_DIRS = ["~/.claude", "~/.config/claude", "~/Library/Application Support/Claude"]
+let CLAUDE_DIRS = ["~/.claude", "~/.claude-claude1"]
 
 
 // Keychain labels (10 Claude Code accounts)
@@ -29,9 +29,8 @@ let KEYCHAIN_LABELS = ["Claude Code-credentials-2b949392", "Claude Code-credenti
 let ACCOUNT_NAMES = ["claude1", "claude2", "claude3", "claude4", "claude5", "claude6", "claude7", "claude8", "claude9", "claude10"]
 
 // Anthropic API endpoints
-let API_USAGE_URL  = "https://api.anthropic.com/v1/usage"
-let API_MODELS_URL = "https://api.anthropic.com/v1/models"
-let API_BASE_URL   = "https://api.anthropic.com"
+let API_USAGE_URL  = "https://api.anthropic.com/api/oauth/usage"
+let TOKEN_URL      = "https://platform.claude.com/v1/oauth/token"
 
 // OAuth / app client id (Claude Code)
 let CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -66,16 +65,168 @@ effect ConversationScanner {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  STUB FUNCTIONS — 7 commands
+//  KEYCHAIN HACK — OAuth token extraction
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_keychain(label: str) -> str {
+    let result = exec("security find-generic-password -l '" + label + "' -w 2>/dev/null")
+    return result.trim()
+}
+
+fn extract_json_field(json: str, field: str) -> str {
+    let marker = "\"" + field + "\":"
+    let idx = json.index_of(marker)
+    if idx < 0 {
+        return ""
+    }
+    let start = idx + len(marker)
+    let rest = json.substring(start, len(json)).trim()
+    // String value
+    if rest.substring(0, 1) == "\"" {
+        let inner = rest.substring(1, len(rest))
+        let end_q = inner.index_of("\"")
+        if end_q < 0 {
+            return ""
+        }
+        return inner.substring(0, end_q)
+    }
+    // Numeric value — read until , or } or space
+    let i = 0
+    let end_n = len(rest)
+    while i < len(rest) {
+        let ch = rest.substring(i, i + 1)
+        if ch == "," {
+            end_n = i
+            i = len(rest)
+        }
+        if ch == "}" {
+            end_n = i
+            i = len(rest)
+        }
+        i = i + 1
+    }
+    return rest.substring(0, end_n)
+}
+
+fn extract_token(keychain_json: str) -> str {
+    return extract_json_field(keychain_json, "accessToken")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  USAGE API — fetch live utilization
+// ═══════════════════════════════════════════════════════════════════════
+
+fn fetch_usage_api(token: str) -> str {
+    let result = exec("curl -s --max-time 10 '" + API_USAGE_URL + "' -H 'Authorization: Bearer " + token + "' -H 'anthropic-beta: oauth-2025-04-20'")
+    return result.trim()
+}
+
+fn parse_usage_block(json: str, block_name: str) -> str {
+    let marker = "\"" + block_name + "\""
+    let idx = json.index_of(marker)
+    if idx < 0 {
+        return "?"
+    }
+    let rest = json.substring(idx, len(json))
+    let util = extract_json_field(rest, "utilization")
+    return util
+}
+
+fn parse_usage_resets(json: str, block_name: str) -> str {
+    let marker = "\"" + block_name + "\""
+    let idx = json.index_of(marker)
+    if idx < 0 {
+        return ""
+    }
+    let rest = json.substring(idx, len(json))
+    return extract_json_field(rest, "resets_at")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMAND IMPLEMENTATIONS
 // ═══════════════════════════════════════════════════════════════════════
 
 fn forge_status() -> str {
-    println("[status] not yet implemented")
+    // Daemon state
+    let state = exec("cat forge/state.json 2>/dev/null").trim()
+    if len(state) > 0 {
+        if state.index_of("true") >= 0 {
+            println("  daemon: RUNNING")
+        }
+        if state.index_of("true") < 0 {
+            println("  daemon: OFF")
+        }
+    }
+    if len(state) == 0 {
+        println("  daemon: OFF (no state file)")
+    }
+
+    // Active Claude processes
+    let procs = exec("ps aux | grep '[c]laude' | wc -l").trim()
+    println("  active claude processes: " + procs)
+
+    // Keychain scan
+    println("")
+    println("  ── keychain ──")
+    let i = 0
+    while i < 10 {
+        let label = KEYCHAIN_LABELS[i]
+        let name = ACCOUNT_NAMES[i]
+        let raw = read_keychain(label)
+        if len(raw) > 0 {
+            let token = extract_token(raw)
+            if len(token) > 0 {
+                println("  " + name + ": OK (token present)")
+            }
+            if len(token) == 0 {
+                println("  " + name + ": no accessToken")
+            }
+        }
+        if len(raw) == 0 {
+            println("  " + name + ": not in keychain")
+        }
+        i = i + 1
+    }
+
+    // Genome/compressed stats
+    let genome_count = exec("ls forge/genomes/*.genome 2>/dev/null | wc -l").trim()
+    let compressed_count = exec("ls forge/compressed/*.tf 2>/dev/null | wc -l").trim()
+    println("")
+    println("  genomes: " + genome_count + "  compressed: " + compressed_count)
     return "ok"
 }
 
 fn forge_usage() -> str {
-    println("[usage] not yet implemented")
+    println("  ── usage API (10 accounts) ──")
+    println("")
+    let i = 0
+    while i < 10 {
+        let label = KEYCHAIN_LABELS[i]
+        let name = ACCOUNT_NAMES[i]
+        let raw = read_keychain(label)
+        if len(raw) > 0 {
+            let token = extract_token(raw)
+            if len(token) > 0 {
+                let usage_json = fetch_usage_api(token)
+                if usage_json.index_of("five_hour") >= 0 {
+                    let session_pct = parse_usage_block(usage_json, "five_hour")
+                    let week_pct = parse_usage_block(usage_json, "seven_day")
+                    let session_resets = parse_usage_resets(usage_json, "five_hour")
+                    println("  " + name + ": session=" + session_pct + "%  week=" + week_pct + "%  resets=" + session_resets)
+                }
+                if usage_json.index_of("five_hour") < 0 {
+                    println("  " + name + ": API error or expired token")
+                }
+            }
+            if len(token) == 0 {
+                println("  " + name + ": no token")
+            }
+        }
+        if len(raw) == 0 {
+            println("  " + name + ": skip (no keychain)")
+        }
+        i = i + 1
+    }
     return "ok"
 }
 
