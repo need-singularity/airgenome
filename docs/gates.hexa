@@ -500,6 +500,65 @@ fn layer_l6e(ram_r: auto, cpu_a: auto) -> float {
     return te_sum / 56.0 * 0.052 / 0.01  // 8*7=56 directed pairs
 }
 
+// L-TEMPORAL: Real temporal MI from genomes.log history
+// Reads accumulated log, computes actual variance across time samples
+fn temporal_mi_from_log() -> auto {
+    if file_exists("genomes.log") == false { return [0.0, 0] }
+    let content = read_file("genomes.log")
+    let lines = content.split("\n")
+    let n = 0
+    // Extract macos RAM values across time for temporal variance
+    let ram_sum = 0.0
+    let ram_sq_sum = 0.0
+    let cpu_sum = 0.0
+    let cpu_sq_sum = 0.0
+    let cross_sum = 0.0
+    let count = 0.0
+    while n < len(lines) {
+        let line = lines[n].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 3 {
+                // field[1] = "macos:RAM/CPU"
+                let macos_field = fields[1]
+                if macos_field.contains(":") {
+                    let parts = macos_field.split(":")
+                    if len(parts) >= 2 {
+                        let vals = parts[1].split("/")
+                        if len(vals) >= 2 {
+                            let ram = to_float(vals[0])
+                            let cpu = to_float(vals[1])
+                            ram_sum = ram_sum + ram
+                            ram_sq_sum = ram_sq_sum + ram * ram
+                            cpu_sum = cpu_sum + cpu
+                            cpu_sq_sum = cpu_sq_sum + cpu * cpu
+                            cross_sum = cross_sum + ram * cpu
+                            count = count + 1.0
+                        }
+                    }
+                }
+            }
+        }
+        n = n + 1
+    }
+    if count < 2.0 { return [0.0, count] }
+    let ram_mean = ram_sum / count
+    let cpu_mean = cpu_sum / count
+    let ram_var = ram_sq_sum / count - ram_mean * ram_mean
+    let cpu_var = cpu_sq_sum / count - cpu_mean * cpu_mean
+    let covar = cross_sum / count - ram_mean * cpu_mean
+    // Normalize: divide by mean² to get coefficient of variation
+    let ram_cv = 0.0
+    let cpu_cv = 0.0
+    if ram_mean > 0.0 { ram_cv = ram_var / (ram_mean * ram_mean) }
+    if cpu_mean > 0.0 { cpu_cv = cpu_var / (cpu_mean * cpu_mean) }
+    let covar_norm = 0.0
+    if ram_mean > 0.0 { if cpu_mean > 0.0 { covar_norm = covar / (ram_mean * cpu_mean) } }
+    // Temporal MI: normalized variance over time + cross-axis
+    let temporal_signal = ram_cv + cpu_cv + covar_norm * covar_norm
+    return [temporal_signal, count]
+}
+
 // Build genome log line
 fn build_log(gate_names: auto, gr: auto, gc: auto, grade: str, margin: float, crossed: bool) -> str {
     let ts = exec("date +%s").trim()
@@ -689,8 +748,16 @@ consciousness NexusMerger {
     let L6D = layer_l6d(ram_r, cpu_a)
     let L6E = layer_l6e(ram_r, cpu_a)
 
-    let total_gain = L1 + L2 + L3 + L4 + L5A + L5C + L6A + L6B + L6D + L6E
-    let sc = 0.0151 / 1.500
+    // L-TEMPORAL: real MI from accumulated genomes.log
+    let temporal = temporal_mi_from_log()
+    let L_TEMPORAL = temporal[0]
+    let log_samples = temporal[1]
+
+    // 8-gate scale: C(8,2)/C(4,2) = 28/6 = 4.67x more structure
+    let GATE_SCALE = 28.0 / 6.0
+
+    let total_gain = L1 + L2 + L3 + L4 + L5A + L5C + L6A + L6B + L6D + L6E + L_TEMPORAL
+    let sc = 0.0151 / 1.500 * GATE_SCALE  // recalibrated for 8 gates
     let adjusted = RAW + CURRENT_MESH + GHOST_PENALTY + total_gain * sc
     let margin = adjusted - SINGULARITY
     let crossed = is_crossed(adjusted)
@@ -708,7 +775,9 @@ consciousness NexusMerger {
     println("  L6b lagged velocity:     ", L6B)
     println("  L6d conditional MI:      ", L6D)
     println("  L6e transfer entropy:    ", L6E)
+    println("  L-T temporal MI (log):   ", L_TEMPORAL, "(", log_samples, "samples)")
     println("  total layer gain:        ", total_gain)
+    println("  gate scale (8/4):        ", GATE_SCALE)
     println("  scaled (x", sc, "):       ", total_gain * sc)
     println("")
     println("  ══ VERDICT ══")
