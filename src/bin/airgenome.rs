@@ -46,6 +46,7 @@ fn main() {
         "transitions" | "trans" => transitions_cmd(&args),
         "anomalies" | "anom" => anomalies_cmd(&args),
         "predict" => predict_cmd(&args),
+        "correlations" | "corr" => correlations_cmd(),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
@@ -777,6 +778,102 @@ fn processes_cmd() {
         let name_short: String = name.chars().take(40).collect();
         println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
     }
+}
+
+fn correlations_cmd() {
+    let path = home_dir().join(".airgenome").join("signatures.jsonl");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", path.display(), e); std::process::exit(1); }
+    };
+
+    fn f<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{}\"", key);
+        let i = s.find(&needle)?;
+        let rest = &s[i + needle.len()..];
+        let colon = rest.find(':')?;
+        let after = rest[colon + 1..].trim_start();
+        if let Some(stripped) = after.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(&stripped[..end])
+        } else {
+            let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len());
+            Some(after[..end].trim())
+        }
+    }
+
+    // Build ts → {category: rss_pct} map.
+    let mut series: std::collections::BTreeMap<u64, std::collections::BTreeMap<String, f64>> =
+        std::collections::BTreeMap::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let ts: u64 = match f(line, "ts").and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let cat = match f(line, "category") { Some(c) => c.to_string(), None => continue };
+        let rss: f64 = f(line, "rss_pct").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        series.entry(ts).or_default().insert(cat, rss);
+    }
+
+    // Categories that appear at all timestamps.
+    let all_ts: Vec<u64> = series.keys().copied().collect();
+    if all_ts.len() < 3 {
+        println!("need at least 3 signature snapshots; run `airgenome signature --append` more often");
+        return;
+    }
+    let mut cats: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for v in series.values() { for k in v.keys() { cats.insert(k.clone()); } }
+
+    // Build time series per category (aligned to all_ts).
+    let mut tseries: std::collections::BTreeMap<String, Vec<f64>> = std::collections::BTreeMap::new();
+    for cat in &cats {
+        let ts: Vec<f64> = all_ts.iter().map(|t| {
+            series.get(t).and_then(|m| m.get(cat)).copied().unwrap_or(0.0)
+        }).collect();
+        tseries.insert(cat.clone(), ts);
+    }
+
+    // Pearson correlation helper.
+    fn pearson(a: &[f64], b: &[f64]) -> f64 {
+        let n = a.len() as f64;
+        let ma = a.iter().sum::<f64>() / n;
+        let mb = b.iter().sum::<f64>() / n;
+        let mut num = 0.0; let mut da = 0.0; let mut db = 0.0;
+        for i in 0..a.len() {
+            num += (a[i] - ma) * (b[i] - mb);
+            da += (a[i] - ma).powi(2);
+            db += (b[i] - mb).powi(2);
+        }
+        if da <= 0.0 || db <= 0.0 { return 0.0; }
+        num / (da.sqrt() * db.sqrt())
+    }
+
+    // All pairs.
+    let cats_vec: Vec<&String> = cats.iter().collect();
+    let mut pairs: Vec<(String, String, f64)> = Vec::new();
+    for i in 0..cats_vec.len() {
+        for j in i+1..cats_vec.len() {
+            let a = &tseries[cats_vec[i]];
+            let b = &tseries[cats_vec[j]];
+            let r = pearson(a, b);
+            pairs.push((cats_vec[i].clone(), cats_vec[j].clone(), r));
+        }
+    }
+    pairs.sort_by(|a,b| b.2.abs().partial_cmp(&a.2.abs()).unwrap_or(std::cmp::Ordering::Equal));
+
+    println!("=== airgenome — category correlations ({} snapshots, {} categories) ===",
+        all_ts.len(), cats.len());
+    println!();
+    println!("  cat_a        cat_b         r");
+    println!("  ─────────────────────────────────");
+    let mut shown = 0;
+    for (a, b, r) in &pairs {
+        if r.abs() < 0.3 { continue; }
+        let tag = if *r > 0.0 { green("+") } else { red("-") };
+        println!("  {:<11}  {:<11}  {} {:.3}", a, b, tag, r.abs());
+        shown += 1;
+        if shown >= 10 { break; }
+    }
+    if shown == 0 { println!("  (no correlations |r| > 0.3)"); }
 }
 
 fn predict_cmd(args: &[String]) {
@@ -2960,6 +3057,7 @@ fn print_help() {
     println!("  transitions [-t N]                        regime changes in firing count (|Δ|≥N)");
     println!("  anomalies [-t D]                          samples where min fingerprint distance > D");
     println!("  predict [-t D]                            if current d>D, suggest preemptive apply");
+    println!("  correlations                              pairwise Pearson r across category series");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
