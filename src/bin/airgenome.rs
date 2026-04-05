@@ -35,6 +35,7 @@ fn main() {
         "plan" => plan_cmd(&args),
         "apply" => apply_cmd(&args),
         "apply-all" => apply_all_cmd(&args),
+        "helper" => helper_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -286,6 +287,58 @@ fn diag(args: &[String]) {
         println!("  Proposed actions (dry-run):");
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
+        }
+    }
+}
+
+fn helper_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_ping, req_sysctl_get, req_sysctl_set, req_purge, HelperResponse, DEFAULT_SOCKET_PATH};
+
+    let op = args.get(2).map(|s| s.as_str()).unwrap_or("ping");
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    let request = match op {
+        "ping" => req_ping(),
+        "get" | "sysctl-get" => {
+            let Some(key) = args.get(3) else {
+                eprintln!("usage: airgenome helper get <key>");
+                std::process::exit(2);
+            };
+            req_sysctl_get(key)
+        }
+        "set" | "sysctl-set" => {
+            let (Some(key), Some(value)) = (args.get(3), args.get(4)) else {
+                eprintln!("usage: airgenome helper set <key> <value>");
+                std::process::exit(2);
+            };
+            req_sysctl_set(key, value)
+        }
+        "purge" => req_purge(),
+        _ => {
+            eprintln!("usage: airgenome helper <ping|get|set|purge> [args]");
+            eprintln!("  env AIRGENOME_HELPER_SOCKET overrides path (default {})", DEFAULT_SOCKET_PATH);
+            std::process::exit(2);
+        }
+    };
+
+    match dial(&socket, &request) {
+        Ok(HelperResponse::Ok { detail }) => {
+            println!("{} {}", green("ok"), detail);
+        }
+        Ok(HelperResponse::Refused { reason }) => {
+            println!("{} {}", yellow("refused"), reason);
+            std::process::exit(1);
+        }
+        Ok(HelperResponse::Error { message }) => {
+            println!("{} {}", red("error"), message);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("dial failed: {:?}", e);
+            eprintln!("hint: is airgenome-helper running? socket={}", socket);
+            eprintln!("install: sudo bash scripts/install-helper.sh install");
+            std::process::exit(1);
         }
     }
 }
@@ -1851,6 +1904,7 @@ fn print_help() {
     println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
     println!("  apply K [--yes|--confirm] [--measure]     execute Tier 1 action for pair K");
     println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
+    println!("  helper <ping|get|set|purge> [args]        talk to privileged helper (Tier 2)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
