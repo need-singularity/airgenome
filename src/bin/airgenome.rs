@@ -42,6 +42,7 @@ fn main() {
         "reap" => reap_cmd(&args),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
+        "idle-capacity" | "idle" => idle_capacity_cmd(),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
@@ -772,6 +773,75 @@ fn processes_cmd() {
         let name = comm.split('/').next_back().unwrap_or(comm);
         let name_short: String = name.chars().take(40).collect();
         println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
+    }
+}
+
+fn idle_capacity_cmd() {
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+    if records.is_empty() { println!("no records yet"); return; }
+
+    // Per-axis stats: mean, min, max, stddev.
+    let n = records.len() as f64;
+    let mut sum = [0.0f64; 6];
+    let mut sum_sq = [0.0f64; 6];
+    let mut mn = [f64::INFINITY; 6];
+    let mut mx = [f64::NEG_INFINITY; 6];
+
+    for r in &records {
+        let v = [r.cpu, r.ram, r.gpu, r.npu, r.power, r.io];
+        for i in 0..6 {
+            sum[i] += v[i];
+            sum_sq[i] += v[i] * v[i];
+            if v[i] < mn[i] { mn[i] = v[i]; }
+            if v[i] > mx[i] { mx[i] = v[i]; }
+        }
+    }
+    let mean: [f64; 6] = core::array::from_fn(|i| sum[i] / n);
+    let var: [f64; 6] = core::array::from_fn(|i| sum_sq[i] / n - mean[i] * mean[i]);
+    let stddev: [f64; 6] = core::array::from_fn(|i| var[i].max(0.0).sqrt());
+    let names = ["cpu", "ram", "gpu", "npu", "power", "io"];
+
+    println!("=== airgenome — idle capacity ({} samples) ===", records.len());
+    println!();
+    println!("  axis    mean     min    max   stddev   range");
+    println!("  ─────────────────────────────────────────────");
+    for i in 0..6 {
+        let range = mx[i] - mn[i];
+        println!("  {:<6}  {:>5.2}  {:>5.2}  {:>5.2}  {:>6.3}  {:>5.2}",
+            names[i], mean[i], mn[i], mx[i], stddev[i], range);
+    }
+    println!();
+
+    // Idle detection heuristic:
+    // axis is "idle" if stddev is very small AND mean is either at 0 (unused)
+    // or at the hardware max (GPU/NPU pinned to 8 cores but not truly busy).
+    println!("Idle candidates:");
+    let mut any = false;
+    for i in 0..6 {
+        let axis = names[i];
+        // For gpu/npu, stddev < 0.01 with value > 0 suggests "always at max" = hw hint, not real utilization
+        if (axis == "gpu" || axis == "npu") && stddev[i] < 0.01 && mean[i] > 0.0 {
+            println!("  {}: stddev={:.3} (pinned at {:.1}) — likely hardware hint, real utilization unknown",
+                axis, stddev[i], mean[i]);
+            println!("    → potential offload target if workload is CPU-bound");
+            any = true;
+        }
+        // For other axes: low mean AND low stddev = actually idle
+        if axis != "gpu" && axis != "npu" && axis != "power" {
+            if mean[i] < 0.1 && stddev[i] < 0.1 {
+                println!("  {}: mean={:.3} stddev={:.3} — consistently idle",
+                    axis, mean[i], stddev[i]);
+                any = true;
+            }
+        }
+    }
+    if !any {
+        println!("  (no axes meet idle thresholds)");
     }
 }
 
@@ -2719,6 +2789,7 @@ fn print_help() {
     println!("  reap [--yes] [--measure]                  RAM-focused combo: kill Chrome/Slack + purge");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
+    println!("  idle-capacity                             per-axis stats + idle axis detection");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
