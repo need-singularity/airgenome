@@ -81,6 +81,7 @@ fn main() {
         "uninit" => uninit_cmd(),
         "doctor" | "doc" => doctor_cmd(),
         "summary" | "sum" => summary_cmd(),
+        "report" => report_cmd(&args),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -3254,6 +3255,72 @@ fn policy_tick_once(args: &[String]) {
     }
 }
 
+fn report_cmd(args: &[String]) {
+    let hours: u64 = args.iter().position(|a| a == "--hours" || a == "-h")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
+
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(_) => { eprintln!("no vitals log yet"); std::process::exit(1); }
+    };
+    let all = airgenome::parse_log(&body);
+    if all.is_empty() { println!("no records"); return; }
+
+    let cutoff_ts = all.last().unwrap().ts.saturating_sub(hours * 3600);
+    let records: Vec<_> = all.iter().filter(|r| r.ts >= cutoff_ts).cloned().collect();
+    if records.is_empty() { println!("no records in last {}h", hours); return; }
+
+    let n = records.len() as f64;
+    let span_h = (records.last().unwrap().ts - records.first().unwrap().ts) as f64 / 3600.0;
+    let mean_cpu = records.iter().map(|r| r.cpu).sum::<f64>() / n;
+    let mean_ram = records.iter().map(|r| r.ram).sum::<f64>() / n;
+    let mean_io = records.iter().map(|r| r.io).sum::<f64>() / n;
+    let mean_firing = records.iter().map(|r| r.firing as f64).sum::<f64>() / n;
+    let peak_cpu = records.iter().map(|r| r.cpu).fold(0.0_f64, f64::max);
+    let peak_ram = records.iter().map(|r| r.ram).fold(0.0_f64, f64::max);
+    let peak_io = records.iter().map(|r| r.io).fold(0.0_f64, f64::max);
+    let peak_firing = records.iter().map(|r| r.firing).max().unwrap_or(0);
+    let battery = records.iter().filter(|r| r.power < 0.5).count() as f64 / n * 100.0;
+
+    // Workload distribution via match on each sample.
+    let mut distrib: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for r in &records {
+        let sig = airgenome::signature::Signature::new([r.cpu, r.ram, r.gpu, r.npu, r.power, r.io]);
+        let (best, _) = airgenome::signature::nearest(&sig);
+        *distrib.entry(best.name.to_string()).or_insert(0) += 1;
+    }
+
+    println!("=== airgenome — report (last {} h) ===", hours);
+    println!();
+    println!("  span: {:.2} h, {} samples", span_h, records.len());
+    println!();
+    println!("  Averages:");
+    println!("    cpu      {:>6.2}   peak {:>6.2}", mean_cpu, peak_cpu);
+    println!("    ram      {:>6.2}   peak {:>6.2}", mean_ram, peak_ram);
+    println!("    io       {:>6.2}   peak {:>6.2}", mean_io, peak_io);
+    println!("    firing   {:>6.1} / 15  peak {:>4}", mean_firing, peak_firing);
+    println!();
+    if battery > 0.0 {
+        println!("  battery: {:.1}% of samples on battery", battery);
+        println!();
+    }
+
+    println!("  Workload distribution:");
+    let mut pairs: Vec<_> = distrib.iter().collect();
+    pairs.sort_by(|a,b| b.1.cmp(a.1));
+    for (name, count) in pairs.iter().take(5) {
+        let pct = 100.0 * **count as f64 / records.len() as f64;
+        println!("    {:<14}  {:>4}  {:>5.1}%", name, count, pct);
+    }
+    println!();
+
+    let work = 1.0 - mean_firing / 15.0;
+    println!("  work fraction: {:.3}  (ceiling 0.667, rule-cap 0.633)", work);
+}
+
 fn summary_cmd() {
     // Compact overview: version, current vitals, firing, trace stats.
     let v = airgenome::sample();
@@ -3625,6 +3692,7 @@ fn print_help() {
     println!("  uninit              unload + remove the LaunchAgent");
     println!("  doctor              self-diagnostic (binary/agent/log/profile)");
     println!("  summary             compact overview: now + log stats + daemon status");
+    println!("  report [--hours N]  last-N-hour averages + workload distribution");
     println!("  version             print airgenome version");
     println!("  help                print this help");
 }
