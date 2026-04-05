@@ -32,6 +32,7 @@ fn main() {
         "explain" => explain_cmd(&args),
         "action" | "actions" => action_cmd(&args),
         "plan" => plan_cmd(&args),
+        "apply" => apply_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -207,6 +208,66 @@ fn diag(args: &[String]) {
         println!("  Proposed actions (dry-run):");
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
+        }
+    }
+}
+
+fn apply_cmd(args: &[String]) {
+    let pair = args.get(2).and_then(|s| s.parse::<usize>().ok());
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let Some(k) = pair else {
+        eprintln!("usage: airgenome apply <pair 0..14> [--yes]");
+        std::process::exit(2);
+    };
+    if k >= PAIR_COUNT {
+        eprintln!("pair must be in 0..{}", PAIR_COUNT);
+        std::process::exit(2);
+    }
+
+    let Some(action) = airgenome::plan_for_pair(k) else {
+        eprintln!("no Tier 1 path for pair {}", k);
+        std::process::exit(1);
+    };
+    let Ok(snap) = airgenome::plan(&action) else {
+        eprintln!("action refused by safety validator");
+        std::process::exit(1);
+    };
+
+    let (a, b) = PAIRS[k];
+    println!("pair [{}] {}×{}", k, a.name(), b.name());
+    println!("action: {}", action.label());
+    println!("  {}", snap.observed);
+
+    if !yes {
+        println!();
+        println!("{}", dim("dry-run. pass --yes to actually execute."));
+        return;
+    }
+
+    match airgenome::execute(&action) {
+        Ok(r) => {
+            if r.skipped {
+                println!("{}", yellow("skipped (advisory)"));
+                return;
+            }
+            println!();
+            println!("executed at ts={} (exit={:?})", r.executed_ts, r.exit_code);
+            if !r.stdout.is_empty() { println!("stdout: {}", r.stdout); }
+            if !r.stderr.is_empty() { println!("stderr: {}", r.stderr); }
+            // Append to apply.log
+            let log = home_dir().join(".airgenome").join("apply.log");
+            let _ = std::fs::create_dir_all(log.parent().unwrap());
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+                let _ = writeln!(f,
+                    "{{\"ts\":{},\"pair\":{},\"kind\":\"{}\",\"target\":\"{}\",\"exit\":{:?},\"skipped\":{}}}",
+                    r.executed_ts, k, r.pre.kind,
+                    r.pre.target.replace('"', "\\\""),
+                    r.exit_code, r.skipped);
+            }
+        }
+        Err(e) => {
+            eprintln!("execute failed: {:?}", e);
+            std::process::exit(1);
         }
     }
 }
@@ -1578,6 +1639,7 @@ fn print_help() {
     println!("  explain K           explain pair gate K (0..14) + current state");
     println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
     println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
+    println!("  apply K [--yes]     execute Tier 1 action for pair K (dry-run without --yes)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");

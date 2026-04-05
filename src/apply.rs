@@ -14,6 +14,7 @@
 //! banned from kill operations.
 
 use serde::{Deserialize, Serialize};
+use std::process::Command;
 use std::time::SystemTime;
 
 /// A single pre-action snapshot — what we saw before executing.
@@ -137,6 +138,57 @@ fn escape_shell(s: &str) -> String {
 }
 
 /// Build a PreSnapshot for later audit. Does NOT execute the action.
+/// Result of executing a UserAction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExecResult {
+    pub pre: PreSnapshot,
+    /// Unix epoch seconds when execution completed.
+    pub executed_ts: u64,
+    /// Exit code from the spawned process (0 on success, None on skip).
+    pub exit_code: Option<i32>,
+    /// Captured stdout (truncated to 1 KiB).
+    pub stdout: String,
+    /// Captured stderr (truncated to 1 KiB).
+    pub stderr: String,
+    /// `true` if this was a skip (advise-style action, nothing executed).
+    pub skipped: bool,
+}
+
+/// Execute a UserAction. Re-validates first. Only KillProcess invokes a
+/// real subprocess; Advise* variants are no-ops returning `skipped=true`.
+pub fn execute(action: &UserAction) -> Result<ExecResult, AbortReason> {
+    action.validate()?;
+    let pre = plan(action)?;
+
+    let (exit_code, stdout, stderr, skipped) = match action {
+        UserAction::KillProcess { pattern } => {
+            // pkill -TERM -f '<pattern>' — runs in current user's session.
+            let out = Command::new("pkill").args(["-TERM", "-f", pattern]).output();
+            match out {
+                Ok(o) => (
+                    o.status.code(),
+                    truncate(&String::from_utf8_lossy(&o.stdout), 1024),
+                    truncate(&String::from_utf8_lossy(&o.stderr), 1024),
+                    false,
+                ),
+                Err(e) => (None, String::new(), e.to_string(), false),
+            }
+        }
+        UserAction::AdviseCloseTabs | UserAction::AdviseReduceParallelism { .. } => {
+            (None, String::new(), String::new(), true)
+        }
+    };
+
+    let executed_ts = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    Ok(ExecResult { pre, executed_ts, exit_code, stdout, stderr, skipped })
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max { s.to_string() } else { format!("{}…", &s[..max]) }
+}
+
 pub fn plan(action: &UserAction) -> Result<PreSnapshot, AbortReason> {
     action.validate()?;
     let ts = SystemTime::now()
@@ -258,6 +310,31 @@ mod tests {
                     "plan_for_pair({}) returned invalid action: {:?}", k, action);
             }
         }
+    }
+
+    #[test]
+    fn execute_refuses_banned() {
+        assert!(execute(&kill("Finder")).is_err());
+        assert!(execute(&kill("")).is_err());
+    }
+
+    #[test]
+    fn execute_advise_is_skip() {
+        let r = execute(&UserAction::AdviseCloseTabs).unwrap();
+        assert!(r.skipped);
+        assert!(r.exit_code.is_none());
+        assert_eq!(r.pre.kind, "advise-close-tabs");
+    }
+
+    #[test]
+    fn execute_kill_nonexistent_returns_pkill_exit() {
+        // pkill exits 1 when nothing matches — that's fine, just confirms
+        // that execute() actually invoked the subprocess.
+        let res = execute(&kill("__ag_tst_noexist_proc_zzz_xx__"));
+        assert!(res.is_ok());
+        let r = res.unwrap();
+        assert!(!r.skipped);
+        // pkill prints nothing to stderr on "no match" typically.
     }
 
     #[test]

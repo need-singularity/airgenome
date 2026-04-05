@@ -52,4 +52,4 @@ pub use trace::{TraceRecord, TraceStats, parse_line, parse_log, summarize};
 pub use buffer::{VitalsBuffer, GateMask};
 pub use policy::{PolicyEngine, PolicyConfig, Proposal, Reason};
 pub use actions::{Command as ActionCommand, Actions, ACTIONS, commands_for};
-pub use apply::{UserAction, PreSnapshot, AbortReason, BANNED_PROCESS_NAMES, plan, plan_for_pair};
+pub use apply::{UserAction, PreSnapshot, AbortReason, BANNED_PROCESS_NAMES, plan, plan_for_pair, execute, ExecResult};
