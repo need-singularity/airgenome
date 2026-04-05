@@ -1762,6 +1762,29 @@ fn doctor_cmd() {
         warn += 1;
     }
 
+    // 7. Tier 2 helper (optional).
+    let sock_path = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| airgenome::client::DEFAULT_SOCKET_PATH.to_string());
+    if std::path::Path::new(&sock_path).exists() {
+        match airgenome::client::dial(&sock_path, &airgenome::client::req_ping()) {
+            Ok(airgenome::client::HelperResponse::Ok { .. }) => {
+                ok("helper (Tier 2)", &sock_path);
+                pass += 1;
+            }
+            Ok(other) => {
+                wrn("helper (Tier 2)", &format!("socket up but peer not authenticated: {:?}", other));
+                warn += 1;
+            }
+            Err(_) => {
+                wrn("helper (Tier 2)", "socket exists but dial failed");
+                warn += 1;
+            }
+        }
+    } else {
+        wrn("helper (Tier 2)", "not installed (optional — run install-helper.sh)");
+        warn += 1;
+    }
+
     println!();
     println!("Summary: {} pass · {} warn · {} fail", pass, warn, fail);
     if fail > 0 {
