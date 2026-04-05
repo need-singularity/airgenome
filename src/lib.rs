@@ -41,6 +41,7 @@ pub mod buffer;
 pub mod policy;
 pub mod actions;
 pub mod apply;
+pub mod signature;
 pub mod privileged;
 pub use privileged::plan_tier2_for_pair;
 pub mod client;

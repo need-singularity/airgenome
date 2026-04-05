@@ -45,6 +45,8 @@ fn main() {
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
+        "fingerprints" | "fp" => fingerprints_cmd(),
+        "match" => match_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -297,6 +299,49 @@ fn diag(args: &[String]) {
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
+    }
+}
+
+fn fingerprints_cmd() {
+    println!("Built-in workload fingerprints ({}):", airgenome::signature::FINGERPRINTS.len());
+    println!();
+    for fp in airgenome::signature::FINGERPRINTS {
+        println!("  {:<14} {}", fp.name, fp.description);
+        print!("    [");
+        for (i, v) in fp.signature.axes.iter().enumerate() {
+            if i > 0 { print!(","); }
+            print!("{:.2}", v);
+        }
+        println!("]");
+    }
+}
+
+fn match_cmd(_args: &[String]) {
+    // Take current vitals, match against fingerprint library.
+    let v = airgenome::sample();
+    let sig = airgenome::signature::Signature::new(v.axes);
+    let (best, dist) = airgenome::signature::nearest(&sig);
+
+    println!("=== airgenome — match current vitals to workload fingerprint ===");
+    println!();
+    print!("  current: [");
+    for (i, a) in sig.axes.iter().enumerate() {
+        if i > 0 { print!(","); }
+        print!("{:.2}", a);
+    }
+    println!("]");
+    println!();
+    println!("  nearest fingerprint: {} ({})", green(best.name), best.description);
+    println!("  euclidean distance : {:.3}", dist);
+    println!("  cosine similarity  : {:.3}", sig.cosine(&best.signature));
+    println!();
+    println!("  ranked distances:");
+    let mut scored: Vec<_> = airgenome::signature::FINGERPRINTS.iter()
+        .map(|fp| (fp, sig.euclidean(&fp.signature)))
+        .collect();
+    scored.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (fp, d) in scored.iter().take(5) {
+        println!("    {:<14}  d={:.3}", fp.name, d);
     }
 }
 
@@ -2529,6 +2574,8 @@ fn print_help() {
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
+    println!("  fingerprints                              list built-in workload fingerprints");
+    println!("  match                                     match current vitals to nearest fingerprint");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
