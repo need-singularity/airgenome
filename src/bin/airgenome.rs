@@ -66,6 +66,7 @@ fn main() {
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "fingerprints" | "fp" => fingerprints_cmd(),
         "fingerprint-save" | "fp-save" => fingerprint_save_cmd(&args),
+        "compare" => compare_cmd(&args),
         "match" => match_cmd(&args),
         "match-distribution" | "match-dist" => match_distribution_cmd(),
         "profile" => profile_cmd(&args),
@@ -351,6 +352,39 @@ fn fingerprints_cmd() {
             }
         }
     }
+}
+
+fn compare_cmd(args: &[String]) {
+    let (Some(a), Some(b)) = (args.get(2), args.get(3)) else {
+        eprintln!("usage: airgenome compare <fp-a> <fp-b>");
+        std::process::exit(2);
+    };
+    let find = |name: &str| -> Option<airgenome::signature::Signature> {
+        if let Some(fp) = airgenome::signature::by_name(name) {
+            return Some(fp.signature);
+        }
+        load_custom_fingerprints().into_iter()
+            .find(|(n, _)| n == name).map(|(_, s)| s)
+    };
+    let sig_a = find(a).unwrap_or_else(|| { eprintln!("unknown fingerprint: {}", a); std::process::exit(2); });
+    let sig_b = find(b).unwrap_or_else(|| { eprintln!("unknown fingerprint: {}", b); std::process::exit(2); });
+
+    let axes = ["cpu","ram","gpu","npu","power","io"];
+    println!("=== airgenome compare: {} vs {} ===", a, b);
+    println!();
+    println!("  axis    {:<10}  {:<10}  delta", a, b);
+    println!("  ─────────────────────────────────────────");
+    for i in 0..6 {
+        let va = sig_a.axes[i];
+        let vb = sig_b.axes[i];
+        let d = vb - va;
+        let sign = if d > 0.0 { "+" } else { "" };
+        println!("  {:<6}  {:>10.3}  {:>10.3}  {}{:.3}",
+            axes[i], va, vb, sign, d);
+    }
+    println!();
+    println!("  euclidean distance : {:.3}", sig_a.euclidean(&sig_b));
+    println!("  cosine similarity  : {:.3}", sig_a.cosine(&sig_b));
 }
 
 fn fingerprint_save_cmd(args: &[String]) {
@@ -3571,6 +3605,7 @@ fn print_help() {
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
     println!("  fingerprints                              list built-in + custom fingerprints");
     println!("  fingerprint-save <name>                   save current vitals as custom fingerprint");
+    println!("  compare <fp-a> <fp-b>                     axis-by-axis diff between two fingerprints");
     println!("  match [--append|--json]                   match current vitals → nearest fingerprint");
     println!("  match-distribution                        workload distribution from matches.jsonl");
     println!("  profile list        list built-in profiles");
