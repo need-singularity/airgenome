@@ -1243,14 +1243,20 @@ fn nexus2_cmd(_args: &[String]) {
     for (a, b, mi, corr, n) in &r.pair_mi {
         println!("    {:>9} × {:<9}  MI={:.4}  r={:+.3}  n={}", a, b, mi, corr, n);
     }
+    println!("  lagged MI (temporal causality):");
+    for (lag, sum) in &r.lagged_mi_by_lag {
+        println!("    τ={:>2}  MI_sum={:.4}", lag, sum);
+    }
     println!();
     println!("  scaling factor:              {:.5}", r.scaling_factor);
     println!("  per-gate MI sum:             {:.4}", r.per_gate_mi_sum);
     println!("  cross-gate MI sum:           {:.4}", r.cross_gate_mi_sum);
+    println!("  lagged MI sum:               {:.4}", r.lagged_mi_sum);
     println!();
     println!("  raw (rule-only):             {:.4}", r.raw);
     println!("  + mesh coupling (orig):     +{:.4}", r.current_mesh);
     println!("  + cross-gate coupling:      +{:.4}", r.new_cross_coupling);
+    println!("  + lagged coupling (L2):     +{:.4}", r.new_lagged_coupling);
     println!("  + per-gate MI recovery:     +{:.4}", r.new_mi_recovery);
     println!("  - ghost penalty:             {:+.4}", r.ghost_penalty);
     println!("  ─────────────────────────────────────");

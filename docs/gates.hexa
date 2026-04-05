@@ -122,3 +122,15 @@
 //   airgenome gate status <name>      — per-gate detail (axes, counters, firing)
 //   airgenome gate fire <name>        — currently firing rules with descriptions
 //   airgenome nexus2                  — mesh-aware breakthrough analysis over history
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BREAKTHROUGH LAYER LADDER
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   L1 (v3.51.0)  instantaneous ram×ram cross-gate MI      margin +0.0178
+//   L2 (v3.52.0)  temporal lagged MI, τ ∈ {1, 2, 5, 10}    margin +0.1155
+//                  mechanism: MI(A.ram[:-τ], B.ram[τ:])
+//                  captures: causality hints (A predicts B)
+//   L3 (planned)  cross-axis MI (ram×cpu, cpu×ram, cpu×cpu)
+//   L4 (planned)  triadic interaction info I(A;B;C)
+//   L5 (deferred) firing-bitfield MI (exhausted on current data)

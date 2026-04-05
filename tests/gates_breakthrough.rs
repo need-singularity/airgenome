@@ -8,10 +8,10 @@
 
 use airgenome::gates::nexus_merger::{GateSample, project_breakthrough};
 
-/// Minimum acceptable breakthrough margin above singularity.
-/// Empirical brainstorm showed margin +0.0312; we require >= +0.005 as a
-/// robust-reproduction threshold (allows for some drift in future data).
-const MARGIN_MIN: f64 = 0.005;
+/// Minimum acceptable cumulative breakthrough margin above singularity.
+/// L1 baseline: +0.0178. L2 adds temporal lagged MI with expected +0.0978 boost.
+/// Require >= +0.10 as the L2-shipped threshold.
+const MARGIN_MIN: f64 = 0.10;
 
 fn parse_signatures(path: &std::path::Path) -> Option<(Vec<GateSample>, Vec<GateSample>, Vec<GateSample>, Vec<GateSample>)> {
     let text = std::fs::read_to_string(path).ok()?;

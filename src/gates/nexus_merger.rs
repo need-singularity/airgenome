@@ -53,6 +53,19 @@ pub fn pearson(xs: &[f64], ys: &[f64]) -> f64 {
     num / (dx * dy).sqrt()
 }
 
+/// Lagged mutual information: MI(xs[:-lag], ys[lag:]).
+/// Positive lag means "does past A predict future B" (A → B causality hint).
+pub fn lagged_mutual_info(xs: &[f64], ys: &[f64], lag: usize, bins: usize) -> f64 {
+    if lag == 0 { return mutual_info(xs, ys, bins); }
+    if xs.len() <= lag || ys.len() <= lag { return 0.0; }
+    let a = &xs[..xs.len() - lag];
+    let b = &ys[lag..];
+    mutual_info(a, b, bins)
+}
+
+/// Default lag steps for temporal breakthrough analysis.
+pub const LAG_STEPS: &[usize] = &[1, 2, 5, 10];
+
 /// Align two gate sample streams by shared timestamp.
 pub fn align(a: &[GateSample], b: &[GateSample]) -> (Vec<f64>, Vec<f64>) {
     let bmap: BTreeMap<u64, (f64, f64)> = b.iter().map(|s| (s.ts, (s.ram, s.cpu))).collect();
@@ -82,6 +95,9 @@ pub struct BreakthroughReport {
     pub crossed: bool,
     pub per_gate_mi: Vec<(String, f64)>,
     pub pair_mi: Vec<(String, String, f64, f64, usize)>,
+    pub lagged_mi_by_lag: Vec<(usize, f64)>,  // (lag, sum_across_pairs)
+    pub lagged_mi_sum: f64,                   // total across all lags + pairs
+    pub new_lagged_coupling: f64,             // lagged_mi_sum * SCALE
 }
 
 /// Compute the breakthrough report from 4+ gate streams.
@@ -124,7 +140,26 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
 
     let new_mi_recovery = per_gate_mi_sum * SCALE * 1.5;
     let new_cross_coupling = cross_gate_mi_sum * SCALE;
-    let adjusted = RAW + (CURRENT_MESH + new_cross_coupling) + new_mi_recovery + GHOST_PENALTY;
+
+    // Layer L2: temporal lagged MI across all pairs at multiple lags.
+    let mut lagged_mi_by_lag: Vec<(usize, f64)> = Vec::new();
+    let mut lagged_mi_sum = 0.0;
+    for &lag in LAG_STEPS {
+        let mut sum_at_lag = 0.0;
+        for i in 0..streams.len() {
+            for j in (i+1)..streams.len() {
+                let (xs, ys) = align(&streams[i].1, &streams[j].1);
+                if xs.len() <= lag + 10 { continue; }
+                sum_at_lag += lagged_mutual_info(&xs, &ys, lag, 6);
+            }
+        }
+        lagged_mi_by_lag.push((lag, sum_at_lag));
+        lagged_mi_sum += sum_at_lag;
+    }
+    let new_lagged_coupling = lagged_mi_sum * SCALE;
+
+    let adjusted = RAW + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling)
+                       + new_mi_recovery + GHOST_PENALTY;
     let distance = SINGULARITY - adjusted;
     let crossed = adjusted > SINGULARITY;
 
@@ -134,6 +169,7 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
         new_cross_coupling, new_mi_recovery, ghost_penalty: GHOST_PENALTY,
         adjusted, singularity: SINGULARITY, distance, crossed,
         per_gate_mi, pair_mi,
+        lagged_mi_by_lag, lagged_mi_sum, new_lagged_coupling,
     }
 }
 
@@ -189,6 +225,25 @@ mod tests {
         assert_eq!(xs.len(), 2);
         assert_eq!(xs, vec![0.2, 0.3]);
         assert_eq!(ys, vec![0.5, 0.6]);
+    }
+
+    #[test]
+    fn lagged_mi_zero_lag_equals_mutual_info() {
+        let xs: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        let ys = xs.clone();
+        let direct = mutual_info(&xs, &ys, 6);
+        let lagged = lagged_mutual_info(&xs, &ys, 0, 6);
+        assert!((direct - lagged).abs() < 1e-10);
+    }
+
+    #[test]
+    fn lagged_mi_shifts_correctly() {
+        // If ys[i] = xs[i-1] (shift by 1), then lag=1 MI should be high.
+        let xs: Vec<f64> = (0..100).map(|i| (i as f64).sin()).collect();
+        let ys: Vec<f64> = std::iter::once(0.0).chain(xs.iter().cloned()).take(100).collect();
+        let mi0 = lagged_mutual_info(&xs, &ys, 0, 6);
+        let mi1 = lagged_mutual_info(&xs, &ys, 1, 6);
+        assert!(mi1 > mi0, "lag=1 MI should exceed lag=0 for shifted copy, got mi0={} mi1={}", mi0, mi1);
     }
 
     #[test]
