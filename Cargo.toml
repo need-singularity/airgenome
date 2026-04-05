@@ -1,0 +1,22 @@
+[package]
+name = "airgenome"
+version = "0.1.0"
+edition = "2021"
+description = "Mac Air resource optimizer — 6-axis hexagon, 15 pair gates, 60-byte genome, Banach 1/3 fixed point."
+license = "MIT"
+repository = "https://github.com/need-singularity/airgenome"
+readme = "README.md"
+keywords = ["macos", "performance", "sysctl", "hexagon", "n6"]
+categories = ["command-line-utilities", "os::macos-apis"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "airgenome"
+path = "src/bin/airgenome.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "debuginfo"
