@@ -40,6 +40,7 @@ pub mod trace;
 pub mod buffer;
 pub mod policy;
 pub mod actions;
+pub mod apply;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
 pub use vitals::{sample, Vitals};
@@ -51,3 +52,4 @@ pub use trace::{TraceRecord, TraceStats, parse_line, parse_log, summarize};
 pub use buffer::{VitalsBuffer, GateMask};
 pub use policy::{PolicyEngine, PolicyConfig, Proposal, Reason};
 pub use actions::{Command as ActionCommand, Actions, ACTIONS, commands_for};
+pub use apply::{UserAction, PreSnapshot, AbortReason, BANNED_PROCESS_NAMES, plan};
