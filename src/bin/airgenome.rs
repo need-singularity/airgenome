@@ -402,9 +402,10 @@ fn daemon_cmd(args: &[String]) {
 }
 
 fn trace_cmd(args: &[String]) {
-    // parse --input PATH, --tail N
+    // parse --input PATH, --tail N, --json
     let mut input: Option<std::path::PathBuf> = None;
     let mut tail: Option<usize> = None;
+    let mut json = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -416,6 +417,7 @@ fn trace_cmd(args: &[String]) {
                 i += 1;
                 if let Some(v) = args.get(i) { tail = v.parse().ok(); }
             }
+            "--json" | "-j" => json = true,
             _ => {}
         }
         i += 1;
@@ -438,6 +440,16 @@ fn trace_cmd(args: &[String]) {
     }
 
     let stats = airgenome::summarize(&records);
+
+    if json {
+        let invalid = body.lines().count().saturating_sub(stats.count);
+        println!("{{\"source\":\"{}\",\"records\":{},\"invalid\":{},\"span_secs\":{},\"cpu_mean\":{},\"ram_mean\":{},\"io_mean\":{},\"firing_mean\":{},\"firing_max\":{},\"work_fraction\":{},\"on_battery_frac\":{}}}",
+            path.display().to_string().replace('\\', "\\\\").replace('"', "\\\""),
+            stats.count, invalid, stats.span_secs,
+            stats.cpu_mean, stats.ram_mean, stats.io_mean,
+            stats.firing_mean, stats.firing_max, stats.work_fraction, stats.on_battery_frac);
+        return;
+    }
 
     println!("=== airgenome — Trace Summary ===");
     println!("  Source : {}", path.display());
@@ -469,6 +481,7 @@ fn replay_cmd(args: &[String]) {
     let mut input: Option<std::path::PathBuf> = None;
     let mut capacity: usize = 12;
     let mut verbose = false;
+    let mut json = false;
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -481,6 +494,7 @@ fn replay_cmd(args: &[String]) {
                 if let Some(v) = args.get(i) { capacity = v.parse().unwrap_or(12).max(3); }
             }
             "--verbose" | "-v" => verbose = true,
+            "--json" | "-j" => json = true,
             _ => {}
         }
         i += 1;
@@ -529,6 +543,18 @@ fn replay_cmd(args: &[String]) {
                 println!("[{}] {} [{:>2}] {}", r.ts, tag, p.pair, p.action);
             }
         }
+    }
+
+    if json {
+        print!("{{\"source\":\"{}\",\"records\":{},\"ticks_firing\":{},\"reactive\":{},\"preemptive\":{},\"per_pair\":[",
+            path.display().to_string().replace('\\', "\\\\").replace('"', "\\\""),
+            records.len(), ticks_with_proposals, total_reactive, total_preempt);
+        for (k, n) in per_pair.iter().enumerate() {
+            if k > 0 { print!(","); }
+            print!("{}", n);
+        }
+        println!("]}}");
+        return;
     }
 
     println!("=== airgenome — replay ===");
