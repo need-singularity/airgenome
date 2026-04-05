@@ -1,0 +1,171 @@
+// airgenome/modules/forge.hexa — forge CLI router
+//
+// forge: 10-account Claude Code manager
+// Routes: status | usage | scan | compress | on | off | menubar
+//
+// Compile/run: ~/Dev/hexa-lang/hexa run modules/forge.hexa <command>
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION = "0.1.0"
+
+// Paths
+let FORGE_DIR         = "forge"
+let GENOMES_DIR       = "forge/genomes"
+let COMPRESSED_DIR    = "forge/compressed"
+let STATE_FILE        = "forge/state.json"
+let CONVERSATIONS_DIR = "~/.claude/projects"
+
+// Claude config dirs (for conversation scanning)
+let CLAUDE_DIRS = ["~/.claude", "~/.config/claude", "~/Library/Application Support/Claude"]
+
+
+// Keychain labels (10 Claude Code accounts)
+let KEYCHAIN_LABELS = ["Claude Code-credentials-2b949392", "Claude Code-credentials-26492e81", "Claude Code-credentials-200a5e32", "Claude Code-credentials-2adfc64a", "Claude Code-credentials-7f9319ca", "Claude Code-credentials-71a31b2a", "Claude Code-credentials-02580ebb", "Claude Code-credentials-156d23f8", "Claude Code-credentials-90c36814", "Claude Code-credentials-90defae3"]
+
+// Short account names for display
+let ACCOUNT_NAMES = ["claude1", "claude2", "claude3", "claude4", "claude5", "claude6", "claude7", "claude8", "claude9", "claude10"]
+
+// Anthropic API endpoints
+let API_USAGE_URL  = "https://api.anthropic.com/v1/usage"
+let API_MODELS_URL = "https://api.anthropic.com/v1/models"
+let API_BASE_URL   = "https://api.anthropic.com"
+
+// OAuth / app client id (Claude Code)
+let CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
+// Pricing constants (USD per million tokens, as of 2026-04)
+let PRICE_INPUT_PER_M  = comptime { 3.0 }   // Claude Sonnet input
+let PRICE_OUTPUT_PER_M = comptime { 15.0 }  // Claude Sonnet output
+let PRICE_CACHE_READ   = comptime { 0.3 }   // cache read
+let PRICE_CACHE_WRITE  = comptime { 3.75 }  // cache write
+
+// Genome constants (from gates.hexa spec)
+let GENOME_BYTES = comptime { 60 }
+let PAIR_COUNT   = comptime { 15 }
+let AXIS_COUNT   = comptime { 6 }
+
+// Compression target (×716 from 43KB ps output → 60B genome)
+let COMPRESS_RATIO_TARGET = comptime { 716 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EFFECTS
+// ═══════════════════════════════════════════════════════════════════════
+
+effect KeychainSensor {
+    fn read_keychain(label: str) -> str
+    fn list_keychain_labels(prefix: str) -> str
+}
+
+effect ConversationScanner {
+    fn scan_dir(path: str) -> str
+    fn read_conversation(path: str) -> str
+    fn count_tokens(text: str) -> int
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STUB FUNCTIONS — 7 commands
+// ═══════════════════════════════════════════════════════════════════════
+
+fn forge_status() -> str {
+    println("[status] not yet implemented")
+    return "ok"
+}
+
+fn forge_usage() -> str {
+    println("[usage] not yet implemented")
+    return "ok"
+}
+
+fn forge_scan() -> str {
+    println("[scan] not yet implemented")
+    return "ok"
+}
+
+fn forge_compress() -> str {
+    println("[compress] not yet implemented")
+    return "ok"
+}
+
+fn forge_on() -> str {
+    println("[on] not yet implemented")
+    return "ok"
+}
+
+fn forge_off() -> str {
+    println("[off] not yet implemented")
+    return "ok"
+}
+
+fn forge_menubar() -> str {
+    println("[menubar] not yet implemented")
+    return "ok"
+}
+
+// Print usage/help
+fn print_help() -> str {
+    println("forge v" + VERSION + " — 10-account Claude Code manager")
+    println("")
+    println("Usage: forge <command>")
+    println("")
+    println("Commands:")
+    println("  status    — show all 10 accounts + token usage + cost")
+    println("  usage     — fetch live usage from Anthropic API")
+    println("  scan      — scan conversation dirs, build genome")
+    println("  compress  — compress conversation logs (×716 ratio)")
+    println("  on        — enable monitor daemon")
+    println("  off       — disable monitor daemon")
+    println("  menubar   — launch macOS menu bar widget")
+    println("  help      — show this message")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK — args router
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness ForgeRouter {
+    let argv = args()
+    // argv layout when called via:  hexa run modules/forge.hexa <cmd>
+    //   argv[0] = hexa binary path
+    //   argv[1] = "run"
+    //   argv[2] = "modules/forge.hexa"
+    //   argv[3] = command (if provided)
+
+    let cmd = "help"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "status"   { forge_status() }
+    if cmd == "usage"    { forge_usage() }
+    if cmd == "scan"     { forge_scan() }
+    if cmd == "compress" { forge_compress() }
+    if cmd == "on"       { forge_on() }
+    if cmd == "off"      { forge_off() }
+    if cmd == "menubar"  { forge_menubar() }
+    if cmd == "help"     { print_help() }
+
+    // Unknown command fallback
+    if cmd != "status" {
+        if cmd != "usage" {
+            if cmd != "scan" {
+                if cmd != "compress" {
+                    if cmd != "on" {
+                        if cmd != "off" {
+                            if cmd != "menubar" {
+                                if cmd != "help" {
+                                    println("unknown command: " + cmd)
+                                    println("")
+                                    print_help()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
