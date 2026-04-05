@@ -37,6 +37,7 @@ pub mod actuator;
 pub mod rules;
 pub mod profile;
 pub mod trace;
+pub mod buffer;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
 pub use vitals::{sample, Vitals};
@@ -45,3 +46,4 @@ pub use actuator::{Action, Actuator, Snapshot};
 pub use rules::{Rule, RULES, fires, firing, neighbors, severity, Severity};
 pub use profile::{Profile, PROFILES, by_name, names};
 pub use trace::{TraceRecord, TraceStats, parse_line, parse_log, summarize};
+pub use buffer::{VitalsBuffer, GateMask};
