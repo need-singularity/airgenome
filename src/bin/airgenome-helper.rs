@@ -200,6 +200,44 @@ fn handle_request(raw: &str) -> String {
                 Err(e) => error_resp(&format!("tmutil: {}", e)),
             }
         }
+        "dns_flush" => {
+            eprintln!("[airgenome-helper] dscacheutil -flushcache + killall -HUP mDNSResponder");
+            let _ = Command::new("/usr/bin/dscacheutil").arg("-flushcache").output();
+            match Command::new("/usr/bin/killall").args(["-HUP", "mDNSResponder"]).output() {
+                Ok(o) if o.status.success() => ok_resp("dns cache flushed + mDNSResponder HUP"),
+                Ok(o) => error_resp(&format!("killall exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("killall spawn: {}", e)),
+            }
+        }
+        "pmset_set" => {
+            // generic: accepts key=val pairs
+            let key = field(raw, "key").unwrap_or("");
+            let value = field(raw, "value").unwrap_or("");
+            const ALLOWED: &[&str] = &["displaysleep", "disksleep", "sleep", "lowpowermode",
+                                        "gpuswitch", "standbydelay", "tcpkeepalive"];
+            if !ALLOWED.contains(&key) {
+                return refused("pmset key not allowed");
+            }
+            if value.parse::<i64>().is_err() {
+                return refused("pmset value must be integer");
+            }
+            eprintln!("[airgenome-helper] pmset -a {} {}", key, value);
+            match Command::new("/usr/bin/pmset").args(["-a", key, value]).output() {
+                Ok(o) if o.status.success() => ok_resp(&format!("pmset -a {}={}", key, value)),
+                Ok(o) => error_resp(&format!("pmset exit: {:?}, err={}",
+                    o.status.code(),
+                    escape_json(&String::from_utf8_lossy(&o.stderr)))),
+                Err(e) => error_resp(&format!("pmset spawn: {}", e)),
+            }
+        }
+        "periodic_daily" => {
+            eprintln!("[airgenome-helper] periodic daily");
+            match Command::new("/usr/sbin/periodic").arg("daily").output() {
+                Ok(o) if o.status.success() => ok_resp("periodic daily completed"),
+                Ok(o) => error_resp(&format!("periodic exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("periodic spawn: {}", e)),
+            }
+        }
         "" => error_resp("missing op"),
         other => refused(&format!("unknown op: {}", other)),
     }

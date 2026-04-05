@@ -37,6 +37,9 @@ fn main() {
         "apply-all" => apply_all_cmd(&args),
         "helper" => helper_cmd(&args),
         "purge" => purge_cmd(&args),
+        "dns-flush" => dns_flush_cmd(),
+        "periodic" => periodic_cmd(),
+        "pmset" => pmset_cmd(&args),
         "tune" => tune_cmd(&args),
         "sysctl" => sysctl_cmd(&args),
         "reap" => reap_cmd(&args),
@@ -1546,7 +1549,7 @@ fn restore_cmd(args: &[String]) {
 }
 
 fn quiet_tune_cmd(args: &[String]) {
-    use airgenome::client::{dial, req_purge, req_sysctl_set, req_mdutil_off, req_tmutil_disable, HelperResponse, DEFAULT_SOCKET_PATH};
+    use airgenome::client::{dial, req_purge, req_sysctl_set, req_mdutil_off, req_tmutil_disable, req_dns_flush, HelperResponse, DEFAULT_SOCKET_PATH};
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let measure = args.iter().any(|a| a == "--measure" || a == "-m");
 
@@ -1583,6 +1586,7 @@ fn quiet_tune_cmd(args: &[String]) {
     run_step("compressor", &req_sysctl_set("vm.compressor_mode", "4"));
     run_step("spotlight ", &req_mdutil_off());
     run_step("timemachine", &req_tmutil_disable());
+    run_step("dns-flush ", &req_dns_flush());
 
     if let Some(before) = before {
         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -1709,6 +1713,46 @@ fn tune_cmd(args: &[String]) {
             eprintln!("install helper first: sudo bash scripts/install-helper.sh install");
             std::process::exit(1);
         }
+    }
+}
+
+fn dns_flush_cmd() {
+    use airgenome::client::{dial, req_dns_flush, HelperResponse, DEFAULT_SOCKET_PATH};
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    match dial(&socket, &req_dns_flush()) {
+        Ok(HelperResponse::Ok { detail }) => println!("{} {}", green("ok"), detail),
+        Ok(r) => { println!("{:?}", r); std::process::exit(1); }
+        Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
+    }
+}
+
+fn periodic_cmd() {
+    use airgenome::client::{dial, req_periodic_daily, HelperResponse, DEFAULT_SOCKET_PATH};
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    match dial(&socket, &req_periodic_daily()) {
+        Ok(HelperResponse::Ok { detail }) => println!("{} {}", green("ok"), detail),
+        Ok(r) => { println!("{:?}", r); std::process::exit(1); }
+        Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
+    }
+}
+
+fn pmset_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_pmset_set, HelperResponse, DEFAULT_SOCKET_PATH};
+    let (Some(key), Some(value)) = (args.get(2), args.get(3)) else {
+        eprintln!("usage: airgenome pmset <key> <value>");
+        eprintln!("allowed keys: displaysleep, disksleep, sleep, lowpowermode,");
+        eprintln!("              gpuswitch, standbydelay, tcpkeepalive");
+        std::process::exit(2);
+    };
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+    match dial(&socket, &req_pmset_set(key, value)) {
+        Ok(HelperResponse::Ok { detail }) => println!("{} {}", green("ok"), detail),
+        Ok(HelperResponse::Refused { reason }) => { println!("{} {}", yellow("refused"), reason); std::process::exit(1); }
+        Ok(HelperResponse::Error { message }) => { println!("{} {}", red("error"), message); std::process::exit(1); }
+        Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
 }
 
@@ -3391,6 +3435,9 @@ fn print_help() {
     println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
     println!("  helper <ping|get|set|purge> [args]        talk to privileged helper (Tier 2)");
     println!("  purge [--measure]                         request memory purge via helper");
+    println!("  dns-flush                                 flush DNS cache + HUP mDNSResponder");
+    println!("  pmset <key> <value>                       pmset -a <key> <value> via helper");
+    println!("  periodic                                  run periodic daily maintenance");
     println!("  tune <key> <value> [--measure]            sysctl tune via helper (whitelisted)");
     println!("  sysctl <key>                              read a whitelisted sysctl via helper");
     println!("  reap [--yes] [--measure]                  kill-mode combo: kill Chrome/Slack + purge");

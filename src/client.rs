@@ -104,6 +104,11 @@ pub fn req_tmutil_disable() -> String { r#"{"op":"tmutil_disable"}"#.to_string()
 pub fn req_tmutil_enable() -> String { r#"{"op":"tmutil_enable"}"#.to_string() }
 pub fn req_mdutil_status() -> String { r#"{"op":"mdutil_status"}"#.to_string() }
 pub fn req_tmutil_status() -> String { r#"{"op":"tmutil_status"}"#.to_string() }
+pub fn req_dns_flush() -> String { r#"{"op":"dns_flush"}"#.to_string() }
+pub fn req_pmset_set(key: &str, value: &str) -> String {
+    format!(r#"{{"op":"pmset_set","key":"{}","value":"{}"}}"#, escape(key), escape(value))
+}
+pub fn req_periodic_daily() -> String { r#"{"op":"periodic_daily"}"#.to_string() }
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
