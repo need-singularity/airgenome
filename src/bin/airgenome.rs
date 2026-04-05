@@ -17,6 +17,7 @@ fn main() {
         "diff" => diff_cmd(&args),
         "daemon" => daemon_cmd(&args),
         "trace" => trace_cmd(&args),
+        "policy" => policy_cmd(&args),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -378,6 +379,128 @@ fn trace_cmd(args: &[String]) {
     println!("  Battery: {:.1}% of samples on battery", stats.on_battery_frac * 100.0);
 }
 
+fn policy_cmd(args: &[String]) {
+    let sub = args.get(2).map(|s| s.as_str()).unwrap_or("watch");
+    match sub {
+        "watch" | "w" => policy_watch(args),
+        "tick" | "t" => policy_tick_once(),
+        other => {
+            eprintln!("unknown policy sub-command: '{}'", other);
+            eprintln!("usage: airgenome policy [watch|tick] [-i SEC] [-c CAP]");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn policy_watch(args: &[String]) {
+    let mut interval_s: u64 = 10;
+    let mut capacity: usize = 12;
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--interval" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    interval_s = v.parse().unwrap_or(10).max(1);
+                }
+            }
+            "--capacity" | "-c" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    capacity = v.parse().unwrap_or(12).max(3);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let mut engine = airgenome::PolicyEngine::with_defaults(capacity);
+
+    // Seed from recent vitals.jsonl if available (so preemptive fires fast).
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    if let Ok(body) = std::fs::read_to_string(&log) {
+        let records = airgenome::parse_log(&body);
+        let take = records.len().saturating_sub(capacity);
+        for r in &records[take..] {
+            let mut axes = [0.0; 6];
+            axes[Axis::Cpu.index()] = r.cpu;
+            axes[Axis::Ram.index()] = r.ram;
+            axes[Axis::Gpu.index()] = r.gpu;
+            axes[Axis::Npu.index()] = r.npu;
+            axes[Axis::Power.index()] = r.power;
+            axes[Axis::Io.index()] = r.io;
+            engine.tick(airgenome::Vitals { ts: r.ts, axes });
+        }
+        eprintln!("seeded buffer with {} historical samples from {}",
+            records[take..].len(), log.display());
+    }
+
+    eprintln!("airgenome policy watch — interval {}s, buffer cap {}", interval_s, capacity);
+    eprintln!("Ctrl+C to stop.\n");
+
+    loop {
+        let v = airgenome::sample();
+        let proposals = engine.tick(v);
+        println!("[{}] {} proposals (cpu={:.2} ram={:.2} io={:.2})",
+            v.ts, proposals.len(),
+            v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+        for p in &proposals {
+            let tag = match p.reason {
+                airgenome::Reason::Reactive => "REACT ",
+                airgenome::Reason::Preemptive => "PREEMP",
+            };
+            println!("  {} [{:>2}] {}", tag, p.pair, p.action);
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval_s));
+    }
+}
+
+fn policy_tick_once() {
+    // Need ≥3 samples; seed from log, then add one fresh sample.
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", log.display(), e);
+            eprintln!("run `airgenome daemon` first to build a vitals log.");
+            std::process::exit(1);
+        }
+    };
+    let records = airgenome::parse_log(&body);
+    if records.len() < 2 {
+        eprintln!("need at least 2 samples in log; got {}", records.len());
+        std::process::exit(1);
+    }
+
+    let mut engine = airgenome::PolicyEngine::with_defaults(12);
+    let take = records.len().saturating_sub(11);
+    for r in &records[take..] {
+        let mut axes = [0.0; 6];
+        axes[Axis::Cpu.index()] = r.cpu;
+        axes[Axis::Ram.index()] = r.ram;
+        axes[Axis::Gpu.index()] = r.gpu;
+        axes[Axis::Npu.index()] = r.npu;
+        axes[Axis::Power.index()] = r.power;
+        axes[Axis::Io.index()] = r.io;
+        engine.tick(airgenome::Vitals { ts: r.ts, axes });
+    }
+    let v = airgenome::sample();
+    let proposals = engine.tick(v);
+
+    println!("=== airgenome — policy tick ===");
+    println!("  ts={}  cpu={:.2} ram={:.2} io={:.2}",
+        v.ts, v.get(Axis::Cpu), v.get(Axis::Ram), v.get(Axis::Io));
+    println!("  {} proposals:", proposals.len());
+    for p in &proposals {
+        let tag = match p.reason {
+            airgenome::Reason::Reactive => "REACT ",
+            airgenome::Reason::Preemptive => "PREEMP",
+        };
+        println!("    {} [{:>2}] {}", tag, p.pair, p.action);
+    }
+}
+
 fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -401,5 +524,7 @@ fn print_help() {
     println!("  diff A B            show per-pair genome differences between profiles");
     println!("  daemon [-i SEC]     periodic vitals loop → ~/.airgenome/vitals.jsonl");
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
+    println!("  policy watch        live PolicyEngine loop (preemptive + reactive)");
+    println!("  policy tick         one-shot: seed from log + evaluate current vitals");
     println!("  help                print this help");
 }
