@@ -46,6 +46,8 @@ fn main() {
         "schedule-quiet" => schedule_quiet_cmd(&args),
         "benchmark" | "bench" => benchmark_cmd(&args),
         "unschedule-quiet" => unschedule_quiet_cmd(),
+        "schedule-signature" | "schedule-sig" => schedule_signature_cmd(&args),
+        "unschedule-signature" | "unschedule-sig" => unschedule_signature_cmd(),
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
@@ -1344,6 +1346,74 @@ fn benchmark_cmd(args: &[String]) {
                   else if a_ram > b_ram + 0.01 || a_firing > b_firing + 0.3 { red("worse") }
                   else { dim("unchanged") };
     println!("  verdict: {}", verdict);
+}
+
+fn schedule_signature_cmd(args: &[String]) {
+    let interval_m: u32 = args.iter().position(|a| a == "--interval" || a == "-i")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    if !(1..=1440).contains(&interval_m) {
+        eprintln!("interval must be 1..=1440 minutes");
+        std::process::exit(2);
+    }
+    let bin = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("current_exe: {}", e); std::process::exit(1); }
+    };
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.signature.plist");
+    let _ = std::fs::create_dir_all(plist.parent().unwrap());
+    let data = home_dir().join(".airgenome");
+    let _ = std::fs::create_dir_all(&data);
+
+    let contents = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.airgenome.signature</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+        <string>signature</string>
+        <string>--append</string>
+    </array>
+    <key>StartInterval</key><integer>{seconds}</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>{data}/signature.out.log</string>
+    <key>StandardErrorPath</key><string>{data}/signature.err.log</string>
+    <key>Nice</key><integer>10</integer>
+    <key>LowPriorityIO</key><true/>
+</dict>
+</plist>
+"#,
+        bin = bin.display(),
+        seconds = interval_m * 60,
+        data = data.display());
+
+    if let Err(e) = std::fs::write(&plist, contents) {
+        eprintln!("write {}: {}", plist.display(), e); std::process::exit(1);
+    }
+    let _ = std::process::Command::new("launchctl").args(["unload", &plist.to_string_lossy()]).status();
+    let status = std::process::Command::new("launchctl").args(["load", &plist.to_string_lossy()]).status();
+    match status {
+        Ok(s) if s.success() => {
+            println!("scheduled: signature --append every {}m", interval_m);
+            println!("  plist: {}", plist.display());
+            println!("  log:   {}/signatures.jsonl", data.display());
+        }
+        _ => { eprintln!("launchctl load failed"); std::process::exit(1); }
+    }
+}
+
+fn unschedule_signature_cmd() {
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.signature.plist");
+    if plist.exists() {
+        let _ = std::process::Command::new("launchctl").args(["unload", &plist.to_string_lossy()]).status();
+        let _ = std::fs::remove_file(&plist);
+        println!("unscheduled: {}", plist.display());
+    } else {
+        println!("no schedule at {}", plist.display());
+    }
 }
 
 fn schedule_quiet_cmd(args: &[String]) {
@@ -3330,6 +3400,8 @@ fn print_help() {
     println!("  schedule-quiet [-i H]                     auto quiet-tune every H hours (default 1)");
     println!("  benchmark [--wait SEC]                    baseline→quiet-tune→after delta report");
     println!("  unschedule-quiet                          remove quiet-tune LaunchAgent");
+    println!("  schedule-signature [-i MIN]               auto signature --append every N min");
+    println!("  unschedule-signature                      remove signature LaunchAgent");
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
