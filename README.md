@@ -32,16 +32,36 @@ interaction graph's average degree equals `6`.
 
 ## Install
 
+**One-shot installer** (recommended) — installs the binary, creates the data
+directory, and registers a LaunchAgent that runs the daemon at 60 s intervals:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/scripts/install.sh | bash
+```
+
+**Manual**:
+
 ```sh
 cargo install --git https://github.com/need-singularity/airgenome
+```
+
+**Uninstall**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/scripts/uninstall.sh | bash
 ```
 
 ## Usage
 
 ```sh
-airgenome status   # hexagon + one vitals sample
-airgenome probe    # emit a single JSON vitals sample
-airgenome pairs    # list the 15 canonical pair gates
+airgenome status               # hexagon + vitals + firing count
+airgenome diag                 # fire 15 rules + dry-run proposals
+airgenome policy tick          # one-shot PolicyEngine evaluation
+airgenome policy watch -i 10   # live loop, 10 s interval
+airgenome trace                # summarise ~/.airgenome/vitals.jsonl
+airgenome daemon               # periodic vitals → JSONL
+airgenome profile list|show|apply|active
+airgenome diff A B             # compare two profiles
 airgenome help
 ```
 
