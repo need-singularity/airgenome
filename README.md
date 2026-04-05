@@ -53,17 +53,52 @@ curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/scr
 
 ## Usage
 
+### Observe
+
 ```sh
 airgenome status               # hexagon + vitals + firing count
+airgenome status --json        # same as JSON (pipelineable)
+airgenome probe                # single JSON vitals sample
+airgenome dash                 # ASCII hexagon dashboard (bars + severity)
 airgenome diag                 # fire 15 rules + dry-run proposals
-airgenome policy tick          # one-shot PolicyEngine evaluation
-airgenome policy watch -i 10   # live loop, 10 s interval
-airgenome trace                # summarise ~/.airgenome/vitals.jsonl
-airgenome daemon               # periodic vitals → JSONL
-airgenome profile list|show|apply|active
-airgenome diff A B             # compare two profiles
-airgenome help
+airgenome explain K            # describe pair gate K + live values
+airgenome metrics              # Prometheus text-format exposition
+airgenome doctor               # self-diagnostic of install + daemon
 ```
+
+### Policy
+
+```sh
+airgenome policy tick          # one-shot PolicyEngine evaluation
+airgenome policy watch -i 10   # live loop (preemptive + reactive)
+airgenome trace                # summarise ~/.airgenome/vitals.jsonl
+airgenome replay               # tally what policy WOULD have fired
+```
+
+### Profiles & genomes
+
+```sh
+airgenome profile list              # built-ins + user profiles
+airgenome profile show  NAME        # engaged pairs + hex
+airgenome profile apply NAME|PATH   # set active (built-in / user / file)
+airgenome profile active            # current active profile
+airgenome diff A B                  # compare two built-in profiles
+airgenome genome hex      PROFILE   # 120-char hex string
+airgenome genome from-hex HEX [P]   # parse hex; optionally write to path
+airgenome genome save PROFILE PATH  # write 60-byte .genome file
+airgenome genome cat PATH           # inspect a .genome file
+```
+
+### Daemon
+
+```sh
+airgenome daemon -i 60              # periodic vitals → JSONL
+airgenome init [-i SEC]             # register as LaunchAgent
+airgenome uninit                    # unload + remove LaunchAgent
+```
+
+`--json` on `status` / `trace` / `replay` / `policy tick`.
+Colors on `doctor` / `dash` TTY output (respects `NO_COLOR`).
 
 ### Example
 
@@ -104,7 +139,7 @@ assert_eq!(bytes.len(), 60);
 assert!((airgenome::META_FP - 1.0 / 3.0).abs() < 1e-15);
 ```
 
-## Layers
+## Library layers
 
 | Module | Purpose |
 | --- | --- |
@@ -112,6 +147,11 @@ assert!((airgenome::META_FP - 1.0 / 3.0).abs() < 1e-15);
 | `vitals` | macOS sensor layer (`sysctl`, `vm_stat`, `pmset`, `memory_pressure`) — read-only |
 | `efficiency` | Banach 1/3 fixed-point tracker + mutual-information estimator |
 | `actuator` | dry-run actuator with rollback snapshots |
+| `rules` | 15 deterministic if-then rules + 3-neighbor triangular mesh |
+| `profile` | five built-in 60-byte profiles (balanced / battery-save / performance / dev-work / ml-inference) |
+| `buffer` | `VitalsBuffer` — derivatives, ratios, oscillation detection |
+| `policy` | `PolicyEngine` — rules + buffer + preemptive + cooldown + oscillation lockout |
+| `trace` | pure-std JSONL parser for `vitals.jsonl` logs |
 
 ## Safety
 
