@@ -4,6 +4,7 @@
 
 pub mod genome;
 pub mod probes;
+pub mod log;
 
 pub use genome::{GateGenome, GATE_GENOME_BYTES};
 
