@@ -145,6 +145,35 @@ fn pair_uses(k: usize, axis: Axis) -> bool {
     a == axis || b == axis
 }
 
+/// Cascade result from mesh neighbor analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CascadeInfo {
+    pub pair: usize,
+    pub neighbor_fires: u8,
+    pub boost: u8,
+}
+
+/// Compute mesh cascade for a set of fired pairs.
+///
+/// For each pair in `fired`, counts how many of its 3 mesh neighbors
+/// also fired. Returns a `CascadeInfo` per fired pair.
+///   - 0-1 neighbors: boost = 0 (no cascade)
+///   - 2 neighbors:   boost = 0x10 (stability increment)
+///   - 3 neighbors:   boost = 0x20 (full cascade + surprise)
+pub fn mesh_cascade_for(fired: &[usize], _v: &Vitals) -> Vec<CascadeInfo> {
+    use crate::rules::neighbors;
+    fired.iter().map(|&k| {
+        let ns = neighbors(k);
+        let count = ns.iter().filter(|n| fired.contains(n)).count() as u8;
+        let boost = match count {
+            0 | 1 => 0,
+            2 => 0x10,
+            _ => 0x20,
+        };
+        CascadeInfo { pair: k, neighbor_fires: count, boost }
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +282,40 @@ mod tests {
         // third tick: first with enough samples → rule 9 fires immediately
         let out = p.tick(v(2, 0.1, 0.1, 0.0));
         assert!(out.iter().any(|p| p.pair == 9 && p.reason == Reason::Reactive));
+    }
+
+    #[test]
+    fn cascade_no_neighbors_firing() {
+        let fired = vec![0]; // only pair 0 fires
+        // neighbors(0) = [1, 5, 11] — none of them in `fired`
+        let v_idle = v(0, 0.5, 0.1, 0.0);
+        let cascades = mesh_cascade_for(&fired, &v_idle);
+        assert_eq!(cascades.len(), 1);
+        assert_eq!(cascades[0].pair, 0);
+        assert_eq!(cascades[0].neighbor_fires, 0);
+        assert_eq!(cascades[0].boost, 0);
+    }
+
+    #[test]
+    fn cascade_two_neighbors_firing() {
+        // pair 0 fires, neighbors(0) = [1, 5, 11]
+        // if pairs 1 and 5 also fire → 2 neighbors → boost 0x10
+        let fired = vec![0, 1, 5];
+        let v_idle = v(0, 0.5, 0.1, 0.0);
+        let cascades = mesh_cascade_for(&fired, &v_idle);
+        let c0 = cascades.iter().find(|c| c.pair == 0).unwrap();
+        assert_eq!(c0.neighbor_fires, 2);
+        assert_eq!(c0.boost, 0x10);
+    }
+
+    #[test]
+    fn cascade_full_three_neighbors() {
+        // pair 0 fires, all neighbors [1, 5, 11] also fire → boost 0x20
+        let fired = vec![0, 1, 5, 11];
+        let v_idle = v(0, 0.5, 0.1, 0.0);
+        let cascades = mesh_cascade_for(&fired, &v_idle);
+        let c0 = cascades.iter().find(|c| c.pair == 0).unwrap();
+        assert_eq!(c0.neighbor_fires, 3);
+        assert_eq!(c0.boost, 0x20);
     }
 }

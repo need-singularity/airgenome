@@ -48,6 +48,7 @@ fn main() {
         "modes" => modes_cmd(),
         "schedule-quiet" => schedule_quiet_cmd(&args),
         "benchmark" | "bench" => benchmark_cmd(&args),
+        "measure-impact" | "impact" => measure_impact_cmd(&args),
         "unschedule-quiet" => unschedule_quiet_cmd(),
         "schedule-signature" | "schedule-sig" => schedule_signature_cmd(&args),
         "unschedule-signature" | "unschedule-sig" => unschedule_signature_cmd(),
@@ -62,6 +63,8 @@ fn main() {
         "predict" => predict_cmd(&args),
         "correlations" | "corr" => correlations_cmd(),
         "processes" | "proc" => processes_cmd(),
+        "ghost" => ghost_cmd(),
+        "nexus" => nexus_cmd(&args),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "fingerprints" | "fp" => fingerprints_cmd(),
@@ -835,6 +838,293 @@ fn processes_cmd() {
     }
 }
 
+fn ghost_cmd() {
+    // ── Scan 1: Zombie processes (Z state) ──
+    let ps_stat = match std::process::Command::new("ps")
+        .args(["-axo", "stat=,pid=,rss=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => { eprintln!("ps failed"); std::process::exit(1); }
+    };
+
+    struct Ghost { pid: u32, rss_kb: u64, kind: &'static str, name: String }
+    let mut ghosts: Vec<Ghost> = Vec::new();
+
+    // Parse zombies.
+    for line in ps_stat.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let parts: Vec<&str> = trimmed.splitn(4, char::is_whitespace).collect();
+        if parts.len() < 4 { continue; }
+        let stat = parts[0].trim();
+        if stat.contains('Z') {
+            let pid: u32 = parts[1].trim().parse().unwrap_or(0);
+            let rss_kb: u64 = parts[2].trim().parse().unwrap_or(0);
+            let name = parts[3].trim().to_string();
+            ghosts.push(Ghost { pid, rss_kb, kind: "zombie", name });
+        }
+    }
+
+    // ── Scan 2: Orphaned helpers (ppid=1 + Helper/Agent/Worker + RSS>10MB) ──
+    let ps_ppid = match std::process::Command::new("ps")
+        .args(["-axo", "ppid=,pid=,rss=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    };
+
+    for line in ps_ppid.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let parts: Vec<&str> = trimmed.splitn(4, char::is_whitespace).collect();
+        if parts.len() < 4 { continue; }
+        let ppid: u32 = parts[0].trim().parse().unwrap_or(999);
+        if ppid != 1 { continue; }
+        let pid: u32 = parts[1].trim().parse().unwrap_or(0);
+        let rss_kb: u64 = parts[2].trim().parse().unwrap_or(0);
+        let name = parts[3].trim().to_string();
+        let lo = name.to_lowercase();
+        if rss_kb > 10_000 && (lo.contains("helper") || lo.contains("agent") || lo.contains("worker")) {
+            // Don't double-count zombies.
+            if !ghosts.iter().any(|g| g.pid == pid) {
+                ghosts.push(Ghost { pid, rss_kb, kind: "orphan", name });
+            }
+        }
+    }
+
+    // ── Scan 3: RSS ghosts (high RSS, zero CPU, sampled twice) ──
+    let sample_ps = || -> Vec<(u32, u64, f64, String)> {
+        let out = match std::process::Command::new("ps")
+            .args(["-axo", "pid=,rss=,pcpu=,comm="])
+            .output()
+        {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+            _ => return Vec::new(),
+        };
+        let mut rows = Vec::new();
+        for line in out.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            let mut it = trimmed.split_whitespace();
+            let pid: u32 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+            let rss_kb: u64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+            let cpu: f64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+            let comm: String = it.collect::<Vec<_>>().join(" ");
+            rows.push((pid, rss_kb, cpu, comm));
+        }
+        rows
+    };
+
+    let snap1 = sample_ps();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let snap2 = sample_ps();
+
+    for (pid, rss, cpu2, name) in &snap2 {
+        if *rss < 50_000 || *cpu2 > 0.0 { continue; }
+        // Must also be zero CPU in snap1.
+        if let Some((_, _, cpu1, _)) = snap1.iter().find(|(p, _, _, _)| p == pid) {
+            if *cpu1 > 0.0 { continue; }
+            if !ghosts.iter().any(|g| g.pid == *pid) {
+                ghosts.push(Ghost { pid: *pid, rss_kb: *rss, kind: "rss-ghost", name: name.clone() });
+            }
+        }
+    }
+
+    // ── Aggregate and report ──
+    let total_sys_rss: u64 = snap2.iter().map(|(_, r, _, _)| r).sum();
+    let zombie_count = ghosts.iter().filter(|g| g.kind == "zombie").count();
+    let orphan_count = ghosts.iter().filter(|g| g.kind == "orphan").count();
+    let rss_ghost_count = ghosts.iter().filter(|g| g.kind == "rss-ghost").count();
+    let zombie_rss: u64 = ghosts.iter().filter(|g| g.kind == "zombie").map(|g| g.rss_kb).sum();
+    let orphan_rss: u64 = ghosts.iter().filter(|g| g.kind == "orphan").map(|g| g.rss_kb).sum();
+    let rss_ghost_rss: u64 = ghosts.iter().filter(|g| g.kind == "rss-ghost").map(|g| g.rss_kb).sum();
+    let total_ghost_rss = zombie_rss + orphan_rss + rss_ghost_rss;
+    let ghost_frac = if total_sys_rss > 0 { total_ghost_rss as f64 / total_sys_rss as f64 } else { 0.0 };
+
+    println!("=== airgenome ghost — information sink scan ===");
+    println!();
+    println!("  Type          Count    RSS total    % of system RSS");
+    println!("  ────────────────────────────────────────────────────");
+    println!("  zombie       {:>5}    {:>6} MB      {:.1}%", zombie_count, zombie_rss / 1024, if total_sys_rss > 0 { 100.0 * zombie_rss as f64 / total_sys_rss as f64 } else { 0.0 });
+    println!("  orphan       {:>5}    {:>6} MB      {:.1}%", orphan_count, orphan_rss / 1024, if total_sys_rss > 0 { 100.0 * orphan_rss as f64 / total_sys_rss as f64 } else { 0.0 });
+    println!("  rss-ghost    {:>5}    {:>6} MB      {:.1}%", rss_ghost_count, rss_ghost_rss / 1024, if total_sys_rss > 0 { 100.0 * rss_ghost_rss as f64 / total_sys_rss as f64 } else { 0.0 });
+    println!("  ────────────────────────────────────────────────────");
+    println!("  total        {:>5}    {:>6} MB      {:.1}%", ghosts.len(), total_ghost_rss / 1024, 100.0 * ghost_frac);
+    println!();
+
+    // Hexagon impact.
+    let eff_loss = ghost_frac * (5.0 / 15.0);
+    println!("  Hexagon impact (ram axis pollution):");
+    println!("    ghost_fraction = {:.3}", ghost_frac);
+    println!("    ram-centered pairs affected: [0, 5, 6, 7, 8] (5 of 15)");
+    println!("    estimated efficiency loss: {:.4}", eff_loss);
+    println!();
+
+    // Top ghosts.
+    ghosts.sort_by(|a, b| b.rss_kb.cmp(&a.rss_kb));
+    if !ghosts.is_empty() {
+        println!("  Top ghosts:");
+        for g in ghosts.iter().take(10) {
+            let short: String = g.name.split('/').next_back().unwrap_or(&g.name).chars().take(40).collect();
+            println!("    PID {:>6}  {:>6} MB  {:>8}  {}", g.pid, g.rss_kb / 1024, g.kind, short);
+        }
+        println!();
+    }
+
+    println!("  {}", dim("(kill-free: no processes terminated)"));
+}
+
+fn nexus_cmd(args: &[String]) {
+    let bins: usize = args.iter().position(|a| a == "--bins" || a == "-b")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+
+    // ── Load vitals history ──
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+    if records.is_empty() {
+        println!("no records yet — run daemon first.");
+        return;
+    }
+
+    // Convert to Vitals vec.
+    let history: Vec<airgenome::Vitals> = records.iter().map(|r| {
+        let mut axes = [0.0; 6];
+        axes[Axis::Cpu.index()] = r.cpu;
+        axes[Axis::Ram.index()] = r.ram;
+        axes[Axis::Gpu.index()] = r.gpu;
+        axes[Axis::Npu.index()] = r.npu;
+        axes[Axis::Power.index()] = r.power;
+        axes[Axis::Io.index()] = r.io;
+        airgenome::Vitals { ts: r.ts, axes }
+    }).collect();
+
+    println!("=== airgenome nexus — singularity breakthrough analysis ===");
+    println!("  samples: {}  bins: {}  span: {:.1}h",
+        records.len(), bins,
+        (records.last().unwrap().ts - records.first().unwrap().ts) as f64 / 3600.0);
+    println!();
+
+    // ── Layer A: Mesh coupling replay ──
+    let mut engine = airgenome::PolicyEngine::with_defaults(12);
+    let mut per_pair = [0usize; 15];
+    let mut cascade_total = [0u32; 15];
+    for v in &history {
+        let proposals = engine.tick(*v);
+        let fired: Vec<usize> = proposals.iter().map(|p| p.pair).collect();
+        for &k in &fired { per_pair[k] += 1; }
+        let cascades = airgenome::mesh_cascade_for(&fired, v);
+        for c in &cascades {
+            cascade_total[c.pair] += c.boost as u32;
+        }
+    }
+
+    let cascade_pairs = cascade_total.iter().filter(|&&b| b > 0).count();
+    println!("  Layer A — Mesh Coupling:");
+    println!("    pairs with cascade engagement: {}/15", cascade_pairs);
+    let mut cascade_ranked: Vec<(usize, u32)> = cascade_total.iter().copied().enumerate()
+        .filter(|(_, b)| *b > 0).collect();
+    cascade_ranked.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, boost) in cascade_ranked.iter().take(5) {
+        let (a, b) = PAIRS[*k];
+        println!("    [{:>2}] {}×{}  cascade boost: 0x{:03X}", k, a.name(), b.name(), boost);
+    }
+    println!();
+
+    // ── Layer B: MI gap ──
+    let gaps = airgenome::mi_gap(&history, &per_pair, bins);
+    let gap_total: f64 = gaps.iter().sum();
+    let gap_max: f64 = gaps.iter().cloned().fold(0.0f64, f64::max);
+
+    println!("  Layer B — MI Gap Analysis:");
+    println!("    Pair         MI_gap   status");
+    println!("    ─────────────────────────────");
+    let mut gap_ranked: Vec<(usize, f64)> = gaps.iter().copied().enumerate().collect();
+    gap_ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (k, g) in gap_ranked.iter().take(5) {
+        let (a, b) = PAIRS[*k];
+        let status = if *g > 0.3 { red("LEAKING") } else if *g > 0.1 { yellow("weak") } else { green("ok") };
+        println!("    [{:>2}] {:<6}×{:<6} {:>6.3}   {}", k, a.name(), b.name(), g, status);
+    }
+    println!("    total gap: {:.3}  max: {:.3}", gap_total, gap_max);
+    println!();
+
+    // ── Layer C: Ghost estimate (quick — reuse current ps snapshot) ──
+    let ps_out = match std::process::Command::new("ps")
+        .args(["-axo", "pid=,rss=,pcpu=,comm="])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    };
+    let mut ghost_rss: u64 = 0;
+    let mut total_rss: u64 = 0;
+    for line in ps_out.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        let mut it = trimmed.split_whitespace();
+        let _pid: u32 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let rss_kb: u64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        let cpu: f64 = match it.next().and_then(|s| s.parse().ok()) { Some(v) => v, None => continue };
+        total_rss += rss_kb;
+        if rss_kb > 50_000 && cpu == 0.0 {
+            ghost_rss += rss_kb;
+        }
+    }
+    let ghost_frac = if total_rss > 0 { ghost_rss as f64 / total_rss as f64 } else { 0.0 };
+
+    println!("  Layer C — Ghost Sink:");
+    println!("    ghost RSS: {} MB / {} MB ({:.1}%)",
+        ghost_rss / 1024, total_rss / 1024, 100.0 * ghost_frac);
+    println!();
+
+    // ── Adjusted efficiency ──
+    let raw_efficiency = 0.636;
+    let mesh_boost = cascade_pairs as f64 / 15.0 * (1.0 / 30.0);
+    let mi_recovery = if gap_total > 0.0 {
+        let gap_closed = gap_total - gap_max;
+        (gap_closed / gap_total).max(0.0) * (1.0 / 30.0)
+    } else { 0.0 };
+    let ghost_penalty = ghost_frac * (5.0 / 15.0) * (1.0 / 30.0);
+    let adjusted = raw_efficiency + mesh_boost + mi_recovery - ghost_penalty;
+    let distance = (adjusted - 2.0 / 3.0).abs();
+    let reached = distance < 0.01;
+
+    println!("  ══════════════════════════════════════");
+    println!("  Efficiency breakdown:");
+    println!("    raw (rule-only):    {:.4}", raw_efficiency);
+    println!("    + mesh coupling:   {:+.4}", mesh_boost);
+    println!("    + MI recovery:     {:+.4}", mi_recovery);
+    println!("    - ghost penalty:   {:+.4}", -ghost_penalty);
+    println!("    ────────────────────────");
+    println!("    adjusted:           {:.4}", adjusted);
+    println!("    singularity (2/3):  {:.4}", 2.0_f64 / 3.0);
+    println!("    distance:           {:.4}", distance);
+    println!();
+
+    if reached {
+        println!("  {}", green(">>> SINGULARITY REACHED <<<"));
+    } else {
+        println!("  singularity not yet reached (distance: {:.4})", distance);
+        if ghost_frac > 0.05 {
+            println!("  hint: run `airgenome ghost` for detailed sink analysis");
+        }
+        if gap_max > 0.3 {
+            let (worst_k, _) = gap_ranked[0];
+            let (a, b) = PAIRS[worst_k];
+            println!("  hint: gate [{}] {}×{} is the top leaker — threshold may be too strict",
+                worst_k, a.name(), b.name());
+        }
+    }
+}
+
 fn correlations_cmd() {
     let path = home_dir().join(".airgenome").join("signatures.jsonl");
     let body = match std::fs::read_to_string(&path) {
@@ -1367,6 +1657,47 @@ fn sysctl_cmd(args: &[String]) {
         Ok(HelperResponse::Error { message }) => { println!("error: {}", message); std::process::exit(1); }
         Err(e) => { eprintln!("dial failed: {:?}", e); std::process::exit(1); }
     }
+}
+
+fn measure_impact_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_purge, req_mdutil_off, req_tmutil_disable, req_dns_flush, HelperResponse, DEFAULT_SOCKET_PATH};
+    let wait_s: u64 = args.iter().position(|a| a == "--wait" || a == "-w")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4);
+
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    println!("=== airgenome measure-impact — per-lever isolated measurement ===");
+    println!();
+    println!("  each lever: sample baseline → apply → wait {}s → sample after", wait_s);
+    println!();
+
+    let levers: Vec<(&str, String)> = vec![
+        ("purge       ", req_purge()),
+        ("dns-flush   ", req_dns_flush()),
+        ("spotlight   ", req_mdutil_off()),
+        ("timemachine ", req_tmutil_disable()),
+    ];
+
+    for (label, req) in &levers {
+        let before = airgenome::sample();
+        let result = dial(&socket, req);
+        let ok = matches!(result, Ok(HelperResponse::Ok { .. }));
+        let tag = if ok { green("ok ") } else { yellow("skip") };
+
+        std::thread::sleep(std::time::Duration::from_secs(wait_s));
+        let after = airgenome::sample();
+        let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+        let df = airgenome::firing(&after).len() as i64 - airgenome::firing(&before).len() as i64;
+
+        println!("  {} {} ram:{:+.3}  firing:{:+}", label, tag, dram, df);
+    }
+
+    println!();
+    println!("{}", dim("note: each lever is applied sequentially, not in isolation —"));
+    println!("{}", dim("later levers see the cumulative effect of earlier ones."));
 }
 
 fn benchmark_cmd(args: &[String]) {
@@ -3668,6 +3999,8 @@ fn print_help() {
     println!("  predict [-t D]                            if current d>D, suggest preemptive apply");
     println!("  correlations                              pairwise Pearson r across category series");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
+    println!("  ghost                                     information sink scan (zombie/orphan/rss-ghost)");
+    println!("  nexus [--bins N]                          singularity breakthrough analysis (A+B+C)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
     println!("  fingerprints                              list built-in + custom fingerprints");

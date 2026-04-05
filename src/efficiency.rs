@@ -147,6 +147,65 @@ fn range(xs: &[f64]) -> (f64, f64) {
     (lo, hi)
 }
 
+/// Per-pair MI gap: how much mutual information each gate fails to capture.
+///
+/// For each of the 15 axis pairs, computes MI between the two axes over
+/// `history`, normalizes to `[0, 1]`, then subtracts the normalized fire
+/// rate. Positive gap = "leaking gate" (correlated axes, rule not firing).
+///
+/// Returns `[f64; 15]` — one gap score per pair, clamped to `>= 0`.
+pub fn mi_gap(
+    history: &[crate::vitals::Vitals],
+    fire_counts: &[usize; 15],
+    bins: usize,
+) -> [f64; 15] {
+    use crate::gate::PAIRS;
+    let n = history.len();
+    if n < bins || bins < 2 {
+        return [0.0; 15];
+    }
+
+    // Extract per-axis time series.
+    let axis_series = |axis: crate::gate::Axis| -> Vec<f64> {
+        history.iter().map(|v| v.get(axis)).collect()
+    };
+
+    // Compute MI for each pair.
+    let mut mi_raw = [0.0f64; 15];
+    for (k, &(a, b)) in PAIRS.iter().enumerate() {
+        let xs = axis_series(a);
+        let ys = axis_series(b);
+        mi_raw[k] = mutual_info_hist(&xs, &ys, bins);
+    }
+
+    // Normalize MI to [0, 1].
+    let mi_max = mi_raw.iter().cloned().fold(0.0f64, f64::max);
+    let mi_norm: [f64; 15] = {
+        let mut arr = [0.0; 15];
+        for k in 0..15 {
+            arr[k] = if mi_max > 0.0 { mi_raw[k] / mi_max } else { 0.0 };
+        }
+        arr
+    };
+
+    // Normalize fire rates to [0, 1].
+    let fr_max = *fire_counts.iter().max().unwrap_or(&1) as f64;
+    let fr_norm: [f64; 15] = {
+        let mut arr = [0.0; 15];
+        for k in 0..15 {
+            arr[k] = if fr_max > 0.0 { fire_counts[k] as f64 / fr_max } else { 0.0 };
+        }
+        arr
+    };
+
+    // Gap = mi_norm - fr_norm, clamped to >= 0.
+    let mut gaps = [0.0; 15];
+    for k in 0..15 {
+        gaps[k] = (mi_norm[k] - fr_norm[k]).max(0.0);
+    }
+    gaps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +266,60 @@ mod tests {
         let ys: Vec<f64> = xs.iter().map(|x| 2.0 * x + 3.0).collect();
         let mi = mutual_info_hist(&xs, &ys, 5);
         assert!(mi > 0.5, "expected strong MI, got {mi}");
+    }
+
+    #[test]
+    fn mi_gap_zero_when_fire_matches_mi() {
+        use crate::gate::Axis;
+        // Construct vitals where cpu and ram are perfectly correlated
+        // AND fire_counts reflect that — gap should be ~0 for pair 0.
+        let mut history = Vec::new();
+        for i in 0..100 {
+            let t = i as f64 / 100.0;
+            let mut axes = [0.0; 6];
+            axes[Axis::Cpu.index()] = 5.0 * t;
+            axes[Axis::Ram.index()] = t;
+            axes[Axis::Gpu.index()] = 8.0;
+            axes[Axis::Npu.index()] = 8.0;
+            axes[Axis::Power.index()] = 1.0;
+            axes[Axis::Io.index()] = 0.0;
+            history.push(crate::vitals::Vitals { ts: i, axes });
+        }
+        // fire_counts[0] = 100 (always fires) → fire_rate = 1.0
+        let mut fire_counts = [0usize; 15];
+        fire_counts[0] = 100;
+        let gaps = mi_gap(&history, &fire_counts, 10);
+        // gap[0] should be 0 or negative (clamped to 0)
+        assert!(gaps[0] < 0.1, "expected near-zero gap, got {}", gaps[0]);
+    }
+
+    #[test]
+    fn mi_gap_positive_when_correlated_but_never_fires() {
+        use crate::gate::Axis;
+        let mut history = Vec::new();
+        for i in 0..100 {
+            let t = i as f64 / 100.0;
+            let mut axes = [0.0; 6];
+            axes[Axis::Cpu.index()] = 5.0 * t;
+            axes[Axis::Ram.index()] = t;  // correlated with cpu
+            axes[Axis::Gpu.index()] = 8.0;
+            axes[Axis::Npu.index()] = 8.0;
+            axes[Axis::Power.index()] = 1.0;
+            axes[Axis::Io.index()] = 0.0;
+            history.push(crate::vitals::Vitals { ts: i, axes });
+        }
+        // fire_counts[0] = 0 — never fires despite high MI
+        let fire_counts = [0usize; 15];
+        let gaps = mi_gap(&history, &fire_counts, 10);
+        // MI(cpu, ram) is high, fire_rate = 0 → gap > 0
+        assert!(gaps[0] > 0.3, "expected positive gap for correlated pair, got {}", gaps[0]);
+    }
+
+    #[test]
+    fn mi_gap_has_fifteen_entries() {
+        let history = vec![crate::vitals::Vitals::zeroed(); 20];
+        let fire_counts = [0usize; 15];
+        let gaps = mi_gap(&history, &fire_counts, 5);
+        assert_eq!(gaps.len(), 15);
     }
 }
