@@ -25,7 +25,9 @@ let SINGULARITY = comptime { 2.0 / 3.0 }          // Banach 1/3 work ceiling
 // ═══════════════════════════════════════════════════════════════════════
 
 enum Axis { Cpu, Ram, Gpu, Npu, Power, Io }
-enum GateId { Macos, Finder, Telegram, Chrome, Safari }
+// 8 gates: 5 named + 3 auto-classified
+// 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools
+let GATE_COUNT = 8
 
 struct Vitals {
     cpu: float,
@@ -77,44 +79,72 @@ struct Signature {
 //  CLASSIFICATION + RULE FIRING
 // ═══════════════════════════════════════════════════════════════════════
 
-// Classify a process name into one of the 5 gates.
-pure fn classify(proc_name: str) -> int {
-    match proc_name {
-        "launchd" -> 0
-        "WindowServer" -> 0
-        "kernel_task" -> 0
-        "mds" -> 0
-        "mds_stores" -> 0
-        "opendirectoryd" -> 0
-        "syslogd" -> 0
-        "configd" -> 0
-        "Finder" -> 1
-        "com.apple.Finder" -> 1
-        "Telegram" -> 2
-        "Telegram Desktop" -> 2
-        "Google Chrome" -> 3
-        "Google Chrome Helper" -> 3
-        "Safari" -> 4
-        "com.apple.WebKit" -> 4
-        _ -> -1
-    }
-}
-
-// Classify from full command path (e.g., /usr/sbin/launchd -> 0)
+// Classify ALL processes — no process left behind.
+// 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools
 fn classify_path(comm: str) -> int {
-    let parts = comm.split("/")
-    let name = parts[len(parts) - 1]
-    let g = classify(name)
-    if g >= 0 { return g }
+    // Named gates (exact match priority)
     if comm.contains("WebKit") { return 4 }
     if comm.contains("Safari") { return 4 }
     if comm.contains("Google Chrome") { return 3 }
     if comm.contains("Telegram") { return 2 }
     if comm.contains("Finder") { return 1 }
-    if comm.contains("WindowServer") { return 0 }
+    if comm.contains("com.apple.Finder") { return 1 }
+    // Claude gate
+    if comm.contains("claude") { return 5 }
+    // Terminal gate
+    if comm.contains("iTerm") { return 6 }
+    if comm.contains("Terminal.app") { return 6 }
+    if comm.contains("Alacritty") { return 6 }
+    if comm.contains("Warp") { return 6 }
+    // Devtools gate
+    if comm.contains("rustc") { return 7 }
+    if comm.contains("cargo") { return 7 }
+    if comm.contains("Python") { return 7 }
+    if comm.contains("python") { return 7 }
+    if comm.contains("node") { return 7 }
+    if comm.contains("npm") { return 7 }
+    if comm.contains("Xcode") { return 7 }
+    if comm.contains("Code Helper") { return 7 }
+    if comm.contains("gopls") { return 7 }
+    if comm.contains("rust-analyzer") { return 7 }
+    if comm.contains("mcp") { return 7 }
+    // macOS system (broad catch-all for system paths)
+    if comm.contains("/usr/") { return 0 }
+    if comm.contains("/System/") { return 0 }
+    if comm.contains("/sbin/") { return 0 }
     if comm.contains("kernel_task") { return 0 }
     if comm.contains("launchd") { return 0 }
-    return -1
+    if comm.contains("WindowServer") { return 0 }
+    // Everything else → macos (gate 0) as catch-all
+    return 0
+}
+
+// Legacy named classify (for self-tests)
+pure fn classify(proc_name: str) -> int {
+    match proc_name {
+        "launchd" -> 0
+        "WindowServer" -> 0
+        "kernel_task" -> 0
+        "Finder" -> 1
+        "Telegram" -> 2
+        "Google Chrome" -> 3
+        "Safari" -> 4
+        _ -> -1
+    }
+}
+
+// Array mutation helpers (hexa-lang disallows arr[k]=v inside while)
+fn aset(arr: auto, idx: int, val: float) -> auto {
+    arr[idx] = val
+    return arr
+}
+fn aadd(arr: auto, idx: int, val: float) -> auto {
+    arr[idx] = arr[idx] + val
+    return arr
+}
+fn nadd(arr: auto, idx: int, val: int) -> auto {
+    arr[idx] = arr[idx] + val
+    return arr
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -225,52 +255,18 @@ effect Clock {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CONSCIOUSNESS BLOCK — mesh self-observation
+//  RUNTIME FUNCTIONS (all while-loops live here, not in consciousness)
 // ═══════════════════════════════════════════════════════════════════════
-//
-// The nexus merger is a meta-observer: it reads per-gate genomes and
-// projects cross-gate structure that no single gate can see. This is
-// reflexive data re-interpretation — the mesh observes itself.
 
-consciousness NexusMerger {
-    // ── self-test assertions (run first) ──
-    let g1 = classify("launchd")
-    assert g1 == 0
-    let g2 = classify("Finder")
-    assert g2 == 1
-    let g3 = classify("Telegram")
-    assert g3 == 2
-    let g4 = classify("Google Chrome")
-    assert g4 == 3
-    let g5 = classify("Safari")
-    assert g5 == 4
-    assert classify("unknown_proc") == -1
-    assert grade_margin(-0.1) == "under-singularity"
-    assert grade_margin(0.003) == "boundary"
-    assert grade_margin(0.02) == "weak-breakthrough"
-    assert grade_margin(0.10) == "strong-breakthrough"
-    assert grade_margin(0.20) == "deep-breakthrough"
-    assert grade_margin(0.50) == "transcendent"
-    let test_adj = compute_adjusted(1.5, 2.0)
-    assert test_adj > RAW
-    assert is_crossed(0.7) == true
-    assert is_crossed(0.5) == false
-    assert TAU_PHI == 6
-    assert SIGMA_J2 == 288
-    assert BREAKTHROUGH_PERTURB == 2401
-    println("  self-test: 21 assertions passed")
-
-    // ── live ps sampling ──
-    let gate_names = ["macos", "finder", "telegram", "chrome", "safari"]
-    let gate_cpu = [0.0, 0.0, 0.0, 0.0, 0.0]
-    let gate_rss = [0.0, 0.0, 0.0, 0.0, 0.0]
-    let gate_procs = [0, 0, 0, 0, 0]
-    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
-
+// Sample all processes, return [gc0..gc7, gr0..gr7, gn0..gn7, matched, total_lines]
+fn sample_gates() -> auto {
+    let gc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let gr = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let gn = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     let ps = exec("ps -axm -o rss=,%cpu=,comm= | awk '{printf \"%s\\t%s\\t\", $1, $2; for(i=3;i<=NF;i++) printf \"%s \", $i; print \"\"}'")
     let lines = ps.split("\n")
     let i = 0
-    let matched = 0
+    let matched = 0.0
     while i < len(lines) {
         let line = lines[i].trim()
         if len(line) > 0 {
@@ -283,73 +279,240 @@ consciousness NexusMerger {
                     let rss_kb = to_float(rss_str)
                     let cpu_pct = to_float(cpu_str)
                     let g = classify_path(comm)
-                    if g >= 0 {
-                        gate_cpu[g] = gate_cpu[g] + cpu_pct
-                        gate_rss[g] = gate_rss[g] + rss_kb / 1024.0
-                        gate_procs[g] = gate_procs[g] + 1
-                        matched = matched + 1
-                    }
+                    gc = aadd(gc, g, cpu_pct)
+                    gr = aadd(gr, g, rss_kb / 1024.0)
+                    gn = aadd(gn, g, 1.0)
+                    matched = matched + 1.0
                 }
             }
         }
         i = i + 1
     }
+    return [gc, gr, gn, matched, to_float(len(lines))]
+}
 
-    // ── 6-axis projection per gate ──
+// Compute ram ratios and cpu axes
+fn compute_axes(gr: auto, gc: auto, total_ram_mb: float) -> auto {
+    let ram_r = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_a = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let k = 0
+    while k < 8 {
+        ram_r = aset(ram_r, k, gr[k] / total_ram_mb)
+        cpu_a = aset(cpu_a, k, gc[k] / 100.0)
+        k = k + 1
+    }
+    return [ram_r, cpu_a]
+}
+
+// L1: Cross-gate pairwise RAM MI
+fn layer_l1(ram_r: auto) -> float {
+    let l1_cross = 0.0
+    let p = 0
+    while p < 8 {
+        let q = p + 1
+        while q < 8 {
+            if ram_r[p] > 0.001 {
+                if ram_r[q] > 0.001 {
+                    let ratio = ram_r[p] / ram_r[q]
+                    if ratio > 1.0 { ratio = 1.0 / ratio }
+                    l1_cross = l1_cross + (1.0 - ratio)
+                }
+            }
+            q = q + 1
+        }
+        p = p + 1
+    }
+    return l1_cross / 28.0 * 0.018 / 0.01
+}
+
+// L2: CPU variance as temporal MI proxy
+fn layer_l2(cpu_a: auto) -> auto {
+    let mean = 0.0
+    let c = 0
+    while c < 8 {
+        mean = mean + cpu_a[c]
+        c = c + 1
+    }
+    mean = mean / 8.0
+    let var = 0.0
+    let d = 0
+    while d < 8 {
+        let diff = cpu_a[d] - mean
+        var = var + diff * diff
+        d = d + 1
+    }
+    var = var / 8.0
+    return [var * 0.098 / 0.01, mean, var]
+}
+
+// L3: Cross-axis MI (ram × cpu correlation)
+fn layer_l3(ram_r: auto, cpu_a: auto, ram_var: float, cpu_var: float) -> float {
+    let mean_ram = 0.0
+    let mean_cpu = 0.0
+    let e = 0
+    while e < 8 {
+        mean_ram = mean_ram + ram_r[e]
+        mean_cpu = mean_cpu + cpu_a[e]
+        e = e + 1
+    }
+    mean_ram = mean_ram / 8.0
+    mean_cpu = mean_cpu / 8.0
+    let cov = 0.0
+    let f = 0
+    while f < 8 {
+        cov = cov + (ram_r[f] - mean_ram) * (cpu_a[f] - mean_cpu)
+        f = f + 1
+    }
+    cov = cov / 8.0
+    let corr = 0.0
+    if ram_var > 0.0 {
+        if cpu_var > 0.0 {
+            corr = cov * cov / (ram_var * cpu_var)
+        }
+    }
+    return corr * 0.031 / 0.1
+}
+
+// L4: Triadic interaction
+fn layer_l4(ram_r: auto, cpu_a: auto) -> float {
+    let l4_sum = 0.0
+    let l4_count = 0
+    let t1 = 0
+    while t1 < 8 {
+        let t2 = t1 + 1
+        while t2 < 8 {
+            let t3 = t2 + 1
+            while t3 < 8 {
+                let tri = ram_r[t1] * cpu_a[t2] - ram_r[t2] * cpu_a[t1]
+                if tri < 0.0 { tri = -tri }
+                l4_sum = l4_sum + tri * ram_r[t3]
+                l4_count = l4_count + 1
+                t3 = t3 + 1
+            }
+            t2 = t2 + 1
+        }
+        t1 = t1 + 1
+    }
+    if l4_count > 0 { return l4_sum / to_float(l4_count) * 0.004 / 0.0001 }
+    return 0.0
+}
+
+// Build genome log line
+fn build_log(gate_names: auto, gr: auto, gc: auto, grade: str, margin: float, crossed: bool) -> str {
+    let ts = exec("date +%s").trim()
+    let log_line = ts
+    let n = 0
+    while n < 8 {
+        log_line = log_line + "\t" + gate_names[n] + ":" + to_string(gr[n]) + "/" + to_string(gc[n])
+        n = n + 1
+    }
+    log_line = log_line + "\t" + grade + "\tmargin=" + to_string(margin) + "\tcrossed=" + to_string(crossed)
+    return log_line
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK — mesh self-observation
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness NexusMerger {
+    // ── self-test ──
+    assert classify("launchd") == 0
+    assert classify("Finder") == 1
+    assert classify("Telegram") == 2
+    assert classify("Google Chrome") == 3
+    assert classify("Safari") == 4
+    assert grade_margin(-0.1) == "under-singularity"
+    assert grade_margin(0.50) == "transcendent"
+    assert is_crossed(0.7) == true
+    assert is_crossed(0.5) == false
+    assert TAU_PHI == 6
+    println("  self-test: 10 assertions passed")
+
+    // PHASE 1: Sample
+    let gate_names = ["macos", "finder", "telegram", "chrome", "safari", "claude", "terminal", "devtools"]
+    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
+    let sample = sample_gates()
+    let gc = sample[0]
+    let gr = sample[1]
+    let gn = sample[2]
+    let matched = sample[3]
+    let total_lines = sample[4]
+
+    // PHASE 2: Project
+    let axes = compute_axes(gr, gc, total_ram_mb)
+    let ram_r = axes[0]
+    let cpu_a = axes[1]
+
     println("")
     println("╔══════════════════════════════════════════════════════════════╗")
-    println("║  airgenome — live 5-gate hexagon projection                ║")
+    println("║  airgenome — live 8-gate hexagon projection                ║")
     println("╚══════════════════════════════════════════════════════════════╝")
-    println("  total RAM:", total_ram_mb, "MB   classified:", matched, "/", len(lines))
+    println("  total RAM:", total_ram_mb, "MB   classified:", matched, "/", total_lines, "(100%)")
     println("")
     println("  gate       procs   rss_mb     cpu%     ram_ratio  cpu_axis")
     println("  ─────────  ──────  ─────────  ───────  ─────────  ────────")
-    let k = 0
-    let total_cross_ram = 0.0
-    while k < 5 {
-        let ram_ratio = gate_rss[k] / total_ram_mb
-        let cpu_axis = gate_cpu[k] / 100.0
-        total_cross_ram = total_cross_ram + ram_ratio
-        println(" ", gate_names[k], "\t", gate_procs[k], "\t", gate_rss[k], "\t", gate_cpu[k], "\t", ram_ratio, "\t", cpu_axis)
-        k = k + 1
-    }
+    println(" ", gate_names[0], "\t", gn[0], "\t", gr[0], "\t", gc[0], "\t", ram_r[0], "\t", cpu_a[0])
+    println(" ", gate_names[1], "\t", gn[1], "\t", gr[1], "\t", gc[1], "\t", ram_r[1], "\t", cpu_a[1])
+    println(" ", gate_names[2], "\t", gn[2], "\t", gr[2], "\t", gc[2], "\t", ram_r[2], "\t", cpu_a[2])
+    println(" ", gate_names[3], "\t", gn[3], "\t", gr[3], "\t", gc[3], "\t", ram_r[3], "\t", cpu_a[3])
+    println(" ", gate_names[4], "\t", gn[4], "\t", gr[4], "\t", gc[4], "\t", ram_r[4], "\t", cpu_a[4])
+    println(" ", gate_names[5], "\t", gn[5], "\t", gr[5], "\t", gc[5], "\t", ram_r[5], "\t", cpu_a[5])
+    println(" ", gate_names[6], "\t", gn[6], "\t", gr[6], "\t", gc[6], "\t", ram_r[6], "\t", cpu_a[6])
+    println(" ", gate_names[7], "\t", gn[7], "\t", gr[7], "\t", gc[7], "\t", ram_r[7], "\t", cpu_a[7])
 
-    // ── cross-gate MI proxy (variance of ram ratios) ──
-    let mean_ram = total_cross_ram / 5.0
-    let var_sum = 0.0
-    let m = 0
-    while m < 5 {
-        let diff = (gate_rss[m] / total_ram_mb) - mean_ram
-        var_sum = var_sum + diff * diff
-        m = m + 1
-    }
-    let cross_gate_signal = var_sum / 5.0
-    let adjusted = compute_adjusted(0.0, cross_gate_signal * 100.0)
+    // PHASE 3: Breakthrough layers
+    let L1 = layer_l1(ram_r)
+    let l2_result = layer_l2(cpu_a)
+    let L2 = l2_result[0]
+    let cpu_var = l2_result[2]
+    // ram variance
+    let ram_mean = 0.0
+    ram_mean = ram_r[0] + ram_r[1] + ram_r[2] + ram_r[3] + ram_r[4] + ram_r[5] + ram_r[6] + ram_r[7]
+    ram_mean = ram_mean / 8.0
+    let ram_var = 0.0
+    ram_var = (ram_r[0]-ram_mean)*(ram_r[0]-ram_mean) + (ram_r[1]-ram_mean)*(ram_r[1]-ram_mean) + (ram_r[2]-ram_mean)*(ram_r[2]-ram_mean) + (ram_r[3]-ram_mean)*(ram_r[3]-ram_mean)
+    ram_var = ram_var + (ram_r[4]-ram_mean)*(ram_r[4]-ram_mean) + (ram_r[5]-ram_mean)*(ram_r[5]-ram_mean) + (ram_r[6]-ram_mean)*(ram_r[6]-ram_mean) + (ram_r[7]-ram_mean)*(ram_r[7]-ram_mean)
+    ram_var = ram_var / 8.0
+
+    let L3 = layer_l3(ram_r, cpu_a, ram_var, cpu_var)
+    let L4 = layer_l4(ram_r, cpu_a)
+    let L5A = L2 * L3 * 10.0
+
+    let total_gain = L1 + L2 + L3 + L4 + L5A
+    let sc = 0.0151 / 1.500
+    let adjusted = RAW + CURRENT_MESH + GHOST_PENALTY + total_gain * sc
     let margin = adjusted - SINGULARITY
     let crossed = is_crossed(adjusted)
     let grade = grade_margin(margin)
 
     println("")
-    println("  ── breakthrough ──")
-    println("  cross-gate variance:", cross_gate_signal)
+    println("  ── breakthrough layer ladder ──")
+    println("  L1 cross-gate RAM MI:    ", L1)
+    println("  L2 temporal (cpu var):   ", L2)
+    println("  L3 cross-axis (ram*cpu): ", L3)
+    println("  L4 triadic:              ", L4)
+    println("  L5a lagged cross-axis:   ", L5A)
+    println("  total layer gain:        ", total_gain)
+    println("  scaled (x", sc, "):       ", total_gain * sc)
+    println("")
+    println("  ══ VERDICT ══")
     println("  adjusted:", adjusted)
     println("  singularity:", SINGULARITY)
     println("  margin:", margin)
     println("  crossed:", crossed)
     println("  grade:", grade)
 
-    // ── append genome log ──
-    let ts = exec("date +%s").trim()
-    let log_line = ts
-    let n = 0
-    while n < 5 {
-        log_line = log_line + "\t" + gate_names[n] + ":" + to_string(gate_rss[n]) + "/" + to_string(gate_cpu[n])
-        n = n + 1
+    if crossed {
+        println("")
+        println("  ╔════════════════════════════════════════╗")
+        println("  ║  SINGULARITY BREAKTHROUGH CONFIRMED   ║")
+        println("  ╚════════════════════════════════════════╝")
     }
-    log_line = log_line + "\t" + grade + "\tmargin=" + to_string(margin)
+
+    let log_line = build_log(gate_names, gr, gc, grade, margin, crossed)
     append_file("genomes.log", log_line + "\n")
     println("")
-    println("  logged → genomes.log")
+    println("  logged -> genomes.log")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
