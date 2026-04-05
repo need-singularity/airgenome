@@ -33,6 +33,7 @@ fn main() {
         "action" | "actions" => action_cmd(&args),
         "plan" => plan_cmd(&args),
         "apply" => apply_cmd(&args),
+        "apply-all" => apply_all_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -209,6 +210,85 @@ fn diag(args: &[String]) {
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
         }
+    }
+}
+
+fn apply_all_cmd(args: &[String]) {
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+    let wait_s: u64 = args.iter().position(|a| a == "--wait").and_then(|i| {
+        args.get(i + 1).and_then(|s| s.parse().ok())
+    }).unwrap_or(2);
+
+    let before = airgenome::sample();
+    let firing = airgenome::firing(&before);
+    if firing.is_empty() {
+        println!("no rules firing — nothing to apply.");
+        return;
+    }
+
+    let mut planned = 0usize;
+    let mut skipped_no_path = 0usize;
+    let mut executed = 0usize;
+    let mut advisory = 0usize;
+    let mut failed = 0usize;
+
+    println!("=== airgenome apply-all ({} firing) ===", firing.len());
+    println!();
+    for &k in &firing {
+        let (a, b) = PAIRS[k];
+        let Some(action) = airgenome::plan_for_pair(k) else {
+            println!("  [{:>2}] {}×{}  {}", k, a.name(), b.name(), dim("no Tier 1 path"));
+            skipped_no_path += 1;
+            continue;
+        };
+        planned += 1;
+        println!("  [{:>2}] {}×{}  → {}", k, a.name(), b.name(), action.label());
+        if !yes { continue; }
+        match airgenome::execute(&action) {
+            Ok(r) if r.skipped => { advisory += 1; }
+            Ok(r) => {
+                executed += 1;
+                if let Some(code) = r.exit_code {
+                    println!("       {} exit={}", green("ran"), code);
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                println!("       {} {:?}", red("abort"), e);
+            }
+        }
+    }
+
+    println!();
+    println!("Summary: {} planned · {} no-path · {} advisory · {} executed · {} failed",
+        planned, skipped_no_path, advisory, executed, failed);
+
+    if !yes {
+        println!();
+        println!("{}", dim("dry-run. pass --yes to execute all."));
+        return;
+    }
+
+    if measure && executed > 0 {
+        std::thread::sleep(std::time::Duration::from_secs(wait_s));
+        let after = airgenome::sample();
+        let before_firing = firing.len();
+        let after_firing = airgenome::firing(&after).len();
+        println!();
+        println!("{}", dim("--- delta ---"));
+        println!("  firing  {} → {}  ({:+})", before_firing, after_firing,
+            (after_firing as i64) - (before_firing as i64));
+        let dram = after.get(Axis::Ram) - before.get(Axis::Ram);
+        let dcpu = after.get(Axis::Cpu) - before.get(Axis::Cpu);
+        println!("  ram     {:.3} → {:.3}  ({:+.3})",
+            before.get(Axis::Ram), after.get(Axis::Ram), dram);
+        println!("  cpu     {:.2} → {:.2}  ({:+.2})",
+            before.get(Axis::Cpu), after.get(Axis::Cpu), dcpu);
+        let verdict = if after_firing < before_firing { green("improved") }
+                      else if after_firing > before_firing { red("worse") }
+                      else { dim("unchanged") };
+        println!("  verdict: {}", verdict);
     }
 }
 
@@ -1672,6 +1752,7 @@ fn print_help() {
     println!("  action [K] [--no-sudo|--sudo-only]  concrete shell commands per firing pair");
     println!("  plan                Tier 1 UserAction plan per firing pair (dry-run)");
     println!("  apply K [--yes] [--measure] [--wait SEC]  execute Tier 1 action for pair K");
+    println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
