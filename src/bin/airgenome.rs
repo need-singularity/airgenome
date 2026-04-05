@@ -37,6 +37,7 @@ fn main() {
         "apply-all" => apply_all_cmd(&args),
         "helper" => helper_cmd(&args),
         "purge" => purge_cmd(&args),
+        "tune" => tune_cmd(&args),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -288,6 +289,53 @@ fn diag(args: &[String]) {
         println!("  Proposed actions (dry-run):");
         for &k in &firing_idx {
             println!("    [{:>2}] {}", k, RULES[k].action);
+        }
+    }
+}
+
+fn tune_cmd(args: &[String]) {
+    use airgenome::client::{dial, req_sysctl_get, req_sysctl_set, HelperResponse, DEFAULT_SOCKET_PATH};
+    let (Some(key), Some(value)) = (args.get(2), args.get(3)) else {
+        eprintln!("usage: airgenome tune <key> <value> [--measure]");
+        eprintln!("whitelisted keys:");
+        for k in airgenome::privileged::SYSCTL_WHITELIST { eprintln!("  {}", k); }
+        std::process::exit(2);
+    };
+    let measure = args.iter().any(|a| a == "--measure" || a == "-m");
+    let socket = std::env::var("AIRGENOME_HELPER_SOCKET")
+        .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
+
+    // Read current value first.
+    if let Ok(HelperResponse::Ok { detail }) = dial(&socket, &req_sysctl_get(key)) {
+        println!("{} {}", dim("before:"), detail);
+    }
+
+    let before_firing = if measure {
+        Some(airgenome::firing(&airgenome::sample()).len())
+    } else { None };
+
+    match dial(&socket, &req_sysctl_set(key, value)) {
+        Ok(HelperResponse::Ok { detail }) => {
+            println!("{} {}", green("tuned"), detail);
+            if let Some(bf) = before_firing {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let af = airgenome::firing(&airgenome::sample()).len();
+                println!("{}", dim("--- delta ---"));
+                println!("  firing {} → {}  ({:+})", bf, af, (af as i64) - (bf as i64));
+            }
+        }
+        Ok(HelperResponse::Refused { reason }) => {
+            println!("{} {}", yellow("refused"), reason);
+            std::process::exit(1);
+        }
+        Ok(HelperResponse::Error { message }) => {
+            println!("{} {}", red("error"), message);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("dial failed: {:?}", e);
+            eprintln!("install helper first: sudo bash scripts/install-helper.sh install");
+            std::process::exit(1);
         }
     }
 }
@@ -1971,6 +2019,7 @@ fn print_help() {
     println!("  apply-all [--yes] [--measure]             apply every firing pair in one pass");
     println!("  helper <ping|get|set|purge> [args]        talk to privileged helper (Tier 2)");
     println!("  purge [--measure]                         request memory purge via helper");
+    println!("  tune <key> <value> [--measure]            sysctl tune via helper (whitelisted)");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
