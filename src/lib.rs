@@ -45,6 +45,7 @@ pub mod signature;
 pub mod privileged;
 pub use privileged::plan_tier2_for_pair;
 pub mod client;
+pub mod gates;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
 pub use vitals::{sample, Vitals};
