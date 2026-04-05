@@ -108,8 +108,39 @@ fn handle_request(raw: &str) -> String {
                 Err(e) => error_resp(&format!("sysctl spawn: {}", e)),
             }
         }
-        "sysctl_set" => refused("writes disabled in skeleton"),
-        "purge" => refused("purge disabled in skeleton"),
+        "sysctl_set" => {
+            let key = field(raw, "key").unwrap_or("");
+            let value = field(raw, "value").unwrap_or("");
+            if !WHITELIST.contains(&key) {
+                return refused("sysctl key not in whitelist");
+            }
+            if value.is_empty() {
+                return error_resp("missing value");
+            }
+            // Sanity: value must parse as integer (all whitelisted keys are int).
+            if value.parse::<i64>().is_err() {
+                return refused("value must be integer");
+            }
+            eprintln!("[airgenome-helper] sysctl -w {}={}", key, value);
+            match Command::new("sysctl").args(["-w", &format!("{}={}", key, value)]).output() {
+                Ok(o) if o.status.success() => {
+                    let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    ok_resp(&format!("wrote {}={} (out={})", key, value, escape_json(&stdout)))
+                }
+                Ok(o) => error_resp(&format!("sysctl exit: {:?}, err={}",
+                    o.status.code(),
+                    escape_json(&String::from_utf8_lossy(&o.stderr)))),
+                Err(e) => error_resp(&format!("sysctl spawn: {}", e)),
+            }
+        }
+        "purge" => {
+            eprintln!("[airgenome-helper] /usr/sbin/purge");
+            match Command::new("/usr/sbin/purge").output() {
+                Ok(o) if o.status.success() => ok_resp("purge completed"),
+                Ok(o) => error_resp(&format!("purge exit: {:?}", o.status.code())),
+                Err(e) => error_resp(&format!("purge spawn: {}", e)),
+            }
+        }
         "" => error_resp("missing op"),
         other => refused(&format!("unknown op: {}", other)),
     }
@@ -171,15 +202,24 @@ mod tests {
     }
 
     #[test]
-    fn sysctl_set_always_refused() {
-        let r = handle_request(r#"{"op":"sysctl_set","key":"vm.compressor_mode","value":"4"}"#);
+    fn sysctl_set_refuses_non_whitelisted() {
+        let r = handle_request(r#"{"op":"sysctl_set","key":"kern.hostname","value":"x"}"#);
         assert!(r.contains("refused"));
+        assert!(r.contains("whitelist"));
     }
 
     #[test]
-    fn purge_always_refused() {
-        let r = handle_request(r#"{"op":"purge"}"#);
+    fn sysctl_set_refuses_non_integer_value() {
+        let r = handle_request(r#"{"op":"sysctl_set","key":"vm.compressor_mode","value":"not-a-number"}"#);
         assert!(r.contains("refused"));
+        assert!(r.contains("integer"));
+    }
+
+    #[test]
+    fn sysctl_set_errors_on_missing_value() {
+        let r = handle_request(r#"{"op":"sysctl_set","key":"vm.compressor_mode"}"#);
+        assert!(r.contains("error"));
+        assert!(r.contains("missing value"));
     }
 
     #[test]
