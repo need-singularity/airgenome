@@ -66,6 +66,81 @@ pub fn lagged_mutual_info(xs: &[f64], ys: &[f64], lag: usize, bins: usize) -> f6
 /// Default lag steps for temporal breakthrough analysis.
 pub const LAG_STEPS: &[usize] = &[1, 2, 5, 10];
 
+/// Triadic interaction information I(A;B;C).
+///
+/// Positive = redundancy (B, C overlap in predicting A).
+/// Negative = synergy (A, B, C together reveal more than pairs).
+/// Zero = full independence or fully captured by pairwise.
+///
+/// Formula:
+///   I(X;Y;Z) = Σ p(x,y,z) · log2[ p(x,y,z)·p(x)·p(y)·p(z)
+///                                  / (p(x,y)·p(x,z)·p(y,z)) ]
+///
+/// Uses bins=4 (triadic histograms are sparse; 4^3 = 64 cells).
+pub fn triadic_interaction(xs: &[f64], ys: &[f64], zs: &[f64], bins: usize) -> f64 {
+    if xs.len() < 15 || xs.len() != ys.len() || xs.len() != zs.len() { return 0.0; }
+    let mnx = xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mxx = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mny = ys.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mxy = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mnz = zs.iter().cloned().fold(f64::INFINITY, f64::min);
+    let mxz = zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if mxx == mnx || mxy == mny || mxz == mnz { return 0.0; }
+    let bin = |v: f64, mn: f64, mx: f64| -> usize {
+        let idx = ((v - mn) / (mx - mn) * bins as f64) as usize;
+        idx.min(bins - 1)
+    };
+    let n = xs.len() as f64;
+    use std::collections::BTreeMap;
+    let mut j3: BTreeMap<(usize, usize, usize), f64> = BTreeMap::new();
+    let mut jxy: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut jxz: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut jyz: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+    let mut px = vec![0.0; bins];
+    let mut py = vec![0.0; bins];
+    let mut pz = vec![0.0; bins];
+    for ((x, y), z) in xs.iter().zip(ys.iter()).zip(zs.iter()) {
+        let i = bin(*x, mnx, mxx);
+        let j = bin(*y, mny, mxy);
+        let k = bin(*z, mnz, mxz);
+        *j3.entry((i, j, k)).or_insert(0.0) += 1.0;
+        *jxy.entry((i, j)).or_insert(0.0) += 1.0;
+        *jxz.entry((i, k)).or_insert(0.0) += 1.0;
+        *jyz.entry((j, k)).or_insert(0.0) += 1.0;
+        px[i] += 1.0; py[j] += 1.0; pz[k] += 1.0;
+    }
+    let mut ii = 0.0;
+    for ((i, j, k), c) in &j3 {
+        let p_xyz = c / n;
+        let p_xy = jxy.get(&(*i, *j)).copied().unwrap_or(0.0) / n;
+        let p_xz = jxz.get(&(*i, *k)).copied().unwrap_or(0.0) / n;
+        let p_yz = jyz.get(&(*j, *k)).copied().unwrap_or(0.0) / n;
+        let p_x = px[*i] / n;
+        let p_y = py[*j] / n;
+        let p_z = pz[*k] / n;
+        if p_xyz > 0.0 && p_xy > 0.0 && p_xz > 0.0 && p_yz > 0.0
+            && p_x > 0.0 && p_y > 0.0 && p_z > 0.0 {
+            ii += p_xyz * (p_xyz * p_x * p_y * p_z / (p_xy * p_xz * p_yz)).log2();
+        }
+    }
+    ii
+}
+
+/// Align three gate sample streams by shared timestamp, returning ram values.
+pub fn align_triple(a: &[GateSample], b: &[GateSample], c: &[GateSample])
+    -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    use std::collections::BTreeMap;
+    let bmap: BTreeMap<u64, f64> = b.iter().map(|s| (s.ts, s.ram)).collect();
+    let cmap: BTreeMap<u64, f64> = c.iter().map(|s| (s.ts, s.ram)).collect();
+    let mut xa = Vec::new(); let mut xb = Vec::new(); let mut xc = Vec::new();
+    for s in a {
+        if let (Some(&rb), Some(&rc)) = (bmap.get(&s.ts), cmap.get(&s.ts)) {
+            xa.push(s.ram); xb.push(rb); xc.push(rc);
+        }
+    }
+    (xa, xb, xc)
+}
+
 /// Align two gate sample streams by shared timestamp.
 pub fn align(a: &[GateSample], b: &[GateSample]) -> (Vec<f64>, Vec<f64>) {
     let bmap: BTreeMap<u64, (f64, f64)> = b.iter().map(|s| (s.ts, (s.ram, s.cpu))).collect();
@@ -117,6 +192,9 @@ pub struct BreakthroughReport {
     pub cross_axis_mi_by_combo: Vec<(&'static str, f64)>,  // (combo_name, sum)
     pub cross_axis_mi_sum: f64,
     pub new_cross_axis_coupling: f64,  // cross_axis_mi_sum * SCALE
+    pub triadic_interactions: Vec<(String, String, String, f64)>,  // (a, b, c, I)
+    pub triadic_abs_sum: f64,
+    pub new_triadic_coupling: f64,  // triadic_abs_sum * SCALE
 }
 
 /// Compute the breakthrough report from 4+ gate streams.
@@ -199,8 +277,27 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
     ];
     let new_cross_axis_coupling = cross_axis_mi_sum * SCALE;
 
+    // Layer L4: triadic interaction information I(A;B;C).
+    let mut triadic_interactions: Vec<(String, String, String, f64)> = Vec::new();
+    let mut triadic_abs_sum = 0.0;
+    for i in 0..streams.len() {
+        for j in (i+1)..streams.len() {
+            for k in (j+1)..streams.len() {
+                let (xa, xb, xc) = align_triple(&streams[i].1, &streams[j].1, &streams[k].1);
+                if xa.len() < 15 { continue; }
+                let ii = triadic_interaction(&xa, &xb, &xc, 4);
+                triadic_abs_sum += ii.abs();
+                triadic_interactions.push((
+                    streams[i].0.clone(), streams[j].0.clone(), streams[k].0.clone(), ii
+                ));
+            }
+        }
+    }
+    let new_triadic_coupling = triadic_abs_sum * SCALE;
+
     let adjusted = RAW
-        + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling + new_cross_axis_coupling)
+        + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling
+           + new_cross_axis_coupling + new_triadic_coupling)
         + new_mi_recovery + GHOST_PENALTY;
     let distance = SINGULARITY - adjusted;
     let crossed = adjusted > SINGULARITY;
@@ -213,6 +310,7 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
         per_gate_mi, pair_mi,
         lagged_mi_by_lag, lagged_mi_sum, new_lagged_coupling,
         cross_axis_mi_by_combo, cross_axis_mi_sum, new_cross_axis_coupling,
+        triadic_interactions, triadic_abs_sum, new_triadic_coupling,
     }
 }
 
@@ -330,6 +428,49 @@ mod tests {
         assert_eq!(ca, vec![0.4]);
         assert_eq!(rb, vec![0.5]);
         assert_eq!(cb, vec![0.6]);
+    }
+
+    #[test]
+    fn triadic_interaction_independent_is_near_zero() {
+        // Three independent random-ish streams should have |I| small.
+        let xs: Vec<f64> = (0..60).map(|i| (i as f64 * 0.17).sin()).collect();
+        let ys: Vec<f64> = (0..60).map(|i| (i as f64 * 0.29 + 1.1).cos()).collect();
+        let zs: Vec<f64> = (0..60).map(|i| (i as f64 * 0.41 + 2.3).sin()).collect();
+        let ii = triadic_interaction(&xs, &ys, &zs, 4);
+        // Not exactly zero due to finite sample, but should be well below redundant case.
+        assert!(ii.abs() < 1.0, "expected small |I|, got {}", ii);
+    }
+
+    #[test]
+    fn triadic_interaction_redundant_is_positive() {
+        // If z = x + y, then I(x;y;z) should be significantly positive
+        // (redundancy — z carries info already in x+y).
+        let xs: Vec<f64> = (0..60).map(|i| (i as f64 * 0.1).sin().abs()).collect();
+        let ys: Vec<f64> = (0..60).map(|i| (i as f64 * 0.1 + 0.5).cos().abs()).collect();
+        let zs: Vec<f64> = xs.iter().zip(ys.iter()).map(|(x, y)| x + y).collect();
+        let ii = triadic_interaction(&xs, &ys, &zs, 4);
+        assert!(ii > 0.0, "expected positive redundancy, got {}", ii);
+    }
+
+    #[test]
+    fn align_triple_intersects_all_three() {
+        let a = vec![
+            GateSample { ts: 1, ram: 0.1, cpu: 0.0 },
+            GateSample { ts: 2, ram: 0.2, cpu: 0.0 },
+            GateSample { ts: 3, ram: 0.3, cpu: 0.0 },
+        ];
+        let b = vec![
+            GateSample { ts: 2, ram: 0.5, cpu: 0.0 },
+            GateSample { ts: 3, ram: 0.6, cpu: 0.0 },
+        ];
+        let c = vec![
+            GateSample { ts: 2, ram: 0.8, cpu: 0.0 },
+            GateSample { ts: 4, ram: 0.9, cpu: 0.0 },
+        ];
+        let (xa, xb, xc) = align_triple(&a, &b, &c);
+        assert_eq!(xa, vec![0.2]);
+        assert_eq!(xb, vec![0.5]);
+        assert_eq!(xc, vec![0.8]);
     }
 
     #[test]

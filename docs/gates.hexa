@@ -134,5 +134,7 @@
 //   L3 (v3.53.0)  cross-axis MI (ram_A×cpu_B, cpu_A×ram_B, cpu_A×cpu_B)
 //                  mechanism: expand cross-gate MI beyond ram×ram
 //                  expected margin: +0.146
-//   L4 (planned)  triadic interaction info I(A;B;C)
+//   L4 (v3.54.0)  triadic interaction info |I(A;B;C)|
+//                  mechanism: 3-way coupling residual beyond pairwise
+//                  expected margin: +0.15
 //   L5 (deferred) firing-bitfield MI (exhausted on current data)

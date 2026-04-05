@@ -8,8 +8,8 @@
 
 use airgenome::gates::nexus_merger::{GateSample, project_breakthrough};
 
-/// Cumulative L3 threshold. L1=+0.018, L2=+0.115, L3 adds ~+0.031.
-const MARGIN_MIN: f64 = 0.13;
+/// Cumulative L4 threshold. L1+L2+L3=+0.142, L4 adds small ~+0.004.
+const MARGIN_MIN: f64 = 0.14;
 
 fn parse_signatures(path: &std::path::Path) -> Option<(Vec<GateSample>, Vec<GateSample>, Vec<GateSample>, Vec<GateSample>)> {
     let text = std::fs::read_to_string(path).ok()?;

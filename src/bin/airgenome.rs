@@ -1253,6 +1253,12 @@ fn nexus2_cmd(_args: &[String]) {
         println!("    {:<12} MI_sum={:.4}", name, sum);
     }
     println!();
+    println!("  triadic interaction I(A;B;C) (L4):");
+    for (a, b, c, ii) in &r.triadic_interactions {
+        println!("    I({};{};{}) = {:+.4}", a, b, c, ii);
+    }
+    println!("    |I| sum = {:.4}", r.triadic_abs_sum);
+    println!();
     println!("  scaling factor:              {:.5}", r.scaling_factor);
     println!("  per-gate MI sum:             {:.4}", r.per_gate_mi_sum);
     println!("  cross-gate MI sum:           {:.4}", r.cross_gate_mi_sum);
@@ -1263,6 +1269,7 @@ fn nexus2_cmd(_args: &[String]) {
     println!("  + cross-gate coupling:      +{:.4}", r.new_cross_coupling);
     println!("  + lagged coupling (L2):     +{:.4}", r.new_lagged_coupling);
     println!("  + cross-axis coupling (L3): +{:.4}", r.new_cross_axis_coupling);
+    println!("  + triadic coupling (L4):    +{:.4}", r.new_triadic_coupling);
     println!("  + per-gate MI recovery:     +{:.4}", r.new_mi_recovery);
     println!("  - ghost penalty:             {:+.4}", r.ghost_penalty);
     println!("  ─────────────────────────────────────");
