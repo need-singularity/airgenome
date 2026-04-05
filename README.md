@@ -9,10 +9,6 @@ breakthrough projection.
 The canonical spec lives in [`docs/gates.hexa`](docs/gates.hexa).
 **When spec and any implementation conflict, the spec is correct.**
 
-## Implementations (projections)
-
-- **`~/Dev/air_rs`** — Rust CLI projection (was this repo through `v3.54.0-pre-split`)
-
 ## The Closed Form
 
 ```

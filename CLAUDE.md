@@ -8,8 +8,7 @@
 > process** — macOS, Finder (always on), Telegram, Safari, Chrome, rustc,
 > python, Claude sessions, and every other running app stays alive.
 
-**Default mode: kill-free.** `quiet-tune` is the canonical path.
-`reap` / `apply --yes` kill-mode exist but are opt-in only, never default.
+**Default mode: kill-free.** Pure data re-interpretation only.
 
 ## Core Goal (user-stated, 2026-04-05)
 
@@ -47,19 +46,19 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
   upstream change — which is where the real constant improvement lives
   (Chrome → Safari, VSCode → Zed, Docker Desktop → OrbStack, …).
 
-## Current progress toward this goal (2026-04-05)
+## Current progress toward this goal (2026-04-06)
 
 - ✅ 6-axis hexagon + 15 pair gates + 60-byte genome
-- ✅ Real-time vitals sampling (daemon)
-- ✅ Historical vitals log (`vitals.jsonl`)
-- ✅ PolicyEngine replay over history
-- ✅ `processes` command (per-app RSS / CPU categorization) — v3.21+
-- ✅ `insights` command (per-pair firing counts, hourly patterns, profile
-  recommendation from log) — v3.21+
-- ⏳ Per-process hexagon projection (RSS/CPU per app → 6-axis vector)
+- ✅ 5-gate mesh (macos, finder, telegram, chrome, safari)
+- ✅ Breakthrough layer ladder L1–L5a (margin +0.250)
+- ✅ Canonical hexa-lang spec (`docs/gates.hexa`, 388 lines, Mk.II+)
+- ✅ All types/functions declared — 10 types, 19 constants, 24 functions
+- ✅ Effect system (5 allowed, 5 forbidden)
+- ✅ Consciousness block (NexusMerger)
+- ⏳ L5c–L6e candidate layers (4 remaining, projected +0.173)
+- ⏳ hexa-lang compiler validation (exit 137 — binary issue)
 - ⏳ Per-source genome accumulation over time
 - ⏳ Signature diff between sources (Safari vs Chrome)
-- ⏳ Anomaly detection (this sample doesn't match any known signature)
 
 ## Non-goals (explicit)
 
