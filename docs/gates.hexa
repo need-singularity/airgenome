@@ -55,6 +55,87 @@ struct GateGenome {
   stats: [f32; 4]        // [min, max, mean, stddev]
 }
 
+// GateStream: per-gate time-series bundle used by all layer functions.
+// Each field is a chronological [f64] vector of equal length (= sample count).
+struct GateStream {
+  gate: GateId
+  ram: [f64]             // rss_mb / total_ram_mb per sample
+  cpu: [f64]             // cpu_pct / 100 per sample
+  gpu: [f64]             // reserved (all zeros for now)
+  npu: [f64]             // reserved
+  power: [f64]           // AC proxy (all 1.0)
+  io: [f64]              // reserved
+  ts: [u32]              // timestamps per sample
+}
+
+// Signature: accumulated gate genome with identity, for historical analysis.
+struct Signature {
+  gate: GateId
+  genome: GateGenome
+  sample_count: u32
+  first_ts: u32
+  last_ts: u32
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLASSIFICATION + RULE FIRING
+// ═══════════════════════════════════════════════════════════════════════
+
+// Classify a process name into one of the 5 gates. Returns none if unmatched.
+pure fn classify(proc_name: str) -> GateId? {
+  match proc_name {
+    "launchd" | "WindowServer" | "kernel_task" | "mds" | "mds_stores"
+      | "opendirectoryd" | "syslogd" | "configd" => GateId::Macos
+    "Finder" | "com.apple.Finder" => GateId::Finder
+    "Telegram" | "Telegram Desktop" => GateId::Telegram
+    "Google Chrome" | "Google Chrome Helper" => GateId::Chrome
+    "Safari" | "com.apple.WebKit" => GateId::Safari
+    _ => none
+  }
+}
+
+// 15 pair rules: each unordered (Axis, Axis) pair has a threshold rule.
+// Returns a u16 bitmask where bit i = 1 means pair i is firing.
+comptime const PAIR_THRESHOLD: f64 = 0.5   // default per-pair firing threshold
+
+pure fn firing(genome: GateGenome) -> u16
+  ensures result == genome.firing_bits
+
+// Aggregate one gate from a ps snapshot string.
+fn aggregate_gate(ps_snapshot: str, gate: GateId) -> GateGenome
+  ensures result.axes.len() == 6
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GENOME SERIALIZATION (60 bytes, little-endian)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   Layout: 15 pairs × 4 bytes = 60 bytes total
+//   Each pair: f32 little-endian (IEEE 754)
+//   Pair ordering: lexicographic on (Axis::ord, Axis::ord)
+//     pair 0 = (Cpu, Ram), pair 1 = (Cpu, Gpu), ..., pair 14 = (Power, Io)
+//
+//   Hex encoding: 120 hex chars (2 per byte)
+
+pure fn genome_to_bytes(genome: GateGenome) -> [u8; 60]
+  ensures result.len() == GENOME_BYTES
+
+pure fn genome_from_bytes(bytes: [u8; 60]) -> GateGenome
+  ensures genome_to_bytes(result) == bytes
+
+pure fn genome_to_hex(genome: GateGenome) -> str
+  ensures result.len() == 120
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSONL SCHEMA (vitals.jsonl / genomes.jsonl)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   vitals.jsonl — one line per sample:
+//     {"ts":u32,"axes":{"cpu":f64,"ram":f64,"gpu":f64,"npu":f64,"power":f64,"io":f64}}
+//
+//   genomes.jsonl — one line per 5-gate snapshot:
+//     {"ts":u32,"gates":[{"gate":"macos","axes":[f32;6],"firing_bits":u16,
+//       "counters":[f32;3],"stats":[f32;4]}, ...]}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  12-GATE MATRIX (3 levels × 4 gates)
 // ═══════════════════════════════════════════════════════════════════════
