@@ -49,8 +49,10 @@ pub fn classify(comm: &str) -> GateId {
     // so we require the bundle path to explicitly contain "safari").
     if l.contains("google chrome") || l.contains("chrome helper")
        || l.contains("/chromium") { return GateId::Chrome; }
-    if l.contains("/safari") || l.contains("com.apple.safari")
-       || l.contains("safari.app") { return GateId::Safari; }
+    if l.contains("/safari.app") || l.contains("safari.app/")
+       || l.contains("com.apple.safari.") || l.ends_with("com.apple.safari") {
+        return GateId::Safari;
+    }
     if l.contains("/finder") || l.contains("com.apple.finder")
        || l.contains("finder.app") { return GateId::Finder; }
     // macOS system processes — core daemons, window server, launchd, etc.

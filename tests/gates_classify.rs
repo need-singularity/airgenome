@@ -46,3 +46,24 @@ fn gate_id_roundtrip() {
     }
     assert_eq!(GateId::from_name("bogus"), None);
 }
+
+#[test]
+fn safari_services_not_misclassified_as_safari() {
+    // Real macOS system services — must be Macos, not Safari
+    assert_eq!(classify("com.apple.safariservices"), GateId::Macos);
+    assert_eq!(classify("com.apple.SafariViewService"), GateId::Macos);
+    assert_eq!(classify("com.apple.SafariBookmarksSyncAgent"), GateId::Macos);
+}
+
+#[test]
+fn user_dir_named_safari_not_misclassified() {
+    // A user home containing "safari" should not classify random apps as Safari
+    assert_eq!(classify("/Users/safari/Applications/Notion.app/Contents/MacOS/Notion"),
+               GateId::None);
+}
+
+#[test]
+fn safari_bundle_id_exact_classified() {
+    assert_eq!(classify("com.apple.Safari"), GateId::Safari);
+    assert_eq!(classify("com.apple.safari.history"), GateId::Safari);
+}
