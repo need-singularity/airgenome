@@ -19,9 +19,23 @@
 //! The user-space airgenome client then connects to `/var/run/airgenome.sock`.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::process::Command;
+
+// FFI for macOS getpeereid(2).
+extern "C" {
+    fn getpeereid(s: i32, uid: *mut u32, gid: *mut u32) -> i32;
+}
+
+/// Get the connecting peer's UID from a Unix stream.
+fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    let mut uid: u32 = 0;
+    let mut gid: u32 = 0;
+    let rc = unsafe { getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if rc == 0 { Some(uid) } else { None }
+}
 
 const SOCKET_PATH: &str = "/var/run/airgenome.sock";
 const WHITELIST: &[&str] = &[
@@ -46,13 +60,29 @@ fn main() {
     };
     eprintln!("[airgenome-helper] listening on {}", path);
 
+    // Allowed UIDs: root (0) + AIRGENOME_ALLOW_UID env var (comma-separated).
+    let mut allowed: Vec<u32> = vec![0];
+    if let Ok(env) = std::env::var("AIRGENOME_ALLOW_UID") {
+        for tok in env.split(',') {
+            if let Ok(u) = tok.trim().parse::<u32>() { allowed.push(u); }
+        }
+    }
+    eprintln!("[airgenome-helper] allowed UIDs: {:?}", allowed);
+
     for stream in listener.incoming() {
         let stream = match stream { Ok(s) => s, Err(_) => continue };
+        let peer = peer_uid(&stream);
+        let authed = peer.map(|u| allowed.contains(&u)).unwrap_or(false);
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut writer = stream;
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() { continue; }
-        let resp = handle_request(&line);
+        let resp = if !authed {
+            eprintln!("[airgenome-helper] refusing peer uid={:?}", peer);
+            refused(&format!("peer not authenticated (uid={:?})", peer))
+        } else {
+            handle_request(&line)
+        };
         let _ = writeln!(writer, "{}", resp);
         let _ = writer.flush();
     }
