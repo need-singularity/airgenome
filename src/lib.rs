@@ -58,3 +58,4 @@ pub use buffer::{VitalsBuffer, GateMask};
 pub use policy::{PolicyEngine, PolicyConfig, Proposal, Reason, CascadeInfo, mesh_cascade_for};
 pub use actions::{Command as ActionCommand, Actions, ACTIONS, commands_for};
 pub use apply::{UserAction, PreSnapshot, AbortReason, BANNED_PROCESS_NAMES, plan, plan_for_pair, execute, ExecResult};
+pub use gates::{GateGenome, GateId, classify, sample_all};

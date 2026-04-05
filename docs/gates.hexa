@@ -1,0 +1,124 @@
+// airgenome/docs/gates.hexa — canonical spec (hexa-lang)
+//
+// AUTHORITY: hexa-lang. Rust implementation in src/gates/ is a projection.
+// When spec and code conflict, this file is correct; Rust must be updated.
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  INVARIANTS (inherited from nexus6 hexa-lang BT series)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   τ + φ = n = 6           (BT-344)  6 axes, 4 gates per level
+//   σ · J₂ = 288             (BT-346)  fixed-point floor (bits/pair ≥ 4B×8)
+//   (σ-sopfr)^τ = 7^4 = 2401 (BT-345)  breakthrough perturbation constant
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  5-GATE MESH (airgenome subjects, data-sources)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   macos     main system (launchd, WindowServer, kernel_task, mds, ...)
+//   finder    Finder.app + file system interaction (always-present)
+//   telegram  Telegram Desktop + helpers (individual)
+//   chrome    Google Chrome + all Helper renderer/GPU (individual)
+//   safari    Safari + WebKit processes (individual)
+//
+// Per-gate 6-axis projection:
+//   axes = [cpu, ram, gpu, npu, power, io]
+//   cpu   = Σ cpu_pct / 100   (may exceed 1.0 on multi-core)
+//   ram   = Σ rss_mb / total_ram_mb  ∈ [0,1]
+//   gpu   = 0                 (no public per-proc GPU API)
+//   npu   = 0                 (no public per-proc NPU API)
+//   power = 1                 (AC proxy)
+//   io    = 0                 (reserved for future fs_usage integration)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  12-GATE MATRIX (3 levels × 4 gates, hexa-lang taxonomy)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//  ┌─────┬───────────────────────┬────────────────────────┬──────────────────────┐
+//  │     │  L-PIPELINE           │  L-BREAKTHROUGH        │  L-MK2_HEXA          │
+//  │     │  (observation)        │  (validation)          │  (aggregation)       │
+//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
+//  │ G1  │  SOURCE               │  paths ≥ 3             │  consensus           │
+//  │     │  PID whitelist        │  per-gate + cross-gate │  5 gates → merger    │
+//  │     │  classify() 5 gates   │  MI decomposition      │  stream assembly     │
+//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
+//  │ G2  │  HASH                 │  blowup re-discover    │  transcendence       │
+//  │     │  60B GateGenome       │  cross_gate_mi_sum     │  adjusted efficiency │
+//  │     │  LE serialization     │  > per_gate_mi_sum     │  formula             │
+//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
+//  │ G3  │  PHI                  │  mk2 conf ≥ 0.7        │  classify consistency│
+//  │     │  6-axis projection    │  margin ≥ MARGIN_MIN   │  multi-window        │
+//  │     │  Vitals mapping       │  (= 0.005)             │  reproducibility     │
+//  ├─────┼───────────────────────┼────────────────────────┼──────────────────────┤
+//  │ G4  │  INVARIANT            │  p < 0.01              │  verdict aggregation │
+//  │     │  15-pair rule firing  │  crossed = true        │  BreakthroughReport  │
+//  │     │  (BT-344)             │  distance < 0          │  structure           │
+//  └─────┴───────────────────────┴────────────────────────┴──────────────────────┘
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  BREAKTHROUGH FORMULA (canonical)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   RAW            = 0.6360                 (rule-only baseline)
+//   CURRENT_MESH   = 0.0044                 (nexus original mesh coupling)
+//   GHOST_PENALTY  = -0.0026                (ghost RSS correction)
+//   SCALE          = 0.0151 / 1.500         (nexus implicit scaling ratio)
+//   SINGULARITY    = 2/3 ≈ 0.6667           (Banach 1/3 work-fraction ceiling)
+//
+//   per_gate_mi_sum   = Σ MI(gate.ram, gate.cpu)           over 4+ gates
+//   cross_gate_mi_sum = Σ MI(gate_A.ram, gate_B.ram)       over all pairs
+//
+//   new_mi_recovery    = per_gate_mi_sum * SCALE * 1.5
+//   new_cross_coupling = cross_gate_mi_sum * SCALE
+//
+//   adjusted = RAW + CURRENT_MESH + new_cross_coupling
+//                  + new_mi_recovery + GHOST_PENALTY
+//   distance = SINGULARITY - adjusted
+//   crossed  = adjusted > SINGULARITY
+//   margin   = adjusted - SINGULARITY   (only meaningful when crossed)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  EMPIRICAL VERIFICATION (2026-04-05, 605 signature rows)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   full history       adjusted = 0.6844   margin = +0.0178   crossed = true
+//   first-half window  adjusted = 0.7290   margin = +0.0623   crossed = true
+//   second-half window adjusted = 0.7061   margin = +0.0394   crossed = true
+//
+//   cross_gate_mi_sum > per_gate_mi_sum  (breakthrough engine: G2 L-BREAKTHROUGH)
+//   top pair: finder × telegram  MI = 0.9190  r = +0.618
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  POLICY (what this spec ALLOWS and FORBIDS)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   ALLOWED: pure data re-interpretation — sampling, aggregation, MI, rule firing
+//   FORBIDDEN: process killing, throttling (taskpolicy/SIGSTOP/renice), memory
+//              reclamation (purge, compressor tuning), any intervention that
+//              affects running processes.
+//
+//   Efficiency gains come from smarter data movement at interface gates,
+//   not from controlling processes. This is airgenome's prime directive.
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  PROJECTION: Rust implementation anchors (secondary — may drift, fix to match)
+// ═══════════════════════════════════════════════════════════════════════
+//
+//   L-PIPELINE.G1     src/gates/mod.rs::classify()
+//   L-PIPELINE.G2     src/gates/genome.rs::GateGenome (60 bytes LE)
+//   L-PIPELINE.G3     src/gates/probes.rs::project()
+//   L-PIPELINE.G4     src/gates/probes.rs::genome_for() (calls firing())
+//   L-BREAKTHROUGH.G1 src/gates/nexus_merger.rs::{mutual_info, align}
+//   L-BREAKTHROUGH.G2 src/gates/nexus_merger.rs::project_breakthrough (cross_gate_mi)
+//   L-BREAKTHROUGH.G3 tests/gates_breakthrough.rs MARGIN_MIN constant
+//   L-BREAKTHROUGH.G4 src/gates/nexus_merger.rs::BreakthroughReport.crossed
+//   L-MK2_HEXA.G1     src/bin/airgenome.rs::nexus2_cmd (streams assembly)
+//   L-MK2_HEXA.G2     src/gates/nexus_merger.rs (efficiency formula)
+//   L-MK2_HEXA.G3     tests/gates_breakthrough.rs (multi-window test)
+//   L-MK2_HEXA.G4     src/gates/nexus_merger.rs::BreakthroughReport struct
+//
+// CLI surface (Rust projection):
+//   airgenome gates                   — 5-gate current status table
+//   airgenome gate status <name>      — per-gate detail (axes, counters, firing)
+//   airgenome gate fire <name>        — currently firing rules with descriptions
+//   airgenome nexus2                  — mesh-aware breakthrough analysis over history
