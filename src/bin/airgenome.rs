@@ -22,7 +22,10 @@ fn main() {
         "probe" | "pr" => probe(),
         "pairs" => list_pairs(),
         "rules" => list_rules(),
-        "diag" => diag(),
+        "diag" => diag(&args),
+        "version" | "--version" | "-V" => {
+            println!("airgenome {}", env!("CARGO_PKG_VERSION"));
+        }
         "dash" | "dashboard" => dash_cmd(&args),
         "metrics" | "m" => metrics(),
         "explain" => explain_cmd(&args),
@@ -106,8 +109,32 @@ fn list_rules() {
     }
 }
 
-fn diag() {
+fn diag(args: &[String]) {
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
     let v = airgenome::sample();
+
+    if json {
+        // per-pair severity array (0=ok,1=warn,2=critical) + firing indices
+        print!("{{\"ts\":{},\"severity\":[", v.ts);
+        for k in 0..PAIR_COUNT {
+            if k > 0 { print!(","); }
+            let s = match airgenome::severity(k, &v) {
+                airgenome::Severity::Ok => 0,
+                airgenome::Severity::Warn => 1,
+                airgenome::Severity::Critical => 2,
+            };
+            print!("{}", s);
+        }
+        print!("],\"firing\":[");
+        let f = airgenome::firing(&v);
+        for (i, k) in f.iter().enumerate() {
+            if i > 0 { print!(","); }
+            print!("{}", k);
+        }
+        println!("]}}");
+        return;
+    }
+
     println!("=== airgenome — Diagnostic ===");
     println!("  ts={}  axes=[cpu={:.2} ram={:.2} gpu={:.0} npu={:.0} power={:.0} io={:.3}]",
         v.ts,
@@ -1315,5 +1342,6 @@ fn print_help() {
     println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
     println!("  uninit              unload + remove the LaunchAgent");
     println!("  doctor              self-diagnostic (binary/agent/log/profile)");
+    println!("  version             print airgenome version");
     println!("  help                print this help");
 }
