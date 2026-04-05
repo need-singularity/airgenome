@@ -20,6 +20,7 @@ fn main() {
     match sub {
         "status" | "st" => status(&args),
         "probe" | "pr" => probe(),
+        "sample" => sample_cmd(&args),
         "pairs" => list_pairs(),
         "rules" => list_rules(),
         "diag" => diag(&args),
@@ -78,6 +79,42 @@ fn status(args: &[String]) {
     println!("  Rules firing: {} / {}", f.len(), PAIR_COUNT);
     println!("  Meta fixed point: 1/3 ≈ {:.6}  (work = 2/3 ≈ {:.6})",
         airgenome::META_FP, airgenome::WORK_FP);
+}
+
+fn sample_cmd(args: &[String]) {
+    let mut count: usize = 1;
+    let mut interval_s: u64 = 1;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--count" | "-n" => {
+                i += 1;
+                if let Some(v) = args.get(i) { count = v.parse().unwrap_or(1).max(1); }
+            }
+            "--interval" | "-i" => {
+                i += 1;
+                if let Some(v) = args.get(i) { interval_s = v.parse().unwrap_or(1).max(0); }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    print!("[");
+    for n in 0..count {
+        if n > 0 { print!(","); }
+        let v = airgenome::sample();
+        let firing = airgenome::firing(&v).len();
+        print!("{{\"ts\":{},\"cpu\":{},\"ram\":{},\"gpu\":{},\"npu\":{},\"power\":{},\"io\":{},\"firing\":{}}}",
+            v.ts, v.get(Axis::Cpu), v.get(Axis::Ram),
+            v.get(Axis::Gpu), v.get(Axis::Npu),
+            v.get(Axis::Power), v.get(Axis::Io), firing);
+        let _ = std::io::stdout().flush();
+        if n + 1 < count && interval_s > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(interval_s));
+        }
+    }
+    println!("]");
 }
 
 fn probe() {
@@ -1321,6 +1358,7 @@ fn print_help() {
     println!("SUBCOMMANDS:");
     println!("  status              show hexagon + vitals + firing count (default)");
     println!("  probe               emit a single JSON vitals sample");
+    println!("  sample -n N -i SEC  emit JSON array of N vitals samples");
     println!("  pairs               list the 15 canonical pair gates");
     println!("  rules               list the 15 rules with mesh neighbors");
     println!("  diag                fire rules on current vitals + dry-run proposals");
