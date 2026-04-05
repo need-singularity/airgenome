@@ -1,5 +1,8 @@
 # airgenome
 
+[![ci](https://github.com/need-singularity/airgenome/actions/workflows/ci.yml/badge.svg)](https://github.com/need-singularity/airgenome/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > A 6-axis resource hexagon for MacBook optimization.
 > 60 bytes of DNA. 2/3 maximum work. 1/3 Banach fixed point.
 

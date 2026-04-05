@@ -124,9 +124,9 @@ fn diag() {
     for r in &RULES {
         let sev = airgenome::severity(r.pair, &v);
         let tag = match sev {
-            airgenome::Severity::Critical => { critical += 1; "CRITICAL" }
-            airgenome::Severity::Warn => { warn += 1; "warn    " }
-            airgenome::Severity::Ok => "ok      ",
+            airgenome::Severity::Critical => { critical += 1; red("CRITICAL") }
+            airgenome::Severity::Warn => { warn += 1; yellow("warn    ") }
+            airgenome::Severity::Ok => dim("ok      "),
         };
         println!("    [{:>2}] {:<14} {}", r.pair, r.name, tag);
     }
