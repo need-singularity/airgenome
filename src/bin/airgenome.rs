@@ -43,6 +43,7 @@ fn main() {
         "coverage" | "cov" => coverage_cmd(),
         "insights" | "ins" => insights_cmd(&args),
         "idle-capacity" | "idle" => idle_capacity_cmd(),
+        "transitions" | "trans" => transitions_cmd(&args),
         "processes" | "proc" => processes_cmd(),
         "signature" | "sig" => signature_cmd(&args),
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
@@ -773,6 +774,64 @@ fn processes_cmd() {
         let name = comm.split('/').next_back().unwrap_or(comm);
         let name_short: String = name.chars().take(40).collect();
         println!("    {:>6} MB  {:>5.1}%  {}", mb, cpu, name_short);
+    }
+}
+
+fn transitions_cmd(args: &[String]) {
+    // Detect regime changes in firing count across consecutive vitals samples.
+    // `threshold` = minimum |Δfiring| to count as a transition.
+    let threshold: i64 = args.iter().position(|a| a == "--threshold" || a == "-t")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2);
+
+    let log = home_dir().join(".airgenome").join("vitals.jsonl");
+    let body = match std::fs::read_to_string(&log) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("cannot read {}: {}", log.display(), e); std::process::exit(1); }
+    };
+    let records = airgenome::parse_log(&body);
+    if records.len() < 2 { println!("need at least 2 records"); return; }
+
+    let mut rising = 0usize;
+    let mut falling = 0usize;
+    let mut dwell_times: Vec<u64> = Vec::new(); // seconds spent at a stable level
+    let mut last_transition_ts = records[0].ts;
+
+    println!("=== airgenome — regime transitions ({} samples, threshold ±{}) ===",
+        records.len(), threshold);
+    println!();
+    println!("  ts          firing     delta  direction");
+    println!("  ────────────────────────────────────────");
+    let mut shown = 0;
+    for i in 1..records.len() {
+        let a = records[i-1].firing as i64;
+        let b = records[i].firing as i64;
+        let d = b - a;
+        if d.abs() >= threshold {
+            if d > 0 { rising += 1; } else { falling += 1; }
+            dwell_times.push(records[i].ts.saturating_sub(last_transition_ts));
+            last_transition_ts = records[i].ts;
+            let dir = if d > 0 { red("↑") } else { green("↓") };
+            if shown < 15 {
+                println!("  {}  {:>3} → {:<3}  {:>+3}     {}",
+                    records[i].ts, a, b, d, dir);
+                shown += 1;
+            }
+        }
+    }
+    if shown == 0 { println!("  (no transitions above threshold)"); }
+
+    println!();
+    println!("Summary:");
+    println!("  rising  edges: {}", rising);
+    println!("  falling edges: {}", falling);
+    println!("  total  edges: {}", rising + falling);
+    if !dwell_times.is_empty() {
+        let mean: f64 = dwell_times.iter().sum::<u64>() as f64 / dwell_times.len() as f64;
+        let mx = *dwell_times.iter().max().unwrap_or(&0);
+        let mn = *dwell_times.iter().min().unwrap_or(&0);
+        println!("  dwell (sec): mean={:.0} min={} max={}", mean, mn, mx);
     }
 }
 
@@ -2790,6 +2849,7 @@ fn print_help() {
     println!("  coverage                                  15-pair × tier coverage matrix");
     println!("  insights                                  extract patterns from vitals.jsonl history");
     println!("  idle-capacity                             per-axis stats + idle axis detection");
+    println!("  transitions [-t N]                        regime changes in firing count (|Δ|≥N)");
     println!("  processes                                 categorize current procs by app family (RSS/CPU)");
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
