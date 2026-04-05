@@ -66,6 +66,20 @@ pub fn lagged_mutual_info(xs: &[f64], ys: &[f64], lag: usize, bins: usize) -> f6
 /// Default lag steps for temporal breakthrough analysis.
 pub const LAG_STEPS: &[usize] = &[1, 2, 5, 10];
 
+/// Compute lagged cross-axis MI sum across all (lag, pair, combo) at a given lag.
+/// Returns sum of 3 combos: ram×cpu, cpu×ram, cpu×cpu (ram×ram is L2, skip).
+pub fn lagged_cross_axis_mi(
+    a: &[GateSample], b: &[GateSample], lag: usize, bins: usize
+) -> f64 {
+    if a.len() <= lag + 10 || b.len() <= lag + 10 { return 0.0; }
+    let (ra, ca, rb, cb) = align_full(a, b);
+    if ra.len() <= lag + 10 { return 0.0; }
+    let mi_rc = mutual_info(&ra[..ra.len()-lag], &cb[lag..], bins);
+    let mi_cr = mutual_info(&ca[..ca.len()-lag], &rb[lag..], bins);
+    let mi_cc = mutual_info(&ca[..ca.len()-lag], &cb[lag..], bins);
+    mi_rc + mi_cr + mi_cc
+}
+
 /// Triadic interaction information I(A;B;C).
 ///
 /// Positive = redundancy (B, C overlap in predicting A).
@@ -169,6 +183,158 @@ pub fn align_full(a: &[GateSample], b: &[GateSample])
     (ram_a, cpu_a, ram_b, cpu_b)
 }
 
+// ─── Pluggable layer architecture ────────────────────────────────────────────
+
+/// Per-layer output from a BreakthroughLayer implementation.
+#[derive(Debug, Clone)]
+pub struct LayerContribution {
+    /// Layer identifier (e.g. "L1", "L2-lagged", "L3-cross-axis").
+    pub name: &'static str,
+    /// Raw MI or interaction-info sum before scaling.
+    pub raw_signal_sum: f64,
+    /// Contribution to `adjusted` efficiency = raw_signal_sum * scale_factor.
+    pub scaled_gain: f64,
+    /// Per-element breakdown (pair names, lag values, combo names, etc.).
+    pub decomposition: Vec<(String, f64)>,
+    /// Hint about which other layers this may double-count with.
+    pub overlap_hint: &'static [&'static str],
+}
+
+/// A breakthrough layer = one mechanism for extracting mutual information
+/// from per-gate streams. Each layer is independently computable and
+/// independently contributes to the adjusted efficiency.
+pub trait BreakthroughLayer {
+    fn name(&self) -> &'static str;
+    fn compute(&self, streams: &[(String, Vec<GateSample>)]) -> LayerContribution;
+    /// Overlap hint: layers that may correlate with this one.
+    fn overlap_hint(&self) -> &'static [&'static str] { &[] }
+}
+
+/// L1: instantaneous cross-gate ram×ram MI.
+pub struct L1CrossGateRam { pub scale: f64 }
+
+impl BreakthroughLayer for L1CrossGateRam {
+    fn name(&self) -> &'static str { "L1-cross-gate-ram" }
+    fn compute(&self, streams: &[(String, Vec<GateSample>)]) -> LayerContribution {
+        let mut sum = 0.0;
+        let mut deco = Vec::new();
+        for i in 0..streams.len() {
+            for j in (i+1)..streams.len() {
+                let (xs, ys) = align(&streams[i].1, &streams[j].1);
+                if xs.len() < 10 { continue; }
+                let mi = mutual_info(&xs, &ys, 6);
+                sum += mi;
+                deco.push((format!("{}×{}", streams[i].0, streams[j].0), mi));
+            }
+        }
+        LayerContribution {
+            name: self.name(), raw_signal_sum: sum, scaled_gain: sum * self.scale,
+            decomposition: deco, overlap_hint: self.overlap_hint(),
+        }
+    }
+}
+
+/// L2: temporal lagged MI at τ ∈ {1, 2, 5, 10}.
+pub struct L2LaggedTemporal { pub scale: f64 }
+
+impl BreakthroughLayer for L2LaggedTemporal {
+    fn name(&self) -> &'static str { "L2-lagged-temporal" }
+    fn overlap_hint(&self) -> &'static [&'static str] { &["L1-cross-gate-ram"] }
+    fn compute(&self, streams: &[(String, Vec<GateSample>)]) -> LayerContribution {
+        let mut total_sum = 0.0;
+        let mut deco = Vec::new();
+        for &lag in LAG_STEPS {
+            let mut sum_at_lag = 0.0;
+            for i in 0..streams.len() {
+                for j in (i+1)..streams.len() {
+                    let (xs, ys) = align(&streams[i].1, &streams[j].1);
+                    if xs.len() <= lag + 10 { continue; }
+                    sum_at_lag += lagged_mutual_info(&xs, &ys, lag, 6);
+                }
+            }
+            deco.push((format!("τ={}", lag), sum_at_lag));
+            total_sum += sum_at_lag;
+        }
+        LayerContribution {
+            name: self.name(), raw_signal_sum: total_sum, scaled_gain: total_sum * self.scale,
+            decomposition: deco, overlap_hint: self.overlap_hint(),
+        }
+    }
+}
+
+/// L3: cross-axis MI (ram×cpu, cpu×ram, cpu×cpu).
+pub struct L3CrossAxis { pub scale: f64 }
+
+impl BreakthroughLayer for L3CrossAxis {
+    fn name(&self) -> &'static str { "L3-cross-axis" }
+    fn overlap_hint(&self) -> &'static [&'static str] { &["L1-cross-gate-ram"] }
+    fn compute(&self, streams: &[(String, Vec<GateSample>)]) -> LayerContribution {
+        let mut ram_cpu = 0.0; let mut cpu_ram = 0.0; let mut cpu_cpu = 0.0;
+        for i in 0..streams.len() {
+            for j in (i+1)..streams.len() {
+                let (ra, ca, rb, cb) = align_full(&streams[i].1, &streams[j].1);
+                if ra.len() < 10 { continue; }
+                ram_cpu += mutual_info(&ra, &cb, 6);
+                cpu_ram += mutual_info(&ca, &rb, 6);
+                cpu_cpu += mutual_info(&ca, &cb, 6);
+            }
+        }
+        let sum = ram_cpu + cpu_ram + cpu_cpu;
+        let deco = vec![
+            ("ram_A×cpu_B".to_string(), ram_cpu),
+            ("cpu_A×ram_B".to_string(), cpu_ram),
+            ("cpu_A×cpu_B".to_string(), cpu_cpu),
+        ];
+        LayerContribution {
+            name: self.name(), raw_signal_sum: sum, scaled_gain: sum * self.scale,
+            decomposition: deco, overlap_hint: self.overlap_hint(),
+        }
+    }
+}
+
+/// L4: triadic interaction info |I(A;B;C)| for all triples.
+pub struct L4Triadic { pub scale: f64 }
+
+impl BreakthroughLayer for L4Triadic {
+    fn name(&self) -> &'static str { "L4-triadic" }
+    fn overlap_hint(&self) -> &'static [&'static str] { &[] }
+    fn compute(&self, streams: &[(String, Vec<GateSample>)]) -> LayerContribution {
+        let mut abs_sum = 0.0;
+        let mut deco = Vec::new();
+        for i in 0..streams.len() {
+            for j in (i+1)..streams.len() {
+                for k in (j+1)..streams.len() {
+                    let (xa, xb, xc) = align_triple(&streams[i].1, &streams[j].1, &streams[k].1);
+                    if xa.len() < 15 { continue; }
+                    let ii = triadic_interaction(&xa, &xb, &xc, 4);
+                    abs_sum += ii.abs();
+                    deco.push((
+                        format!("I({};{};{})", streams[i].0, streams[j].0, streams[k].0),
+                        ii,  // keep signed for decomposition
+                    ));
+                }
+            }
+        }
+        LayerContribution {
+            name: self.name(), raw_signal_sum: abs_sum, scaled_gain: abs_sum * self.scale,
+            decomposition: deco, overlap_hint: self.overlap_hint(),
+        }
+    }
+}
+
+/// Default layer stack (L1-L4).
+pub fn default_layers() -> Vec<Box<dyn BreakthroughLayer>> {
+    const SCALE: f64 = 0.0151 / 1.500;
+    vec![
+        Box::new(L1CrossGateRam { scale: SCALE }),
+        Box::new(L2LaggedTemporal { scale: SCALE }),
+        Box::new(L3CrossAxis { scale: SCALE }),
+        Box::new(L4Triadic { scale: SCALE }),
+    ]
+}
+
+// ─── Report ──────────────────────────────────────────────────────────────────
+
 /// Output of the breakthrough projection.
 #[derive(Debug, Clone)]
 pub struct BreakthroughReport {
@@ -195,6 +361,11 @@ pub struct BreakthroughReport {
     pub triadic_interactions: Vec<(String, String, String, f64)>,  // (a, b, c, I)
     pub triadic_abs_sum: f64,
     pub new_triadic_coupling: f64,  // triadic_abs_sum * SCALE
+    pub lagged_cross_axis_mi_by_lag: Vec<(usize, f64)>,  // (lag, sum across pairs)
+    pub lagged_cross_axis_mi_sum: f64,
+    pub new_lagged_cross_axis_coupling: f64,  // * SCALE
+    /// Per-layer contributions from the pluggable layer stack (L1-L4).
+    pub layers: Vec<LayerContribution>,
 }
 
 /// Compute the breakthrough report from 4+ gate streams.
@@ -221,9 +392,21 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
         per_gate_mi.push((name.clone(), mi));
     }
 
-    // cross-gate MI (ram_A × ram_B) for all pairs
-    let mut cross_gate_mi_sum = 0.0;
+    // Run all default layers (L1-L4)
+    let layer_impls = default_layers();
+    let layers: Vec<LayerContribution> = layer_impls.iter()
+        .map(|l| l.compute(streams)).collect();
+
+    // Extract legacy fields by name
+    let get = |n: &str| layers.iter().find(|c| c.name == n);
+    let l1 = get("L1-cross-gate-ram").expect("L1 layer missing");
+    let l2 = get("L2-lagged-temporal").expect("L2 layer missing");
+    let l3 = get("L3-cross-axis").expect("L3 layer missing");
+    let l4 = get("L4-triadic").expect("L4 layer missing");
+
+    // L1 legacy fields — rebuild pair_mi with pearson (needs r, not stored in layer)
     let mut pair_mi = Vec::new();
+    let mut cross_gate_mi_sum = 0.0;
     for i in 0..streams.len() {
         for j in (i+1)..streams.len() {
             let (xs, ys) = align(&streams[i].1, &streams[j].1);
@@ -234,70 +417,63 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
             pair_mi.push((streams[i].0.clone(), streams[j].0.clone(), mi, r, xs.len()));
         }
     }
+    let new_cross_coupling = l1.scaled_gain;
 
-    let new_mi_recovery = per_gate_mi_sum * SCALE * 1.5;
-    let new_cross_coupling = cross_gate_mi_sum * SCALE;
+    // L2 legacy fields
+    let lagged_mi_by_lag: Vec<(usize, f64)> = l2.decomposition.iter()
+        .filter_map(|(k, v)| {
+            k.strip_prefix("τ=").and_then(|n| n.parse::<usize>().ok()).map(|n| (n, *v))
+        }).collect();
+    let lagged_mi_sum = l2.raw_signal_sum;
+    let new_lagged_coupling = l2.scaled_gain;
 
-    // Layer L2: temporal lagged MI across all pairs at multiple lags.
-    let mut lagged_mi_by_lag: Vec<(usize, f64)> = Vec::new();
-    let mut lagged_mi_sum = 0.0;
-    for &lag in LAG_STEPS {
-        let mut sum_at_lag = 0.0;
-        for i in 0..streams.len() {
-            for j in (i+1)..streams.len() {
-                let (xs, ys) = align(&streams[i].1, &streams[j].1);
-                if xs.len() <= lag + 10 { continue; }
-                sum_at_lag += lagged_mutual_info(&xs, &ys, lag, 6);
-            }
-        }
-        lagged_mi_by_lag.push((lag, sum_at_lag));
-        lagged_mi_sum += sum_at_lag;
-    }
-    let new_lagged_coupling = lagged_mi_sum * SCALE;
-
-    // Layer L3: cross-axis MI (ram_A×cpu_B, cpu_A×ram_B, cpu_A×cpu_B).
-    // Note: ram_A×ram_B is already captured in L1 (cross_gate_mi_sum).
-    let mut ram_cpu_sum = 0.0; // ram_A × cpu_B
-    let mut cpu_ram_sum = 0.0; // cpu_A × ram_B
-    let mut cpu_cpu_sum = 0.0; // cpu_A × cpu_B
-    for i in 0..streams.len() {
-        for j in (i+1)..streams.len() {
-            let (ra, ca, rb, cb) = align_full(&streams[i].1, &streams[j].1);
-            if ra.len() < 10 { continue; }
-            ram_cpu_sum += mutual_info(&ra, &cb, 6);
-            cpu_ram_sum += mutual_info(&ca, &rb, 6);
-            cpu_cpu_sum += mutual_info(&ca, &cb, 6);
-        }
-    }
-    let cross_axis_mi_sum = ram_cpu_sum + cpu_ram_sum + cpu_cpu_sum;
+    // L3 legacy fields
     let cross_axis_mi_by_combo: Vec<(&'static str, f64)> = vec![
-        ("ram_A×cpu_B", ram_cpu_sum),
-        ("cpu_A×ram_B", cpu_ram_sum),
-        ("cpu_A×cpu_B", cpu_cpu_sum),
+        ("ram_A×cpu_B", l3.decomposition[0].1),
+        ("cpu_A×ram_B", l3.decomposition[1].1),
+        ("cpu_A×cpu_B", l3.decomposition[2].1),
     ];
-    let new_cross_axis_coupling = cross_axis_mi_sum * SCALE;
+    let cross_axis_mi_sum = l3.raw_signal_sum;
+    let new_cross_axis_coupling = l3.scaled_gain;
 
-    // Layer L4: triadic interaction information I(A;B;C).
+    // L4 legacy fields — reconstruct (a, b, c, I) tuples from original computation
     let mut triadic_interactions: Vec<(String, String, String, f64)> = Vec::new();
-    let mut triadic_abs_sum = 0.0;
     for i in 0..streams.len() {
         for j in (i+1)..streams.len() {
             for k in (j+1)..streams.len() {
                 let (xa, xb, xc) = align_triple(&streams[i].1, &streams[j].1, &streams[k].1);
                 if xa.len() < 15 { continue; }
                 let ii = triadic_interaction(&xa, &xb, &xc, 4);
-                triadic_abs_sum += ii.abs();
                 triadic_interactions.push((
                     streams[i].0.clone(), streams[j].0.clone(), streams[k].0.clone(), ii
                 ));
             }
         }
     }
-    let new_triadic_coupling = triadic_abs_sum * SCALE;
+    let triadic_abs_sum = l4.raw_signal_sum;
+    let new_triadic_coupling = l4.scaled_gain;
 
+    // Layer L5a: lagged cross-axis MI (L2 × L3 product space) — computed inline,
+    // not part of the pluggable layer stack, but included in adjusted formula.
+    let mut lagged_cross_axis_mi_by_lag: Vec<(usize, f64)> = Vec::new();
+    let mut lagged_cross_axis_mi_sum = 0.0;
+    for &lag in LAG_STEPS {
+        let mut sum_at_lag = 0.0;
+        for i in 0..streams.len() {
+            for j in (i+1)..streams.len() {
+                sum_at_lag += lagged_cross_axis_mi(&streams[i].1, &streams[j].1, lag, 6);
+            }
+        }
+        lagged_cross_axis_mi_by_lag.push((lag, sum_at_lag));
+        lagged_cross_axis_mi_sum += sum_at_lag;
+    }
+    let new_lagged_cross_axis_coupling = lagged_cross_axis_mi_sum * SCALE;
+
+    // Sum L1-L4 layer gains
+    let total_layer_gain: f64 = layers.iter().map(|c| c.scaled_gain).sum();
+    let new_mi_recovery = per_gate_mi_sum * SCALE * 1.5;
     let adjusted = RAW
-        + (CURRENT_MESH + new_cross_coupling + new_lagged_coupling
-           + new_cross_axis_coupling + new_triadic_coupling)
+        + (CURRENT_MESH + total_layer_gain + new_lagged_cross_axis_coupling)
         + new_mi_recovery + GHOST_PENALTY;
     let distance = SINGULARITY - adjusted;
     let crossed = adjusted > SINGULARITY;
@@ -311,6 +487,8 @@ pub fn project_breakthrough(streams: &[(String, Vec<GateSample>)]) -> Breakthrou
         lagged_mi_by_lag, lagged_mi_sum, new_lagged_coupling,
         cross_axis_mi_by_combo, cross_axis_mi_sum, new_cross_axis_coupling,
         triadic_interactions, triadic_abs_sum, new_triadic_coupling,
+        lagged_cross_axis_mi_by_lag, lagged_cross_axis_mi_sum, new_lagged_cross_axis_coupling,
+        layers,
     }
 }
 
@@ -474,6 +652,36 @@ mod tests {
     }
 
     #[test]
+    fn lagged_cross_axis_detects_shifted_coupling() {
+        // Construct two streams where A.cpu[t] strongly predicts B.ram[t+1].
+        let n = 80;
+        let samples_a: Vec<GateSample> = (0..n).map(|i| {
+            let t = i as f64;
+            GateSample {
+                ts: i as u64,
+                ram: (t * 0.1).sin().abs(),
+                cpu: (t * 0.15).cos().abs(),
+            }
+        }).collect();
+        // B.ram[t] = A.cpu[t-1] + noise; B.cpu unrelated
+        let samples_b: Vec<GateSample> = (0..n).map(|i| {
+            let t = i as f64;
+            let prev_cpu = if i == 0 { 0.0 } else { samples_a[i-1].cpu };
+            GateSample {
+                ts: i as u64,
+                ram: prev_cpu * 0.9 + 0.05,
+                cpu: (t * 0.33 + 1.7).sin().abs(),
+            }
+        }).collect();
+        let mi_lag1 = lagged_cross_axis_mi(&samples_a, &samples_b, 1, 6);
+        let mi_lag10 = lagged_cross_axis_mi(&samples_a, &samples_b, 10, 6);
+        // lag=1 should capture the cpu_a[t] → ram_b[t+1] coupling strongly
+        assert!(mi_lag1 > 0.2, "expected strong lag-1 MI, got {}", mi_lag1);
+        // lag=10 should not (relationship is at lag 1 only)
+        assert!(mi_lag1 > mi_lag10, "lag=1 MI ({}) should exceed lag=10 ({})", mi_lag1, mi_lag10);
+    }
+
+    #[test]
     fn l3_cross_axis_contributes_to_adjusted() {
         // Build streams where ram and cpu are strongly correlated
         // within each gate, and across gates — this should create
@@ -499,5 +707,53 @@ mod tests {
         assert!(r.new_cross_axis_coupling > 0.0);
         // ensure all 3 combos reported
         assert_eq!(r.cross_axis_mi_by_combo.len(), 3);
+    }
+
+    #[test]
+    fn default_layers_has_four_entries() {
+        let layers = default_layers();
+        assert_eq!(layers.len(), 4);
+        assert_eq!(layers[0].name(), "L1-cross-gate-ram");
+        assert_eq!(layers[1].name(), "L2-lagged-temporal");
+        assert_eq!(layers[2].name(), "L3-cross-axis");
+        assert_eq!(layers[3].name(), "L4-triadic");
+    }
+
+    #[test]
+    fn report_layers_field_populated() {
+        let mk = |phase: f64| -> Vec<GateSample> {
+            (0..50).map(|i| {
+                let t = i as f64;
+                GateSample {
+                    ts: i as u64,
+                    ram: (t * 0.1 + phase).sin().abs(),
+                    cpu: (t * 0.1 + phase + 0.5).cos().abs(),
+                }
+            }).collect()
+        };
+        let streams = vec![
+            ("a".into(), mk(0.0)),
+            ("b".into(), mk(0.5)),
+            ("c".into(), mk(1.0)),
+            ("d".into(), mk(1.5)),
+        ];
+        let r = project_breakthrough(&streams);
+        assert_eq!(r.layers.len(), 4);
+        // total_layer_gain should equal sum of individual gains used in formula
+        let total: f64 = r.layers.iter().map(|l| l.scaled_gain).sum();
+        // adjusted should match: RAW + MESH + total + L5a + recovery - ghost
+        let expected = 0.6360 + 0.0044 + total + r.new_lagged_cross_axis_coupling
+                       + r.new_mi_recovery - 0.0026;
+        assert!((r.adjusted - expected).abs() < 1e-10,
+            "layer gain sum mismatch: adjusted={}, expected={}", r.adjusted, expected);
+
+        // legacy field consistency: sum of individual new_* fields should equal total
+        let legacy_total = r.new_cross_coupling + r.new_lagged_coupling
+                         + r.new_cross_axis_coupling + r.new_triadic_coupling;
+        assert!((total - legacy_total).abs() < 1e-10);
+
+        // overlap hints should be present on at least L2 and L3
+        let has_hints = r.layers.iter().any(|l| !l.overlap_hint.is_empty());
+        assert!(has_hints, "expected at least one layer to declare overlap hints");
     }
 }
