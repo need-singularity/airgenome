@@ -58,7 +58,14 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("[airgenome-helper] listening on {}", path);
+    // Socket must be world-writable for other users to connect().
+    // Peer identity is still enforced via getpeereid() on every accept.
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(mut perms) = std::fs::metadata(&path).map(|m| m.permissions()) {
+        perms.set_mode(0o666);
+        let _ = std::fs::set_permissions(&path, perms);
+    }
+    eprintln!("[airgenome-helper] listening on {} (mode 0666, peer-auth enforced)", path);
 
     // Allowed UIDs: root (0) + AIRGENOME_ALLOW_UID env var (comma-separated).
     let mut allowed: Vec<u32> = vec![0];

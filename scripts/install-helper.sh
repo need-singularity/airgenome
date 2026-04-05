@@ -46,9 +46,12 @@ case "${action}" in
       fi
     fi
     say "copying ${BIN_SRC} → ${BIN_DST}"
+    mkdir -p "$(dirname "${BIN_DST}")"
     install -m 755 "${BIN_SRC}" "${BIN_DST}"
 
-    say "writing ${PLIST}"
+    # Who called sudo? Allow that UID to connect.
+    ALLOW_UID="${SUDO_UID:-$(id -u)}"
+    say "writing ${PLIST} (allowed peer UID: ${ALLOW_UID})"
     cat > "${PLIST}" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,6 +63,10 @@ case "${action}" in
         <string>${BIN_DST}</string>
         <string>${SOCK}</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AIRGENOME_ALLOW_UID</key><string>${ALLOW_UID}</string>
+    </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>StandardOutPath</key><string>${LOG_OUT}</string>

@@ -1377,7 +1377,7 @@ fn schedule_quiet_cmd(args: &[String]) {
         <string>--yes</string>
     </array>
     <key>StartInterval</key><integer>{seconds}</integer>
-    <key>RunAtLoad</key><false/>
+    <key>RunAtLoad</key><true/>
     <key>StandardOutPath</key><string>{data}/quiet.out.log</string>
     <key>StandardErrorPath</key><string>{data}/quiet.err.log</string>
     <key>Nice</key><integer>15</integer>
