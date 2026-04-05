@@ -47,6 +47,7 @@ fn main() {
         "signature-history" | "sig-hist" => signature_history_cmd(&args),
         "fingerprints" | "fp" => fingerprints_cmd(),
         "match" => match_cmd(&args),
+        "match-distribution" | "match-dist" => match_distribution_cmd(),
         "profile" => profile_cmd(&args),
         "genome" => genome_cmd(&args),
         "diff" => diff_cmd(&args),
@@ -316,11 +317,32 @@ fn fingerprints_cmd() {
     }
 }
 
-fn match_cmd(_args: &[String]) {
-    // Take current vitals, match against fingerprint library.
+fn match_cmd(args: &[String]) {
+    let append = args.iter().any(|a| a == "--append");
+    let json = args.iter().any(|a| a == "--json" || a == "-j");
+
     let v = airgenome::sample();
     let sig = airgenome::signature::Signature::new(v.axes);
     let (best, dist) = airgenome::signature::nearest(&sig);
+    let cos = sig.cosine(&best.signature);
+
+    if append {
+        let path = home_dir().join(".airgenome").join("matches.jsonl");
+        let _ = std::fs::create_dir_all(path.parent().unwrap());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f,
+                "{{\"ts\":{},\"match\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
+                v.ts, best.name, dist, cos);
+        }
+        println!("appended: ts={} match={} d={:.3}", v.ts, best.name, dist);
+        return;
+    }
+
+    if json {
+        println!("{{\"ts\":{},\"match\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
+            v.ts, best.name, dist, cos);
+        return;
+    }
 
     println!("=== airgenome — match current vitals to workload fingerprint ===");
     println!();
@@ -333,7 +355,7 @@ fn match_cmd(_args: &[String]) {
     println!();
     println!("  nearest fingerprint: {} ({})", green(best.name), best.description);
     println!("  euclidean distance : {:.3}", dist);
-    println!("  cosine similarity  : {:.3}", sig.cosine(&best.signature));
+    println!("  cosine similarity  : {:.3}", cos);
     println!();
     println!("  ranked distances:");
     let mut scored: Vec<_> = airgenome::signature::FINGERPRINTS.iter()
@@ -342,6 +364,58 @@ fn match_cmd(_args: &[String]) {
     scored.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     for (fp, d) in scored.iter().take(5) {
         println!("    {:<14}  d={:.3}", fp.name, d);
+    }
+}
+
+fn match_distribution_cmd() {
+    let path = home_dir().join(".airgenome").join("matches.jsonl");
+    let body = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {}: {}", path.display(), e);
+            eprintln!("hint: run `airgenome match --append` first (or crontab)");
+            std::process::exit(1);
+        }
+    };
+
+    fn f<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{}\"", key);
+        let i = s.find(&needle)?;
+        let rest = &s[i + needle.len()..];
+        let colon = rest.find(':')?;
+        let after = rest[colon + 1..].trim_start();
+        if let Some(stripped) = after.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(&stripped[..end])
+        } else {
+            let end = after.find(|c: char| c == ',' || c == '}').unwrap_or(after.len());
+            Some(after[..end].trim())
+        }
+    }
+
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut dsum: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    let mut total = 0;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        total += 1;
+        let name = match f(line, "match") { Some(n) => n.to_string(), None => continue };
+        let dist: f64 = f(line, "distance").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        *counts.entry(name.clone()).or_insert(0) += 1;
+        *dsum.entry(name).or_insert(0.0) += dist;
+    }
+
+    println!("=== airgenome — workload distribution ({} matches) ===", total);
+    println!();
+    println!("  fingerprint    count    %      mean d");
+    println!("  ────────────────────────────────────────");
+    let mut rows: Vec<_> = counts.iter().collect();
+    rows.sort_by(|a,b| b.1.cmp(a.1));
+    for (name, n) in rows {
+        let pct = 100.0 * (*n as f64) / (total as f64);
+        let mean_d = dsum.get(name).unwrap_or(&0.0) / (*n as f64);
+        println!("  {:<14}  {:>5}  {:>5.1}%  {:>6.2}", name, n, pct, mean_d);
     }
 }
 
@@ -2575,7 +2649,8 @@ fn print_help() {
     println!("  signature [cat] [--append|--json]         6-axis signature per category");
     println!("  signature-history [cat]                   aggregate signatures.jsonl history");
     println!("  fingerprints                              list built-in workload fingerprints");
-    println!("  match                                     match current vitals to nearest fingerprint");
+    println!("  match [--append|--json]                   match current vitals → nearest fingerprint");
+    println!("  match-distribution                        workload distribution from matches.jsonl");
     println!("  profile list        list built-in profiles");
     println!("  profile show NAME   show engaged pairs + genome hex");
     println!("  profile apply NAME  apply built-in/user profile OR .genome file path");
