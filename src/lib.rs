@@ -34,8 +34,12 @@ pub mod gate;
 pub mod vitals;
 pub mod efficiency;
 pub mod actuator;
+pub mod rules;
+pub mod profile;
 
 pub use gate::{Axis, Genome, PairGate, ResourceGate, AXIS_COUNT, PAIR_COUNT, GENOME_BYTES, PAIRS};
 pub use vitals::{sample, Vitals};
 pub use efficiency::{EfficiencyTracker, META_FP, WORK_FP, mutual_info_hist};
 pub use actuator::{Action, Actuator, Snapshot};
+pub use rules::{Rule, RULES, fires, firing, neighbors, severity, Severity};
+pub use profile::{Profile, PROFILES, by_name, names};
