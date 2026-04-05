@@ -18,6 +18,8 @@ fn main() {
         "daemon" => daemon_cmd(&args),
         "trace" => trace_cmd(&args),
         "policy" => policy_cmd(&args),
+        "init" => init_cmd(&args),
+        "uninit" => uninit_cmd(),
         "help" | "-h" | "--help" => print_help(),
         other => {
             eprintln!("unknown sub-command: '{}'", other);
@@ -501,6 +503,116 @@ fn policy_tick_once() {
     }
 }
 
+fn init_cmd(args: &[String]) {
+    // Parse --interval N (seconds).
+    let mut interval_s: u64 = 60;
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--interval" || args[i] == "-i" {
+            i += 1;
+            if let Some(v) = args.get(i) { interval_s = v.parse().unwrap_or(60).max(1); }
+        }
+        i += 1;
+    }
+
+    let bin = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("cannot resolve current binary: {}", e); std::process::exit(1); }
+    };
+    let data_dir = home_dir().join(".airgenome");
+    let agents_dir = home_dir().join("Library/LaunchAgents");
+    let plist = agents_dir.join("com.airgenome.daemon.plist");
+
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!("cannot create {}: {}", data_dir.display(), e);
+        std::process::exit(1);
+    }
+    if let Err(e) = std::fs::create_dir_all(&agents_dir) {
+        eprintln!("cannot create {}: {}", agents_dir.display(), e);
+        std::process::exit(1);
+    }
+
+    let contents = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{bin}</string>
+        <string>daemon</string>
+        <string>--interval</string>
+        <string>{interval}</string>
+        <string>--output</string>
+        <string>{data}/vitals.jsonl</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>{data}/daemon.out.log</string>
+    <key>StandardErrorPath</key><string>{data}/daemon.err.log</string>
+    <key>WorkingDirectory</key><string>{home}</string>
+    <key>ProcessType</key><string>Background</string>
+    <key>LowPriorityIO</key><true/>
+    <key>Nice</key><integer>10</integer>
+</dict>
+</plist>
+"#,
+        bin = bin.display(),
+        interval = interval_s,
+        data = data_dir.display(),
+        home = home_dir().display(),
+    );
+
+    if let Err(e) = std::fs::write(&plist, contents) {
+        eprintln!("cannot write {}: {}", plist.display(), e);
+        std::process::exit(1);
+    }
+
+    // reload launchd
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", &plist.to_string_lossy()])
+        .status();
+    let load = std::process::Command::new("launchctl")
+        .args(["load", &plist.to_string_lossy()])
+        .status();
+
+    match load {
+        Ok(s) if s.success() => {
+            println!("init: LaunchAgent loaded ({}s interval)", interval_s);
+            println!("  plist : {}", plist.display());
+            println!("  bin   : {}", bin.display());
+            println!("  data  : {}", data_dir.display());
+            println!();
+            println!("run `airgenome policy watch` to see it live.");
+        }
+        _ => {
+            eprintln!("launchctl load failed; see {}/daemon.err.log", data_dir.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn uninit_cmd() {
+    let plist = home_dir().join("Library/LaunchAgents/com.airgenome.daemon.plist");
+    let data_dir = home_dir().join(".airgenome");
+
+    if plist.exists() {
+        let _ = std::process::Command::new("launchctl")
+            .args(["unload", &plist.to_string_lossy()])
+            .status();
+        if let Err(e) = std::fs::remove_file(&plist) {
+            eprintln!("could not remove {}: {}", plist.display(), e);
+        } else {
+            println!("uninit: removed {}", plist.display());
+        }
+    } else {
+        println!("uninit: no LaunchAgent at {}", plist.display());
+    }
+    println!("  data preserved: {}", data_dir.display());
+    println!("  rm -rf {}  # to wipe collected vitals", data_dir.display());
+}
+
 fn home_dir() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -526,5 +638,7 @@ fn print_help() {
     println!("  trace [--tail N]    summarize ~/.airgenome/vitals.jsonl");
     println!("  policy watch        live PolicyEngine loop (preemptive + reactive)");
     println!("  policy tick         one-shot: seed from log + evaluate current vitals");
+    println!("  init [-i SEC]       register LaunchAgent so the daemon auto-starts");
+    println!("  uninit              unload + remove the LaunchAgent");
     println!("  help                print this help");
 }
