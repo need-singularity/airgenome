@@ -359,30 +359,66 @@ fn fingerprint_save_cmd(args: &[String]) {
     println!("  axes: {:?}", v.axes);
 }
 
+fn load_custom_fingerprints() -> Vec<(String, airgenome::signature::Signature)> {
+    let path = home_dir().join(".airgenome").join("custom_fingerprints.jsonl");
+    let body = match std::fs::read_to_string(&path) { Ok(s) => s, Err(_) => return Vec::new() };
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let name = line.split("\"name\":\"").nth(1)
+            .and_then(|s| s.split('"').next()).unwrap_or("");
+        if name.is_empty() { continue; }
+        let axes_str = match line.split("\"axes\":[").nth(1)
+            .and_then(|s| s.split(']').next()) { Some(s) => s, None => continue };
+        let axes: Vec<f64> = axes_str.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if axes.len() == 6 {
+            let a: [f64; 6] = [axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]];
+            out.push((name.to_string(), airgenome::signature::Signature::new(a)));
+        }
+    }
+    out
+}
+
 fn match_cmd(args: &[String]) {
     let append = args.iter().any(|a| a == "--append");
     let json = args.iter().any(|a| a == "--json" || a == "-j");
 
     let v = airgenome::sample();
     let sig = airgenome::signature::Signature::new(v.axes);
-    let (best, dist) = airgenome::signature::nearest(&sig);
-    let cos = sig.cosine(&best.signature);
+
+    // Combine built-in + custom.
+    let mut all: Vec<(String, airgenome::signature::Signature, &'static str)> =
+        airgenome::signature::FINGERPRINTS.iter()
+            .map(|fp| (fp.name.to_string(), fp.signature, "built-in"))
+            .collect();
+    for (n, s) in load_custom_fingerprints() {
+        all.push((n, s, "custom"));
+    }
+
+    let mut scored: Vec<_> = all.iter()
+        .map(|(n, s, k)| (n.clone(), s.clone(), *k, sig.euclidean(s)))
+        .collect();
+    scored.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
+    let (best_name, best_sig, best_kind, dist) = scored.first().unwrap().clone();
+    let cos = sig.cosine(&best_sig);
+    let _ = best_kind; // silence unused in some paths
 
     if append {
         let path = home_dir().join(".airgenome").join("matches.jsonl");
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             let _ = writeln!(f,
-                "{{\"ts\":{},\"match\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
-                v.ts, best.name, dist, cos);
+                "{{\"ts\":{},\"match\":\"{}\",\"kind\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
+                v.ts, best_name, best_kind, dist, cos);
         }
-        println!("appended: ts={} match={} d={:.3}", v.ts, best.name, dist);
+        println!("appended: ts={} match={} ({}) d={:.3}", v.ts, best_name, best_kind, dist);
         return;
     }
 
     if json {
-        println!("{{\"ts\":{},\"match\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
-            v.ts, best.name, dist, cos);
+        println!("{{\"ts\":{},\"match\":\"{}\",\"kind\":\"{}\",\"distance\":{:.3},\"cosine\":{:.3}}}",
+            v.ts, best_name, best_kind, dist, cos);
         return;
     }
 
@@ -395,17 +431,13 @@ fn match_cmd(args: &[String]) {
     }
     println!("]");
     println!();
-    println!("  nearest fingerprint: {} ({})", green(best.name), best.description);
-    println!("  euclidean distance : {:.3}", dist);
-    println!("  cosine similarity  : {:.3}", cos);
+    println!("  nearest: {} ({})  d={:.3}  cos={:.3}",
+        green(&best_name), best_kind, dist, cos);
     println!();
-    println!("  ranked distances:");
-    let mut scored: Vec<_> = airgenome::signature::FINGERPRINTS.iter()
-        .map(|fp| (fp, sig.euclidean(&fp.signature)))
-        .collect();
-    scored.sort_by(|a,b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (fp, d) in scored.iter().take(5) {
-        println!("    {:<14}  d={:.3}", fp.name, d);
+    println!("  ranked (top 6):");
+    for (name, _s, kind, d) in scored.iter().take(6) {
+        let tag = if *kind == "custom" { yellow("custom") } else { dim("built-in") };
+        println!("    {:<18} {}  d={:.3}", name, tag, d);
     }
 }
 
