@@ -9,7 +9,7 @@ var configPath = args.count > 4 ? args.objectAtIndex(4).js : $.NSHomeDirectory()
 var app = $.NSApplication.sharedApplication;
 app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
-var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, forge: false, guard: false, autostart: true};
+var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, bridge_max: 4, forge: false, guard: false, autostart: true};
 var plistPath = $.NSHomeDirectory().js + '/Library/LaunchAgents/com.airgenome.menubar.plist';
 var accountsPath = $.NSHomeDirectory().js + '/.airgenome/accounts.json';
 var usageCachePath = $.NSHomeDirectory().js + '/.airgenome/usage-cache.json';
@@ -46,7 +46,7 @@ function writeFullConfig(obj) {
 var cfg = readConfig();
 
 var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(0, 0, 420, 540),
+    $.NSMakeRect(0, 0, 420, 610),
     $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
     $.NSBackingStoreBuffered, false
 );
@@ -55,16 +55,16 @@ win.level = $.NSFloatingWindowLevel;
 win.center;
 
 // ─── Tab View (기본 설정 | 계정 관리) ───
-var tabView = $.NSTabView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 540));
+var tabView = $.NSTabView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 610));
 
 var settingsTab = $.NSTabViewItem.alloc.initWithIdentifier($('settings'));
 settingsTab.label = $('기본 설정');
-var settingsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 490));
+var settingsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 560));
 settingsTab.view = settingsView;
 
 var accountsTab = $.NSTabViewItem.alloc.initWithIdentifier($('accounts'));
 accountsTab.label = $('계정 관리');
-var accountsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 490));
+var accountsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 560));
 accountsTab.view = accountsView;
 
 tabView.addTabViewItem(settingsTab);
@@ -95,18 +95,21 @@ function makeRow(y, name, min, max, val) {
 }
 
 // --- All (master) slider at top ---
-var sep1 = $.NSBox.alloc.initWithFrame($.NSMakeRect(20, 368, 300, 1));
+var sep1 = $.NSBox.alloc.initWithFrame($.NSMakeRect(20, 438, 300, 1));
 sep1.boxType = $.NSBoxSeparator;
 cv.addSubview(sep1);
 
 var allAvg = Math.round((cfg.cpu_ceil + cfg.ram_ceil + cfg.swap_ceil) / 3);
-var allRow = makeRow(380, 'All', 0, 100, allAvg);
+var allRow = makeRow(450, 'All', 0, 100, allAvg);
 allRow.label.font = $.NSFont.boldSystemFontOfSize(14);
 
 // --- Individual sliders ---
-var cpuRow  = makeRow(300, 'CPU Ceiling',  10, 100, cfg.cpu_ceil);
-var ramRow  = makeRow(230, 'RAM Ceiling',  10, 100, cfg.ram_ceil);
-var swapRow = makeRow(160, 'Swap Ceiling',  0, 100, cfg.swap_ceil);
+var cpuRow  = makeRow(370, 'CPU Ceiling',  10, 100, cfg.cpu_ceil);
+var ramRow  = makeRow(300, 'RAM Ceiling',  10, 100, cfg.ram_ceil);
+var swapRow = makeRow(230, 'Swap Ceiling',  0, 100, cfg.swap_ceil);
+
+// --- Bridge limiter ---
+var bridgeRow = makeRow(160, 'Bridge Max (hexa)', 0, 20, cfg.bridge_max || 4);
 
 // --- Modules section ---
 var sep2 = $.NSBox.alloc.initWithFrame($.NSMakeRect(20, 140, 300, 1));
@@ -220,6 +223,7 @@ ObjC.registerSubclass({
                 cpuRow.slider.doubleValue = d.cpu_ceil;
                 ramRow.slider.doubleValue = d.ram_ceil;
                 swapRow.slider.doubleValue = d.swap_ceil;
+                bridgeRow.slider.doubleValue = d.bridge_max || 4;
                 var avg = Math.round((d.cpu_ceil + d.ram_ceil + d.swap_ceil) / 3);
                 allRow.slider.doubleValue = avg;
                 forgeToggle.button.state = $.NSControlStateValueOff;
@@ -262,10 +266,13 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
     var forgeOn = forgeToggle.button.state === $.NSControlStateValueOn;
     var guardOn = guardToggle.button.state === $.NSControlStateValueOn;
 
+    var bm = Math.round(bridgeRow.slider.doubleValue);
+
     allRow.label.stringValue   = $('All: ' + av + '%');
     cpuRow.label.stringValue   = $(cpuRow.name + ': ' + cc + '%');
     ramRow.label.stringValue   = $(ramRow.name + ': ' + rc + '%');
     swapRow.label.stringValue  = $(swapRow.name + ': ' + sc + '%');
+    bridgeRow.label.stringValue = $('Bridge Max (hexa): ' + bm + (bm === 0 ? ' (unlimited)' : ''));
 
     var autoOn = autostartToggle.button.state === $.NSControlStateValueOn;
     setAutoStart(autoOn);
@@ -287,7 +294,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
         t2.launchAndReturnError(null);
     }
 
-    writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, forge: forgeOn, guard: guardOn, autostart: autoOn});
+    writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, bridge_max: bm, forge: forgeOn, guard: guardOn, autostart: autoOn});
 });
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -76,7 +76,7 @@ PYEOF
   echo "⬡ profile: $CHIP ${TOTAL_RAM_GB}GB → CPU ${CPU_C}% RAM ${RAM_C}% Swap ${SWAP_C}%"
   echo "  $PROFILE_NOTE"
   cat > "$CONFIG" <<CJSON
-{"cpu_ceil": $CPU_C, "ram_ceil": $RAM_C, "swap_ceil": $SWAP_C}
+{"cpu_ceil": $CPU_C, "ram_ceil": $RAM_C, "swap_ceil": $SWAP_C, "bridge_max": 4}
 CJSON
 fi
 
@@ -111,8 +111,21 @@ try:
     print(f'SWAP_CEIL={c.get(\"swap_ceil\",50)}')
     g=c.get('guard',False)
     print(f'GUARD_ON={1 if g else 0}')
-except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0')
-" 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; }
+    print(f'BRIDGE_MAX={c.get(\"bridge_max\",4)}')
+except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4')
+" 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; BRIDGE_MAX=4; }
+
+    # --- Bridge limiter: kill excess hexa bridge processes ---
+    if [ "$GUARD_ON" = "1" ] && [ "${BRIDGE_MAX:-0}" -gt 0 ]; then
+      BRIDGE_PIDS=$(ps -eo pid=,lstart=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | sort -k2,5 | awk '{print $1}')
+      BRIDGE_COUNT=$(echo "$BRIDGE_PIDS" | grep -c . 2>/dev/null || echo 0)
+      if [ "$BRIDGE_COUNT" -gt "$BRIDGE_MAX" ]; then
+        KILL_N=$((BRIDGE_COUNT - BRIDGE_MAX))
+        echo "$BRIDGE_PIDS" | head -"$KILL_N" | while read BPID; do
+          kill "$BPID" 2>/dev/null || true
+        done
+      fi
+    fi
 
     LEVEL="ok"
     THROTTLED="false"
