@@ -100,14 +100,15 @@ SJSON
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
 
-    eval "$(python3 -c "
+    eval "$(/opt/homebrew/bin/python3.12 -c "
 import json
 try:
     c=json.load(open('$CONFIG'))
-    print(f\"CPU_CEIL={c.get('cpu_ceil',90)}\")
-    print(f\"RAM_CEIL={c.get('ram_ceil',80)}\")
-    print(f\"SWAP_CEIL={c.get('swap_ceil',50)}\")
-    print(f\"GUARD_ON={'1' if c.get('guard',False) else '0'}\")
+    print(f'CPU_CEIL={c.get(\"cpu_ceil\",90)}')
+    print(f'RAM_CEIL={c.get(\"ram_ceil\",80)}')
+    print(f'SWAP_CEIL={c.get(\"swap_ceil\",50)}')
+    g=c.get('guard',False)
+    print(f'GUARD_ON={1 if g else 0}')
 except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0')
 " 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; }
 
