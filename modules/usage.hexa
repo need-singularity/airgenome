@@ -278,6 +278,54 @@ fn refresh_all() -> void {
     save_cache(results)
 }
 
+fn fetch_one_force(name: str) -> str {
+    // 쿨다운 무시 + 직접 API 호출 (세션 종료 후 강제 갱신)
+    let label = get_label(name)
+    if len(label) == 0 { return name + "||||no_label" }
+    let kc = read_keychain(label)
+    if len(kc) == 0 { return name + "||||no_keychain" }
+    let info = extract_token_info(kc)
+    let parts = info.split("|")
+    if len(parts) < 3 { return name + "||||parse_error" }
+    let access = parts[0]
+    let refresh = parts[1]
+    let expires = parts[2]
+    if len(access) == 0 {
+        if len(refresh) > 0 { access = refresh_token(refresh, name) }
+        if len(access) == 0 { return name + "||||token_error" }
+    }
+    if is_token_expired(expires) {
+        if len(refresh) > 0 {
+            let new_tok = refresh_token(refresh, name)
+            if len(new_tok) > 0 { access = new_tok }
+        }
+    }
+    let usage = call_usage_api(access, name)
+    if usage == "api_error" { return name + "||||api_error" }
+    // 성공 → 쿨다운 해제
+    set_cooldown(name, false)
+    let u = usage.split("|")
+    if len(u) >= 4 { return name + "|" + u[0] + "|" + u[1] + "|" + u[2] + "|" + u[3] }
+    return name + "||||api_error"
+}
+
+fn refresh_one(name: str) -> void {
+    // 단일 계정 강제 갱신 (세션 종료 후 — 쿨다운 무시)
+    println("  ⬡ " + name + " 갱신...")
+    let r = fetch_one_force(name)
+    let status = "✓"
+    if r.contains("api_error") { status = "✗ API에러" }
+    if r.contains("token_error") { status = "✗ 토큰에러" }
+    if status == "✓" {
+        let parts = r.split("|")
+        if len(parts) >= 2 {
+            if len(parts[1]) > 0 { status = "✓ s=" + parts[1] }
+        }
+    }
+    println("    " + name + " " + status)
+    save_cache(r)
+}
+
 fn refresh_if_stale() -> void {
     let age = load_cache_age()
     if age > 300 {
@@ -289,13 +337,14 @@ fn main() {
     let argv = args()
     let cmd = ""
     if len(argv) > 3 { cmd = argv[3] }
+    let target = ""
+    if len(argv) > 4 { target = argv[4] }
 
     if cmd == "refresh" { refresh_all() }
+    if cmd == "one" { refresh_one(target) }
     if cmd == "auto" { refresh_if_stale() }
     if cmd == "" {
-        println("usage: hexa usage.hexa [refresh|auto]")
-        println("  refresh — 전체 갱신")
-        println("  auto    — 5분 이상 경과 시만 갱신")
+        println("usage: hexa usage.hexa [refresh|auto|one <name>]")
     }
 }
 

@@ -143,8 +143,6 @@ trap cleanup EXIT INT TERM
 
 # ─── Main ───
 
-(cd "$AIRGENOME" && $HEXA run modules/usage.hexa auto >/dev/null 2>&1 &)
-
 cd "$AIRGENOME"
 # LAUNCH 마커를 파일로 전달 (대시보드+키입력은 tty 직접)
 LAUNCH_MARKER="/tmp/cl-launch-$$"
@@ -184,8 +182,8 @@ while true; do
     ~/.local/bin/claude
     EXIT_CODE=$?
 
-    # 세션 종료 후 해당 계정 usage 즉시 갱신 (백그라운드)
-    (cd "$AIRGENOME" && $HEXA run modules/usage.hexa refresh >/dev/null 2>&1 &)
+    # 세션 종료 후 해당 계정만 1회 갱신 (전체 refresh 아님 — rate limit 방지)
+    (cd "$AIRGENOME" && $HEXA run modules/usage.hexa one "$CURRENT_NAME" >/dev/null 2>&1 &)
 
     LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
     if [ -n "$LATEST_JSONL" ]; then
@@ -195,8 +193,6 @@ while true; do
     if check_rate_limit "$LOGFILE" && [ $SWITCH_COUNT -lt $MAX_SWITCHES ]; then
         echo ""
         echo "  ⚠ Rate limit 감지! 자동 계정 전환 중..."
-
-        (cd "$AIRGENOME" && $HEXA run modules/usage.hexa auto >/dev/null 2>&1 &)
 
         NEXT=$(pick_next_account "$CURRENT_NAME")
 
