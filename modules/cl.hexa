@@ -109,7 +109,7 @@ fn get_account_usage(name: str) -> str {
     if exists == "no" {
         return "?|?"
     }
-    let result = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + cache_path + "'));e=d.get('" + name + "',{});print(f'{e.get(\"session_pct\",\"?\")}'+'|'+f'{e.get(\"week_all_pct\",\"?\")}')\" 2>/dev/null || echo '?|?'").trim()
+    let result = exec("/opt/homebrew/bin/python3.12 -c 'import json;d=json.load(open(\"" + cache_path + "\"));e=d.get(\"" + name + "\",{});print(str(e.get(\"session_pct\",\"?\"))+\"|\"+str(e.get(\"week_all_pct\",\"?\")))' 2>/dev/null || echo '?|?'").trim()
     return result
 }
 
@@ -319,10 +319,7 @@ fn print_help() -> void {
     println("폐기: 이 파일 삭제 + ~/.zshrc에서 cl 제거")
 }
 
-consciousness CLRouter {
-    assert len(VERSION) > 0
-    assert len(RATE_PATTERNS) > 0
-
+fn main() {
     let argv = args()
     let cmd = ""
     if len(argv) > 3 {
@@ -371,3 +368,5 @@ consciousness CLRouter {
     }
     if cmd == "help" { print_help() }
 }
+
+main()
