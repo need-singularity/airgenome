@@ -336,75 +336,14 @@ fn show_usage_dashboard() -> void {
     let accounts_json = bootstrap_accounts()
     if len(accounts_json) == 0 { return }
 
-    // 캐시만 읽기 — 백그라운드 갱신이 이미 처리
-    let cache_age = load_cache_age()
-    let age_str = exec("/opt/homebrew/bin/python3.12 -c \"s=" + to_string(cache_age) + ";print(str(s//60)+'m '+str(s%60)+'s ago' if s<3600 else str(s//3600)+'h ago')\" 2>/dev/null").trim()
+    // 단일 python3 호출로 전체 테이블 생성 (즉시 출력)
+    let accounts_path = exec("echo " + ACCOUNTS_FILE).trim()
+    let cache_path = exec("echo " + USAGE_CACHE).trim()
+    let state_path = exec("echo " + STATE_FILE).trim()
 
-    let active = exec("[ -f " + exec("echo " + STATE_FILE).trim() + " ] && /opt/homebrew/bin/python3.12 -c \"import json;print(json.load(open('" + exec("echo " + STATE_FILE).trim() + "'))['active'])\" 2>/dev/null || echo ''").trim()
+    let table = exec("/opt/homebrew/bin/python3.12 -c \"\nimport json,time,os\nfrom datetime import datetime,timezone\n\ndef load(p):\n    try: return json.load(open(os.path.expanduser(p)))\n    except: return {}\n\naccounts=load('" + accounts_path + "').get('accounts',[])\ncache=load('" + cache_path + "')\nstate=load('" + state_path + "')\nactive=state.get('active','')\nts=cache.get('_ts',0)\nage=int(time.time()-ts) if ts else 9999\nage_s=f'{age//60}m {age%60}s ago' if age<3600 else f'{age//3600}h ago'\n\ndef bar(p,w=14):\n    p=min(100,max(0,int(float(p)))) if p not in ('?','None','','-') else 0\n    f=int(p/100*w)\n    return chr(9619)*f+chr(9617)*(w-f)\n\ndef fmt_reset(s):\n    if not s or s in ('?','None'): return '-'\n    try:\n        dt=datetime.fromisoformat(s.replace('Z','+00:00'))\n        d=int((dt-datetime.now(timezone.utc)).total_seconds())\n        if d<0: return 'now'\n        if d<3600: return f'{d//60}m'\n        if d<86400: return f'{d//3600}h {(d%3600)//60}m'\n        return f'{d//86400}d {(d%86400)//3600}h'\n    except: return s\n\ndef lim(w):\n    try: v=float(w)\n    except: v=0\n    if v>=100: return chr(10007)+' EXHAUSTED'\n    if v>=80: return chr(9888)+' HIGH    '\n    if v>=50: return chr(9651)+' MID     '\n    return chr(10003)+' OK      '\n\nprint()\nprint(f'  \\u2b22 Claude Code Usage Dashboard          (cached {age_s})')\nprint()\nprint('  \\u250c\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u252c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2510')\nprint('  \\u2502  #  \\u2502  Account    \\u2502 Session \\u2502                \\u2502  Reset \\u2502  Week   \\u2502                \\u2502  Reset \\u2502  Limit   \\u2502')\nprint('  \\u251c\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2524')\nfor i,a in enumerate(accounts):\n    n=a['name']; rm=a.get('removed',False)\n    idx=f'{i+1:>2}'\n    if rm:\n        print(f'  \\u2502 {idx}  \\u2502 {n:<10s}  \\u2502     -   \\u2502 {bar(0)}  \\u2502      - \\u2502     -   \\u2502 {bar(0)}  \\u2502      - \\u2502 \\u2717 \\ud3d0\\uae30\\ub428  \\u2502')\n    else:\n        e=cache.get(n,{})\n        sp=e.get('session_pct','?'); sr=e.get('session_resets','?')\n        wp=e.get('week_all_pct','?'); wr=e.get('week_resets','?')\n        sp_d='-' if sp in (None,'None','?') else f'{sp}%'\n        wp_d='-' if wp in (None,'None','?') else f'{wp}%'\n        star='\\u2605' if n==active else ' '\n        print(f'  \\u2502 {idx}{star} \\u2502 {n:<10s}  \\u2502  {sp_d:>5s}  \\u2502 {bar(sp)} \\u2502 {fmt_reset(sr):>6s} \\u2502  {wp_d:>5s}  \\u2502 {bar(wp)} \\u2502 {fmt_reset(wr):>6s} \\u2502 {lim(wp)}\\u2502')\n    if i<len(accounts)-1:\n        print('  \\u251c\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u253c\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2524')\nprint('  \\u2514\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2534\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2518')\nprint()\n\" 2>/dev/null").trim()
 
-    println("")
-    println("  ⬡ Claude Code Usage Dashboard          (cached " + age_str + ")")
-    println("")
-    println("  ┌─────┬─────────────┬─────────┬────────────────┬────────┬─────────┬────────────────┬────────┬──────────┐")
-    println("  │  #  │  Account    │ Session │                │  Reset │  Week   │                │  Reset │  Limit   │")
-    println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
-
-    let names = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'));[print(a['name']+'|'+str(a.get('removed',False))) for a in d['accounts']]\" 2>/dev/null").trim()
-    let lines = names.split("\n")
-    let i = 0
-    while i < len(lines) {
-        let parts = lines[i].split("|")
-        if len(parts) >= 2 {
-            let name = parts[0]
-            let removed = parts[1]
-
-            let idx = pad_left(to_string(i + 1), 2)
-
-            if removed == "True" {
-                println("  │ " + idx + "  │ " + pad_right(name, 10) + " │     -   │ ░░░░░░░░░░░░░░ │      - │     -   │ ░░░░░░░░░░░░░░ │      - │ ✗ 폐기됨 │")
-            }
-            if removed != "True" {
-                let u = get_full_usage(name)
-                let up = u.split("|")
-                let s_pct = up[0]
-                let s_reset = "?"
-                let w_pct = "?"
-                let w_reset = "?"
-                if len(up) > 1 { s_reset = up[1] }
-                if len(up) > 2 { w_pct = up[2] }
-                if len(up) > 3 { w_reset = up[3] }
-
-                let s_bar = pct_bar(s_pct, 14)
-                let w_bar = pct_bar(w_pct, 14)
-                let s_time = pad_left(format_reset_time(s_reset), 6)
-                let w_time = pad_left(format_reset_time(w_reset), 6)
-
-                let icon = " "
-                if name == active { icon = "★" }
-
-                // None → - 처리
-                if s_pct == "None" { s_pct = "-" }
-                if w_pct == "None" { w_pct = "-" }
-                let s_display = s_pct
-                if s_pct != "-" { s_display = s_pct + "%" }
-                let w_display = w_pct
-                if w_pct != "-" { w_display = w_pct + "%" }
-                let s_val = pad_left(s_display, 5)
-                let w_val = pad_left(w_display, 5)
-
-                let lim = limit_icon(w_pct) + " " + pad_right(limit_tag(w_pct), 8)
-
-                println("  │ " + idx + icon + " │ " + pad_right(name, 10) + " │  " + s_val + "  │ " + s_bar + " │ " + s_time + " │  " + w_val + "  │ " + w_bar + " │ " + w_time + " │ " + lim + "│")
-            }
-
-            if i < len(lines) - 1 {
-                println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
-            }
-        }
-        i = i + 1
-    }
-    println("  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┴──────────┘")
-    println("")
+    println(table)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -436,7 +375,7 @@ fn main() {
 
     if cmd == "" {
         // Usage 캐시 자동 갱신 (5분 이상 경과 시)
-        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null")
+        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto >/dev/null 2>&1 &")
         // Default: auto-pick best → launch
         let accounts = bootstrap_accounts()
         if len(accounts) > 0 {
@@ -452,7 +391,7 @@ fn main() {
         }
     }
     if cmd == "status" {
-        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null")
+        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto >/dev/null 2>&1 &")
         show_status()
     }
     if cmd == "u" {
