@@ -230,23 +230,168 @@ fn forge_usage() -> str {
     return "ok"
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  CONVERSATION SCANNER — JSONL parse + 6-axis genome
+// ═══════════════════════════════════════════════════════════════════════
+
+fn scan_session_tokens(path: str) -> str {
+    // Python one-liner: parse JSONL, aggregate usage fields
+    // Returns: input_tokens\toutput_tokens\tcache_read\ttool_calls\tthinking_chars
+    let cmd = "python3 -c \"import sys,json;it=ot=cr=tc=th=0\nfor l in open('" + path + "'):\n d=json.loads(l)\n if d.get('type')=='assistant':\n  u=d.get('message',{}).get('usage',{})\n  if u:\n   it+=u.get('input_tokens',0);ot+=u.get('output_tokens',0);cr+=u.get('cache_read_input_tokens',0)\n  for c in d.get('message',{}).get('content',[]):\n   if isinstance(c,dict):\n    if c.get('type')=='tool_use':tc+=1\n    if c.get('type')=='thinking':th+=len(str(c.get('thinking','')))\nprint(f'{it}\t{ot}\t{cr}\t{tc}\t{th}')\" 2>/dev/null"
+    let result = exec(cmd)
+    return result.trim()
+}
+
 fn forge_scan() -> str {
-    println("[scan] not yet implemented")
+    println("  ── scanning conversations ──")
+    let total_sessions = 0
+    let dir_i = 0
+    while dir_i < 2 {
+        let claude_dir = exec("echo " + CLAUDE_DIRS[dir_i]).trim()
+        let projects_dir = claude_dir + "/projects"
+        let files = exec("find " + projects_dir + " -name '*.jsonl' -type f 2>/dev/null").trim()
+        if len(files) > 0 {
+            let paths = files.split("\n")
+            let p = 0
+            while p < len(paths) {
+                let path = paths[p]
+                if len(path) > 0 {
+                    let stats = scan_session_tokens(path)
+                    if len(stats) > 0 {
+                        let parts = stats.split("\t")
+                        if len(parts) >= 5 {
+                            let it = to_float(parts[0])
+                            let ot = to_float(parts[1])
+                            let cr = to_float(parts[2])
+                            let tc = to_float(parts[3])
+                            let th = to_float(parts[4])
+                            if it > 0.0 {
+                                // 6-axis: cpu=throughput, ram=context, gpu=tools, npu=thinking, power=cost, io=files
+                                let cost = it * 15.0 / 1000000.0 + ot * 75.0 / 1000000.0
+                                // Extract filename
+                                let name_parts = path.split("/")
+                                let fname = name_parts[len(name_parts) - 1]
+                                println("  " + fname + "  in=" + to_string(to_int(it)) + " out=" + to_string(to_int(ot)) + " tools=" + to_string(to_int(tc)) + " $" + to_string(cost))
+                                total_sessions = total_sessions + 1
+                            }
+                        }
+                    }
+                }
+                p = p + 1
+            }
+        }
+        dir_i = dir_i + 1
+    }
+    println("")
+    println("  total sessions: " + to_string(total_sessions))
     return "ok"
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONVERSATION COMPRESSION
+// ═══════════════════════════════════════════════════════════════════════
 
 fn forge_compress() -> str {
-    println("[compress] not yet implemented")
+    println("  ── compressing old sessions ──")
+    let compressed_count = 0
+    let total_saved = 0
+    let dir_i = 0
+    while dir_i < 2 {
+        let claude_dir = exec("echo " + CLAUDE_DIRS[dir_i]).trim()
+        let projects_dir = claude_dir + "/projects"
+        let files = exec("find " + projects_dir + " -name '*.jsonl' -size +100k -type f 2>/dev/null").trim()
+        if len(files) > 0 {
+            let paths = files.split("\n")
+            let p = 0
+            while p < len(paths) {
+                let path = paths[p]
+                if len(path) > 0 {
+                    let size_str = exec("wc -c < '" + path + "' 2>/dev/null").trim()
+                    let size = to_int(size_str)
+                    // Extract user + assistant text only (strip tool results, thinking, base64)
+                    let extract_cmd = "python3 -c \"import sys,json;lines=[]\nfor l in open('" + path + "'):\n d=json.loads(l)\n t=d.get('type','')\n if t in('user','assistant'):\n  c=d.get('message',{}).get('content','')\n  if isinstance(c,str):lines.append(c[:500])\n  elif isinstance(c,list):\n   for b in c:\n    if isinstance(b,dict) and b.get('type')=='text':lines.append(b.get('text','')[:500])\nprint('\\n---\\n'.join(lines[:100]))\" 2>/dev/null"
+                    let conversation = exec(extract_cmd).trim()
+                    if len(conversation) > 0 {
+                        let name_parts = path.split("/")
+                        let fname = name_parts[len(name_parts) - 1]
+                        let session_id = fname.split(".")[0]
+                        let out_path = "forge/compressed/" + session_id + ".tf"
+                        write_file(out_path, conversation)
+                        let new_size = to_int(exec("wc -c < '" + out_path + "' 2>/dev/null").trim())
+                        let saved = size - new_size
+                        let pct = 0
+                        if size > 0 {
+                            pct = (saved * 100) / size
+                        }
+                        println("  " + session_id + ": " + to_string(size) + "B -> " + to_string(new_size) + "B (-" + to_string(pct) + "%)")
+                        compressed_count = compressed_count + 1
+                        total_saved = total_saved + saved
+                    }
+                }
+                p = p + 1
+            }
+        }
+        dir_i = dir_i + 1
+    }
+    println("")
+    println("  compressed: " + to_string(compressed_count) + " sessions, saved: " + to_string(total_saved) + " bytes")
     return "ok"
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  MONITOR DAEMON on/off
+// ═══════════════════════════════════════════════════════════════════════
+
 fn forge_on() -> str {
-    println("[on] not yet implemented")
+    let state = exec("cat forge/state.json 2>/dev/null").trim()
+    if state.contains("true") {
+        println("  already running")
+        return "ok"
+    }
+    let ts = exec("date +%s").trim()
+    let pid = exec("echo $$").trim()
+    write_file("forge/state.json", "{\"active\": true, \"pid\": " + pid + ", \"started\": " + ts + "}")
+    println("  monitor ON (pid=" + pid + ")")
+    println("  polling every 30s... (Ctrl+C to stop)")
+
+    let running = true
+    while running {
+        let procs = exec("ps aux | grep '[c]laude' | wc -l").trim()
+        let time_str = exec("date +%H:%M:%S").trim()
+        println("  [" + time_str + "] procs=" + procs)
+
+        // Quick usage check (first account with token)
+        let raw = read_keychain(KEYCHAIN_LABELS[0])
+        if len(raw) > 0 {
+            let token = extract_token(raw)
+            if len(token) > 0 {
+                let usage_json = fetch_usage_api(token)
+                if usage_json.contains("five_hour") {
+                    let s_pct = parse_usage_block(usage_json, "five_hour")
+                    let w_pct = parse_usage_block(usage_json, "seven_day")
+                    println("         claude1: s=" + s_pct + "% w=" + w_pct + "%")
+                }
+            }
+        }
+
+        // Check if off command was issued
+        let check = exec("cat forge/state.json 2>/dev/null").trim()
+        if check.contains("false") {
+            running = false
+            println("  monitor stopped")
+        }
+        if running {
+            exec("sleep 30")
+        }
+    }
     return "ok"
 }
 
 fn forge_off() -> str {
-    println("[off] not yet implemented")
+    let state = exec("cat forge/state.json 2>/dev/null").trim()
+    let ts = exec("date +%s").trim()
+    write_file("forge/state.json", "{\"active\": false, \"stopped\": " + ts + "}")
+    println("  monitor OFF")
     return "ok"
 }
 
