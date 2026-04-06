@@ -101,40 +101,31 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
     CPU=$(echo "$TOP_OUT" | awk '/CPU usage/{gsub(/%/,""); printf "%d",$3+$5}')
     [ "${CPU:-0}" -eq 0 ] && { CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}'); CPU=$((CPU_TOTAL / NCPU)); }
 
-    # RAM: PhysMem used (what user actually sees)
-    RAM_USED_MB=$(echo "$TOP_OUT" | /opt/homebrew/bin/python3.12 -c "
-import sys,re
-l=sys.stdin.read()
-m=re.search(r'(\d+)([GM])\s+used',l)
-if m:
-  v=int(m.group(1))
-  if m.group(2)=='G': v*=1024
-  print(v)
-else: print(0)" 2>/dev/null || echo 0)
+    # RAM: PhysMem "XG used" — $2 is always the used value
+    RAM_USED_MB=$(echo "$TOP_OUT" | awk '/PhysMem/{v=$2;u=substr(v,length(v));n=substr(v,1,length(v)-1)+0;if(u=="G")n*=1024;printf "%d",n}')
+    [ "${RAM_USED_MB:-0}" -eq 0 ] && RAM_USED_MB=0
     FREE_MB=$((TOTAL_RAM_MB - RAM_USED_MB))
     [ "$FREE_MB" -lt 0 ] && FREE_MB=0
     RAM=$((RAM_USED_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
 
-    # Swap
+    # Swap + Load — single sysctl call
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
-
-    # Load average (1-min)
     LOAD=$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,""); printf "%.0f",$1}')
 
-    # ── CONFIG ───────────────────────────────────────────────
-    eval "$(/opt/homebrew/bin/python3.12 -c "
-import json
-try:
-    c=json.load(open('$CONFIG'))
-    print(f'CPU_CEIL={c.get(\"cpu_ceil\",90)}')
-    print(f'RAM_CEIL={c.get(\"ram_ceil\",80)}')
-    print(f'SWAP_CEIL={c.get(\"swap_ceil\",50)}')
-    g=c.get('guard',False)
-    print(f'GUARD_ON={1 if g else 0}')
-    print(f'BRIDGE_MAX={c.get(\"bridge_max\",4)}')
-except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4')
-" 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; BRIDGE_MAX=4; }
+    # ── CONFIG (pure shell, no python) ───────────────────────
+    if [ -f "$CONFIG" ]; then
+      eval "$(awk -F'[,:}]' '{for(i=1;i<=NF;i++){
+        gsub(/["{[:space:]]/,"",$i)
+        if($i=="cpu_ceil")printf "CPU_CEIL=%d\n",$(i+1)
+        if($i=="ram_ceil")printf "RAM_CEIL=%d\n",$(i+1)
+        if($i=="swap_ceil")printf "SWAP_CEIL=%d\n",$(i+1)
+        if($i=="guard"&&$(i+1)~/true/)printf "GUARD_ON=1\n"
+        if($i=="guard"&&$(i+1)~/false/)printf "GUARD_ON=0\n"
+        if($i=="bridge_max")printf "BRIDGE_MAX=%d\n",$(i+1)
+      }}' "$CONFIG" 2>/dev/null)"
+    fi
+    : "${CPU_CEIL:=90}" "${RAM_CEIL:=80}" "${SWAP_CEIL:=50}" "${GUARD_ON:=0}" "${BRIDGE_MAX:=4}"
 
     # ── BRIDGE LIMITER ───────────────────────────────────────
     if [ "$GUARD_ON" = "1" ] && [ "${BRIDGE_MAX:-0}" -gt 0 ]; then
