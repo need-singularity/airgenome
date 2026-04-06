@@ -93,9 +93,11 @@ SJSON
 # 6. Background sampler + safety net
 (
   while true; do
-    CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}')
-    CPU=$((CPU_TOTAL / NCPU))
-    RAM_MB=$(vm_stat | awk '/Pages active/{gsub(/\./,"",$3); print int($3*4096/1048576)}')
+    # CPU: use top for accurate system-wide % (user+sys), fallback to ps
+    CPU=$(top -l1 -n0 2>/dev/null | awk '/CPU usage/{gsub(/%/,""); printf "%d",$3+$5}' || echo 0)
+    [ "${CPU:-0}" -eq 0 ] && { CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}'); CPU=$((CPU_TOTAL / NCPU)); }
+    # RAM: active + wired + compressor (matches guard.hexa)
+    RAM_MB=$(vm_stat 2>/dev/null | awk '/Pages active/{a=$3}/Pages wired/{w=$4}/compressor/{c=$5}END{gsub(/\./,"",a);gsub(/\./,"",w);gsub(/\./,"",c);print int((a+w+c)*16384/1048576)}' || echo 0)
     RAM=$((RAM_MB * 100 / TOTAL_RAM_MB))
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
@@ -114,17 +116,67 @@ except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0')
 
     LEVEL="ok"
     THROTTLED="false"
-    if [ "$CPU" -gt "$CPU_CEIL" ] 2>/dev/null || [ "$RAM" -gt "$RAM_CEIL" ] 2>/dev/null || [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null; then
+    CPU_OVER=0; RAM_OVER=0; SWAP_OVER=0
+    [ "$CPU"  -gt "$CPU_CEIL"  ] 2>/dev/null && CPU_OVER=1
+    [ "$RAM"  -gt "$RAM_CEIL"  ] 2>/dev/null && RAM_OVER=1
+    [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null && SWAP_OVER=1
+
+    if [ "$CPU_OVER" = "1" ] || [ "$RAM_OVER" = "1" ] || [ "$SWAP_OVER" = "1" ]; then
       LEVEL="danger"
       THROTTLED="true"
-      # renice only if guard module is ON
+      # enforce only if guard module is ON
       if [ "$GUARD_ON" = "1" ]; then
-        ps -Ao pid,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read PID; do
-          renice 15 -p "$PID" 2>/dev/null || true
-        done
+        # --- CPU enforcement ---
+        if [ "$CPU_OVER" = "1" ]; then
+          # Tier 1: taskpolicy -b (background QoS) + renice 20 on top consumers
+          ps -Ao pid=,%cpu=,comm= | sort -rnk2 | head -8 | while read TPID TCPU TNAME; do
+            # skip kernel/system (pid<200) and our own sampler+menubar
+            [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
+            [ "$TPID" = "$$" ] 2>/dev/null && continue
+            # skip if process CPU < 10%
+            TCPU_INT=${TCPU%.*}
+            [ "${TCPU_INT:-0}" -lt 10 ] 2>/dev/null && continue
+            # skip critical system processes
+            case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac
+            renice 20 -p "$TPID" 2>/dev/null || true
+            taskpolicy -b -p "$TPID" 2>/dev/null || true
+          done
+
+          # Tier 2: duty-cycle throttle if >30% over ceiling (e.g. 78% at 60% ceil)
+          OVERSHOOT=$((CPU - CPU_CEIL))
+          if [ "$OVERSHOOT" -gt $((CPU_CEIL * 30 / 100)) ]; then
+            # pause top consumer briefly (proportional to overshoot)
+            TOP_PID=$(ps -Ao pid=,%cpu= -r | head -1 | awk '{print $1}')
+            TOP_NAME=$(ps -p "$TOP_PID" -o comm= 2>/dev/null || echo "")
+            case "$TOP_NAME" in kernel_task|WindowServer|launchd|loginwindow) ;; *)
+              if [ "${TOP_PID:-0}" -gt 200 ] 2>/dev/null; then
+                kill -STOP "$TOP_PID" 2>/dev/null || true
+                # pause 0.3-1.0s proportional to overshoot
+                PAUSE_MS=$((OVERSHOOT * 10))
+                [ "$PAUSE_MS" -gt 1000 ] && PAUSE_MS=1000
+                [ "$PAUSE_MS" -lt 300 ] && PAUSE_MS=300
+                perl -e "select(undef,undef,undef,$PAUSE_MS/1000)" 2>/dev/null || sleep 1
+                kill -CONT "$TOP_PID" 2>/dev/null || true
+              fi
+            ;; esac
+          fi
+        fi
+
+        # --- RAM enforcement: purge if over ceiling ---
+        if [ "$RAM_OVER" = "1" ]; then
+          # macOS memory_pressure + purge (non-destructive cache flush)
+          purge 2>/dev/null || true
+        fi
       fi
     elif [ "$CPU" -gt $((CPU_CEIL * 80 / 100)) ] 2>/dev/null; then
       LEVEL="warn"
+      # pre-warn: light renice on top 3
+      if [ "$GUARD_ON" = "1" ]; then
+        ps -Ao pid=,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read TPID; do
+          [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
+          renice 10 -p "$TPID" 2>/dev/null || true
+        done
+      fi
     fi
 
     cat > "$STATE" <<EOF
