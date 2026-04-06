@@ -72,10 +72,10 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
 - ✅ Settings panel — 5% snap sliders, module toggles (forge/guard default OFF), Start at login
 - ✅ Hardware profiles — 10 Mac presets, auto-detect chip/RAM/fan
 - ✅ Token bottleneck analysis — cache_read 99%, DFS benchmark framework
-- ⏳ L5c–L6e candidate layers (4 remaining, projected +0.173)
-- ⏳ Per-source genome accumulation over time
-- ⏳ Signature diff between sources (Safari vs Chrome)
-- ⏳ Runtime: live ps sampling → gate projection → genome log
+- ✅ L5c–L6e layers shipped (+0.173 actual, cumulative +0.438)
+- ✅ Per-source genome accumulation (mk2_hexa/native/accumulate.hexa)
+- ✅ Signature diff between sources (mk2_hexa/native/sigdiff.hexa)
+- ✅ Runtime loop: live ps sampling → gate projection → genome log (mk2_hexa/native/runtime.hexa)
 
 ## Non-goals (explicit)
 

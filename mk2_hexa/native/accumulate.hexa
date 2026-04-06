@@ -1,0 +1,328 @@
+// airgenome/mk2_hexa/native/accumulate.hexa — per-source genome accumulation
+//
+// Reads genomes.log history and builds per-gate Signature time-series.
+// Each gate accumulates: mean RAM, mean CPU, sample count, temporal range.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/accumulate.hexa [command]
+// Commands: summary, gate <N>, history, json, help
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let SIG_FILE = "forge/signatures.json"
+let GATE_COUNT = 8
+
+// Gate names (canonical, from gates.hexa)
+fn gate_name(g: int) -> str {
+    if g == 0 { return "macos" }
+    if g == 1 { return "finder" }
+    if g == 2 { return "telegram" }
+    if g == 3 { return "chrome" }
+    if g == 4 { return "safari" }
+    if g == 5 { return "claude" }
+    if g == 6 { return "terminal" }
+    if g == 7 { return "devtools" }
+    return "unknown"
+}
+
+// Parse a single genomes.log line → per-gate RAM/CPU values
+// Format: ts\tmacos:RAM/CPU\tfinder:RAM/CPU\t...\tgrade\tmargin=X\tcrossed=X
+fn parse_log_line(line: str) -> auto {
+    let fields = line.split("\t")
+    if len(fields) < 9 { return [0, ""] }
+    let ts_str = fields[0].trim()
+    let ts = to_int(ts_str)
+    // fields[1..8] = "gatename:RAM/CPU"
+    let rams = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpus = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let g = 0
+    while g < 8 {
+        if g + 1 < len(fields) {
+            let field = fields[g + 1]
+            if field.contains(":") {
+                let parts = field.split(":")
+                if len(parts) >= 2 {
+                    let vals = parts[1].split("/")
+                    if len(vals) >= 2 {
+                        rams[g] = to_float(vals[0])
+                        cpus[g] = to_float(vals[1])
+                    }
+                }
+            }
+        }
+        g = g + 1
+    }
+    return [ts, rams, cpus]
+}
+
+// Accumulate all log lines into per-gate signatures
+fn accumulate() -> auto {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return []
+    }
+    let content = read_file(LOG_FILE)
+    let lines = content.split("\n")
+
+    // Per-gate accumulators
+    let ram_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ram_sq  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_sq  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ram_min = [999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0]
+    let ram_max = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_min = [999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0, 999999.0]
+    let cpu_max = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let first_ts = [0, 0, 0, 0, 0, 0, 0, 0]
+    let last_ts  = [0, 0, 0, 0, 0, 0, 0, 0]
+    let counts   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let parsed = parse_log_line(line)
+            let ts = parsed[0]
+            if ts > 0 {
+                let rams = parsed[1]
+                let cpus = parsed[2]
+                let g = 0
+                while g < 8 {
+                    let r = rams[g]
+                    let c = cpus[g]
+                    if r > 0.0 {
+                        ram_sum[g] = ram_sum[g] + r
+                        ram_sq[g] = ram_sq[g] + r * r
+                        cpu_sum[g] = cpu_sum[g] + c
+                        cpu_sq[g] = cpu_sq[g] + c * c
+                        if r < ram_min[g] { ram_min[g] = r }
+                        if r > ram_max[g] { ram_max[g] = r }
+                        if c < cpu_min[g] { cpu_min[g] = c }
+                        if c > cpu_max[g] { cpu_max[g] = c }
+                        if first_ts[g] == 0 { first_ts[g] = ts }
+                        last_ts[g] = ts
+                        counts[g] = counts[g] + 1.0
+                    }
+                    g = g + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    return [ram_sum, ram_sq, cpu_sum, cpu_sq, ram_min, ram_max, cpu_min, cpu_max, first_ts, last_ts, counts]
+}
+
+fn print_summary(acc: auto) -> str {
+    let ram_sum = acc[0]
+    let ram_sq = acc[1]
+    let cpu_sum = acc[2]
+    let cpu_sq = acc[3]
+    let ram_min = acc[4]
+    let ram_max = acc[5]
+    let cpu_min = acc[6]
+    let cpu_max = acc[7]
+    let first_ts = acc[8]
+    let last_ts = acc[9]
+    let counts = acc[10]
+
+    println("")
+    println("  per-source genome accumulation")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  gate       samples  ram_mean   ram_std   cpu_mean   cpu_std   ram_range        cpu_range")
+    println("  ─────────  ───────  ─────────  ────────  ─────────  ────────  ───────────────  ───────────────")
+
+    let g = 0
+    while g < 8 {
+        let n = counts[g]
+        if n > 0.0 {
+            let r_mean = ram_sum[g] / n
+            let r_var = ram_sq[g] / n - r_mean * r_mean
+            let r_std = exec("python3 -c \"import math;print(f'{math.sqrt(" + to_string(r_var) + "):.2f}')\" 2>/dev/null").trim()
+            let c_mean = cpu_sum[g] / n
+            let c_var = cpu_sq[g] / n - c_mean * c_mean
+            let c_std = exec("python3 -c \"import math;print(f'{math.sqrt(" + to_string(c_var) + "):.2f}')\" 2>/dev/null").trim()
+
+            let name = gate_name(g)
+            // Duration
+            let dur = last_ts[g] - first_ts[g]
+            let dur_h = dur / 3600
+
+            println("  " + name + "\t" + to_string(to_int(n)) + "\t" + to_string(r_mean) + "\t" + r_std + "\t" + to_string(c_mean) + "\t" + c_std + "\t[" + to_string(ram_min[g]) + "," + to_string(ram_max[g]) + "]\t[" + to_string(cpu_min[g]) + "," + to_string(cpu_max[g]) + "]")
+        }
+        g = g + 1
+    }
+    println("")
+    return "ok"
+}
+
+fn print_gate_detail(acc: auto, gate_id: int) -> str {
+    let ram_sum = acc[0]
+    let cpu_sum = acc[2]
+    let counts = acc[10]
+    let first_ts = acc[8]
+    let last_ts = acc[9]
+    let ram_min = acc[4]
+    let ram_max = acc[5]
+
+    let n = counts[gate_id]
+    if n == 0.0 {
+        println("  gate " + to_string(gate_id) + " (" + gate_name(gate_id) + "): no data")
+        return "ok"
+    }
+
+    let r_mean = ram_sum[gate_id] / n
+    let c_mean = cpu_sum[gate_id] / n
+    let dur = last_ts[gate_id] - first_ts[gate_id]
+
+    println("")
+    println("  gate " + to_string(gate_id) + ": " + gate_name(gate_id))
+    println("  ────────────────────────────────")
+    println("  samples:    " + to_string(to_int(n)))
+    println("  first seen: " + exec("date -r " + to_string(first_ts[gate_id]) + " '+%Y-%m-%d %H:%M' 2>/dev/null").trim())
+    println("  last seen:  " + exec("date -r " + to_string(last_ts[gate_id]) + " '+%Y-%m-%d %H:%M' 2>/dev/null").trim())
+    println("  duration:   " + to_string(dur / 3600) + "h " + to_string((dur % 3600) / 60) + "m")
+    println("  ram mean:   " + to_string(r_mean) + " MB")
+    println("  ram range:  [" + to_string(ram_min[gate_id]) + ", " + to_string(ram_max[gate_id]) + "] MB")
+    println("  cpu mean:   " + to_string(c_mean) + "%")
+    println("")
+
+    // 6-axis signature (genome projection)
+    println("  6-axis signature:")
+    println("    Cpu:   " + to_string(c_mean))
+    println("    Ram:   " + to_string(r_mean))
+    println("    Gpu:   0.0  (not sampled)")
+    println("    Npu:   0.0  (not sampled)")
+    println("    Power: inferred from swap")
+    println("    Io:    inferred from delta rate")
+    println("")
+    return "ok"
+}
+
+// Export accumulated signatures as JSON
+fn export_json(acc: auto) -> str {
+    let ram_sum = acc[0]
+    let cpu_sum = acc[2]
+    let counts = acc[10]
+    let first_ts = acc[8]
+    let last_ts = acc[9]
+
+    let json = "[\n"
+    let g = 0
+    while g < 8 {
+        let n = counts[g]
+        if n > 0.0 {
+            let r_mean = ram_sum[g] / n
+            let c_mean = cpu_sum[g] / n
+            json = json + "  {\"gate\":" + to_string(g) + ",\"name\":\"" + gate_name(g) + "\","
+            json = json + "\"samples\":" + to_string(to_int(n)) + ","
+            json = json + "\"ram_mean\":" + to_string(r_mean) + ",\"cpu_mean\":" + to_string(c_mean) + ","
+            json = json + "\"first_ts\":" + to_string(first_ts[g]) + ",\"last_ts\":" + to_string(last_ts[g]) + "}"
+            if g < 7 { json = json + "," }
+            json = json + "\n"
+        }
+        g = g + 1
+    }
+    json = json + "]"
+
+    write_file(SIG_FILE, json)
+    println("  exported -> " + SIG_FILE)
+    return json
+}
+
+// Print last N log entries per gate (time-series view)
+fn print_history() -> str {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return "ok"
+    }
+    // Show last 20 entries
+    let tail = exec("tail -20 " + LOG_FILE).trim()
+    let lines = tail.split("\n")
+    println("")
+    println("  recent genome history (last " + to_string(len(lines)) + " samples)")
+    println("  ══════════════════════════════════════════════════════════════")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            let ts = exec("date -r " + fields[0].trim() + " '+%H:%M:%S' 2>/dev/null").trim()
+            // Extract grade and margin
+            let grade = ""
+            let margin = ""
+            let f = 0
+            while f < len(fields) {
+                if fields[f].contains("margin=") { margin = fields[f] }
+                if fields[f] == "weak-breakthrough" { grade = fields[f] }
+                if fields[f] == "strong-breakthrough" { grade = fields[f] }
+                if fields[f] == "deep-breakthrough" { grade = fields[f] }
+                if fields[f] == "transcendent" { grade = fields[f] }
+                if fields[f] == "boundary" { grade = fields[f] }
+                f = f + 1
+            }
+            println("  [" + ts + "] " + grade + "  " + margin)
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+fn accumulate_help() -> str {
+    println("accumulate v" + VERSION + " — per-source genome accumulation")
+    println("")
+    println("Usage: accumulate <command>")
+    println("")
+    println("Commands:")
+    println("  summary       — per-gate signature statistics")
+    println("  gate <N>      — detailed view for gate N (0-7)")
+    println("  history       — recent genome log entries")
+    println("  json          — export signatures to " + SIG_FILE)
+    println("  help          — show this message")
+    println("")
+    println("Gates: 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness AccumulateRouter {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "summary"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" {
+        accumulate_help()
+    }
+    if cmd == "summary" {
+        let acc = accumulate()
+        if len(acc) > 0 {
+            print_summary(acc)
+        }
+    }
+    if cmd == "gate" {
+        let gate_id = 0
+        if len(argv) > 4 {
+            gate_id = to_int(argv[4])
+        }
+        let acc = accumulate()
+        if len(acc) > 0 {
+            print_gate_detail(acc, gate_id)
+        }
+    }
+    if cmd == "history" {
+        print_history()
+    }
+    if cmd == "json" {
+        let acc = accumulate()
+        if len(acc) > 0 {
+            export_json(acc)
+        }
+    }
+}

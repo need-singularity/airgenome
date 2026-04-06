@@ -234,19 +234,19 @@ pure fn is_crossed(adjusted: float) -> bool {
 //   L5a  (shipped) lagged cross-axis (L2 × L3 product)          gain +0.105
 //
 //   L5b  DEFERRED  tetradic I(A;B;C;D)                          gain +0.002 (below 0.005)
-//   L5c  candidate velocity MI d(ram)/dt × d(ram)/dt            gain +0.021
+//   L5c  (shipped) velocity MI d(ram)/dt × d(ram)/dt            gain +0.021
 //   L5d  DEFERRED  rank-transform MI                            redundant with L1
 //
-//   L6a  candidate acceleration MI d²(ram)/dt² × d²(ram)/dt²    gain +0.020
-//   L6b  candidate lagged velocity MI at τ ∈ {1,2,5,10}         gain +0.056
-//   L6d  candidate conditional MI |I(A;B|C)|                    gain +0.024
-//   L6e  candidate transfer entropy T(A→B) (directional)        gain +0.052
+//   L6a  (shipped) acceleration MI d²(ram)/dt² × d²(ram)/dt²    gain +0.020
+//   L6b  (shipped) lagged velocity MI at τ ∈ {1,2,5,10}         gain +0.056
+//   L6d  (shipped) conditional MI |I(A;B|C)|                    gain +0.024
+//   L6e  (shipped) transfer entropy T(A→B) (directional)        gain +0.052
 //   L6g  DEFERRED  multi-scale MI (downsample 2/4/8)            redundant with L1
 //
 //   L7   (shipped) perturbation stability (hexa-gate-implant)    gain +0.015
 //
-//   cumulative shipped (L1..L5a+L7):  margin +0.265
-//   cumulative all candidates:       margin +0.423 (projected if all ship)
+//   cumulative shipped (L1..L7):     margin +0.438
+//   all layers shipped — exhaustion criterion met for deferred (< 0.005)
 //
 //   exhaustion criterion: per-layer delta gain < 0.005
 

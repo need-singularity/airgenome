@@ -1,0 +1,444 @@
+// airgenome/mk2_hexa/native/runtime.hexa — continuous runtime sampling loop
+//
+// Live ps sampling → gate projection → genome log → adaptive interval
+// The full pipeline: sample → classify → project → layer → log → sleep → repeat
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/runtime.hexa [command]
+// Commands: run, once, daemon, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let CACHE_FILE = ".genome_cache"
+let EVENT_FILE = "genomes.events.jsonl"
+let GATE_COUNT = 8
+let SINGULARITY = 2.0 / 3.0
+let RAW = 0.6360
+let CURRENT_MESH = 0.0044
+let GHOST_PENALTY = -0.0026
+
+// Gate names
+fn gate_name(g: int) -> str {
+    if g == 0 { return "macos" }
+    if g == 1 { return "finder" }
+    if g == 2 { return "telegram" }
+    if g == 3 { return "chrome" }
+    if g == 4 { return "safari" }
+    if g == 5 { return "claude" }
+    if g == 6 { return "terminal" }
+    if g == 7 { return "devtools" }
+    return "unknown"
+}
+
+// Classify process → gate (same as gates.hexa canonical)
+fn classify_path(comm: str) -> int {
+    if comm.contains("WebKit") { return 4 }
+    if comm.contains("Safari") { return 4 }
+    if comm.contains("Google Chrome") { return 3 }
+    if comm.contains("Telegram") { return 2 }
+    if comm.contains("Finder") { return 1 }
+    if comm.contains("com.apple.Finder") { return 1 }
+    if comm.contains("claude") { return 5 }
+    if comm.contains("iTerm") { return 6 }
+    if comm.contains("Terminal.app") { return 6 }
+    if comm.contains("Alacritty") { return 6 }
+    if comm.contains("Warp") { return 6 }
+    if comm.contains("rustc") { return 7 }
+    if comm.contains("cargo") { return 7 }
+    if comm.contains("Python") { return 7 }
+    if comm.contains("python") { return 7 }
+    if comm.contains("node") { return 7 }
+    if comm.contains("npm") { return 7 }
+    if comm.contains("Xcode") { return 7 }
+    if comm.contains("Code Helper") { return 7 }
+    if comm.contains("gopls") { return 7 }
+    if comm.contains("rust-analyzer") { return 7 }
+    if comm.contains("mcp") { return 7 }
+    if comm.contains("/usr/") { return 0 }
+    if comm.contains("/System/") { return 0 }
+    if comm.contains("/sbin/") { return 0 }
+    if comm.contains("kernel_task") { return 0 }
+    if comm.contains("launchd") { return 0 }
+    if comm.contains("WindowServer") { return 0 }
+    return 0
+}
+
+// Array helpers
+fn aset(arr: auto, idx: int, val: float) -> auto {
+    arr[idx] = val
+    return arr
+}
+fn aadd(arr: auto, idx: int, val: float) -> auto {
+    arr[idx] = arr[idx] + val
+    return arr
+}
+
+// Sample all processes → 8-gate projection
+fn sample_gates() -> auto {
+    let gc = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let gr = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let gn = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ps = exec("ps -axm -o rss=,%cpu=,comm= | awk '{printf \"%s\\t%s\\t\", $1, $2; for(i=3;i<=NF;i++) printf \"%s \", $i; print \"\"}'")
+    let lines = ps.split("\n")
+    let i = 0
+    let matched = 0.0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let fields = line.split("\t")
+            if len(fields) >= 3 {
+                let rss_str = fields[0].trim()
+                let cpu_str = fields[1].trim()
+                let comm = fields[2].trim()
+                if len(rss_str) > 0 {
+                    let rss_kb = to_float(rss_str)
+                    let cpu_pct = to_float(cpu_str)
+                    let g = classify_path(comm)
+                    gc = aadd(gc, g, cpu_pct)
+                    gr = aadd(gr, g, rss_kb / 1024.0)
+                    gn = aadd(gn, g, 1.0)
+                    matched = matched + 1.0
+                }
+            }
+        }
+        i = i + 1
+    }
+    return [gc, gr, gn, matched, to_float(len(lines))]
+}
+
+// Compute normalized axes
+fn compute_axes(gr: auto, gc: auto, total_ram_mb: float) -> auto {
+    let ram_r = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_a = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let k = 0
+    while k < 8 {
+        ram_r = aset(ram_r, k, gr[k] / total_ram_mb)
+        cpu_a = aset(cpu_a, k, gc[k] / 100.0)
+        k = k + 1
+    }
+    return [ram_r, cpu_a]
+}
+
+// Encode genome (content-addressable)
+fn encode_genome(ram_r: auto, cpu_a: auto) -> str {
+    let g = ""
+    let k = 0
+    while k < 8 {
+        let r_q = to_int(ram_r[k] * 10000.0)
+        let c_q = to_int(cpu_a[k] * 10000.0)
+        g = g + to_string(r_q) + ":" + to_string(c_q)
+        if k < 7 { g = g + "," }
+        k = k + 1
+    }
+    return g
+}
+
+// Genome delta
+fn genome_delta(prev: str, curr: str) -> auto {
+    if len(prev) == 0 { return [8.0, 1.0] }
+    if prev == curr { return [0.0, 0.0] }
+    let p_parts = prev.split(",")
+    let c_parts = curr.split(",")
+    let changed = 0.0
+    let max_drift = 0.0
+    let k = 0
+    while k < 8 {
+        if k < len(p_parts) {
+            if k < len(c_parts) {
+                if p_parts[k] != c_parts[k] {
+                    changed = changed + 1.0
+                    let p_ram = to_float(p_parts[k].split(":")[0])
+                    let c_ram = to_float(c_parts[k].split(":")[0])
+                    let drift = c_ram - p_ram
+                    if drift < 0.0 { drift = -drift }
+                    if drift > max_drift { max_drift = drift }
+                }
+            }
+        }
+        k = k + 1
+    }
+    return [changed, max_drift]
+}
+
+// Simplified layer stack (L1+L2+L3 for lightweight runtime)
+fn quick_layers(ram_r: auto, cpu_a: auto) -> auto {
+    // L1: cross-gate RAM MI
+    let l1 = 0.0
+    let p = 0
+    while p < 8 {
+        let q = p + 1
+        while q < 8 {
+            if ram_r[p] > 0.001 {
+                if ram_r[q] > 0.001 {
+                    let ratio = ram_r[p] / ram_r[q]
+                    if ratio > 1.0 { ratio = 1.0 / ratio }
+                    l1 = l1 + (1.0 - ratio)
+                }
+            }
+            q = q + 1
+        }
+        p = p + 1
+    }
+    l1 = l1 / 28.0 * 0.018 / 0.01
+
+    // L2: CPU variance
+    let mean = 0.0
+    let c = 0
+    while c < 8 {
+        mean = mean + cpu_a[c]
+        c = c + 1
+    }
+    mean = mean / 8.0
+    let var = 0.0
+    let d = 0
+    while d < 8 {
+        let diff = cpu_a[d] - mean
+        var = var + diff * diff
+        d = d + 1
+    }
+    var = var / 8.0
+    let l2 = var * 0.098 / 0.01
+
+    // L3: cross-axis
+    let mean_ram = 0.0
+    let mean_cpu = 0.0
+    let e = 0
+    while e < 8 {
+        mean_ram = mean_ram + ram_r[e]
+        mean_cpu = mean_cpu + cpu_a[e]
+        e = e + 1
+    }
+    mean_ram = mean_ram / 8.0
+    mean_cpu = mean_cpu / 8.0
+    let cov = 0.0
+    let f = 0
+    while f < 8 {
+        cov = cov + (ram_r[f] - mean_ram) * (cpu_a[f] - mean_cpu)
+        f = f + 1
+    }
+    cov = cov / 8.0
+    let ram_var = 0.0
+    let cpu_var = var
+    let rv = 0
+    while rv < 8 {
+        let rd = ram_r[rv] - mean_ram
+        ram_var = ram_var + rd * rd
+        rv = rv + 1
+    }
+    ram_var = ram_var / 8.0
+    let l3 = 0.0
+    if ram_var > 0.0 {
+        if cpu_var > 0.0 {
+            l3 = cov * cov / (ram_var * cpu_var) * 0.031 / 0.1
+        }
+    }
+
+    // L5a: lagged cross-axis product
+    let l5a = l2 * l3 * 10.0
+
+    let total = l1 + l2 + l3 + l5a
+    let gate_scale = 28.0 / 6.0
+    let sc = 0.0151 / 1.500 * gate_scale
+    let adjusted = RAW + CURRENT_MESH + GHOST_PENALTY + total * sc
+    let margin = adjusted - SINGULARITY
+    let crossed = adjusted > SINGULARITY
+
+    return [total, adjusted, margin, crossed]
+}
+
+// Grade margin
+fn grade_margin(margin: float) -> str {
+    if margin <= 0.0   { return "under-singularity" }
+    if margin <= 0.005 { return "boundary" }
+    if margin <= 0.05  { return "weak-breakthrough" }
+    if margin <= 0.15  { return "strong-breakthrough" }
+    if margin <= 0.30  { return "deep-breakthrough" }
+    return "transcendent"
+}
+
+// Build log line
+fn build_log(gr: auto, gc: auto, grade: str, margin: float, crossed: auto) -> str {
+    let ts = exec("date +%s").trim()
+    let names = ["macos", "finder", "telegram", "chrome", "safari", "claude", "terminal", "devtools"]
+    let log_line = ts
+    let n = 0
+    while n < 8 {
+        log_line = log_line + "\t" + names[n] + ":" + to_string(gr[n]) + "/" + to_string(gc[n])
+        n = n + 1
+    }
+    log_line = log_line + "\t" + grade + "\tmargin=" + to_string(margin) + "\tcrossed=" + to_string(crossed)
+    return log_line
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SINGLE SCAN (used by both 'once' and 'run' loop)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn scan_once(run_num: int, quiet: int) -> auto {
+    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
+
+    // Sample
+    let sample = sample_gates()
+    let gc = sample[0]
+    let gr = sample[1]
+    let gn = sample[2]
+    let matched = sample[3]
+
+    // Project
+    let axes = compute_axes(gr, gc, total_ram_mb)
+    let ram_r = axes[0]
+    let cpu_a = axes[1]
+
+    // Layers (lightweight)
+    let layers = quick_layers(ram_r, cpu_a)
+    let total_gain = layers[0]
+    let adjusted = layers[1]
+    let margin = layers[2]
+    let crossed = layers[3]
+    let grade = grade_margin(margin)
+
+    // Genome encode + delta
+    let genome = encode_genome(ram_r, cpu_a)
+    let prev_genome = ""
+    if file_exists(CACHE_FILE) {
+        prev_genome = read_file(CACHE_FILE).trim()
+    }
+    let delta = genome_delta(prev_genome, genome)
+    let delta_gates = delta[0]
+    let max_drift = delta[1]
+
+    // Save cache
+    write_file(CACHE_FILE, genome)
+
+    // Adaptive interval
+    let interval = 60
+    if delta_gates > 4.0 { interval = 10 }
+    if delta_gates > 2.0 { if delta_gates <= 4.0 { interval = 30 } }
+
+    // Log
+    let log_line = build_log(gr, gc, grade, margin, crossed)
+    log_line = log_line + "\tdelta=" + to_string(delta_gates) + "\tinterval=" + to_string(interval)
+    append_file(LOG_FILE, log_line + "\n")
+
+    // Output
+    if quiet == 0 {
+        let ts = exec("date +%H:%M:%S").trim()
+        let icon = "🟢"
+        if grade == "under-singularity" { icon = "⚪" }
+        if grade == "boundary" { icon = "🟡" }
+        if grade == "transcendent" { icon = "🟣" }
+
+        let delta_tag = ""
+        if delta_gates == 0.0 { delta_tag = " [DEDUP]" }
+        if delta_gates > 4.0 { delta_tag = " [VOLATILE]" }
+
+        println("  [" + ts + "] #" + to_string(run_num) + " " + icon + " " + grade + "  margin=" + to_string(margin) + "  delta=" + to_string(to_int(delta_gates)) + "/8  next=" + to_string(interval) + "s" + delta_tag)
+
+        // Per-gate mini view
+        if delta_gates > 0.0 {
+            let g = 0
+            while g < 8 {
+                if gr[g] > 1.0 {
+                    let bar_len = to_int(ram_r[g] * 40.0)
+                    if bar_len < 0 { bar_len = 0 }
+                    if bar_len > 20 { bar_len = 20 }
+                    let bar = exec("python3 -c \"print('▓'*" + to_string(bar_len) + "+'░'*(20-" + to_string(bar_len) + "))\" 2>/dev/null").trim()
+                    println("    " + gate_name(g) + "\t" + bar + "  " + to_string(to_int(gr[g])) + "MB  " + to_string(to_int(gc[g])) + "%")
+                }
+                g = g + 1
+            }
+        }
+    }
+
+    return [interval, delta_gates, margin, crossed]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONTINUOUS LOOP
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run_loop() -> str {
+    println("")
+    println("  airgenome runtime v" + VERSION + " — continuous sampling")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  prime directive: observe only, never kill")
+    println("  Ctrl+C to stop")
+    println("")
+
+    let run_num = 0
+    while run_num < 999999 {
+        let result = scan_once(run_num, 0)
+        let interval = result[0]
+
+        exec("sleep " + to_string(interval))
+        run_num = run_num + 1
+    }
+    return "ok"
+}
+
+// Daemon mode: quiet output, just log
+fn run_daemon() -> str {
+    let pid = exec("echo $$").trim()
+    write_file("forge/runtime.pid", pid)
+    println("  runtime daemon started (pid=" + pid + ")")
+    println("  logging to " + LOG_FILE)
+
+    let run_num = 0
+    while run_num < 999999 {
+        let result = scan_once(run_num, 1)
+        let interval = result[0]
+        exec("sleep " + to_string(interval))
+        run_num = run_num + 1
+    }
+    return "ok"
+}
+
+fn runtime_help() -> str {
+    println("runtime v" + VERSION + " — live ps sampling → gate projection → genome log")
+    println("")
+    println("Usage: runtime <command>")
+    println("")
+    println("Commands:")
+    println("  run      — continuous sampling with live output (adaptive interval)")
+    println("  once     — single scan, print result, exit")
+    println("  daemon   — quiet mode, log only (writes PID to forge/runtime.pid)")
+    println("  help     — show this message")
+    println("")
+    println("Adaptive interval:")
+    println("  stable (0-2 gates changed)  → 60s")
+    println("  shifting (3-4 gates)        → 30s")
+    println("  volatile (5+ gates)         → 10s")
+    println("  identical (dedup)           → 60s (zero work)")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness RuntimeRouter {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "once"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" { runtime_help() }
+    if cmd == "once" { scan_once(0, 0) }
+    if cmd == "run"  { run_loop() }
+    if cmd == "daemon" { run_daemon() }
+
+    if cmd != "help" {
+        if cmd != "once" {
+            if cmd != "run" {
+                if cmd != "daemon" {
+                    println("unknown command: " + cmd)
+                    runtime_help()
+                }
+            }
+        }
+    }
+}

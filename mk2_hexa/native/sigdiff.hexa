@@ -1,0 +1,448 @@
+// airgenome/mk2_hexa/native/sigdiff.hexa — cross-source signature comparison
+//
+// Compares 6-axis signatures between gates to reveal:
+//   - Which sources behave similarly (common signatures)
+//   - Which sources are unique (individual signatures)
+//   - Pairwise distance matrix across all 8 gates
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/sigdiff.hexa [command]
+// Commands: matrix, compare <A> <B>, clusters, fingerprint, help
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let GATE_COUNT = 8
+
+fn gate_name(g: int) -> str {
+    if g == 0 { return "macos" }
+    if g == 1 { return "finder" }
+    if g == 2 { return "telegram" }
+    if g == 3 { return "chrome" }
+    if g == 4 { return "safari" }
+    if g == 5 { return "claude" }
+    if g == 6 { return "terminal" }
+    if g == 7 { return "devtools" }
+    return "unknown"
+}
+
+// Parse genomes.log → per-gate mean RAM/CPU
+fn load_signatures() -> auto {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return []
+    }
+    let content = read_file(LOG_FILE)
+    let lines = content.split("\n")
+
+    let ram_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_sum = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ram_sq  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_sq  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let counts  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 9 {
+                let g = 0
+                while g < 8 {
+                    let field = fields[g + 1]
+                    if field.contains(":") {
+                        let parts = field.split(":")
+                        if len(parts) >= 2 {
+                            let vals = parts[1].split("/")
+                            if len(vals) >= 2 {
+                                let r = to_float(vals[0])
+                                let c = to_float(vals[1])
+                                if r > 0.0 {
+                                    ram_sum[g] = ram_sum[g] + r
+                                    cpu_sum[g] = cpu_sum[g] + c
+                                    ram_sq[g] = ram_sq[g] + r * r
+                                    cpu_sq[g] = cpu_sq[g] + c * c
+                                    counts[g] = counts[g] + 1.0
+                                }
+                            }
+                        }
+                    }
+                    g = g + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    // Compute means and stddevs
+    let ram_mean = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_mean = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ram_std  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_std  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let g = 0
+    while g < 8 {
+        if counts[g] > 0.0 {
+            ram_mean[g] = ram_sum[g] / counts[g]
+            cpu_mean[g] = cpu_sum[g] / counts[g]
+            let rv = ram_sq[g] / counts[g] - ram_mean[g] * ram_mean[g]
+            let cv = cpu_sq[g] / counts[g] - cpu_mean[g] * cpu_mean[g]
+            // sqrt via python
+            ram_std[g] = to_float(exec("python3 -c \"import math;print(math.sqrt(max(0," + to_string(rv) + ")))\" 2>/dev/null").trim())
+            cpu_std[g] = to_float(exec("python3 -c \"import math;print(math.sqrt(max(0," + to_string(cv) + ")))\" 2>/dev/null").trim())
+        }
+        g = g + 1
+    }
+
+    return [ram_mean, cpu_mean, ram_std, cpu_std, counts]
+}
+
+// Euclidean distance between two gate signatures (RAM, CPU axes)
+fn sig_distance(sigs: auto, a: int, b: int) -> float {
+    let ram_mean = sigs[0]
+    let cpu_mean = sigs[1]
+    let counts = sigs[4]
+    if counts[a] == 0.0 { return -1.0 }
+    if counts[b] == 0.0 { return -1.0 }
+
+    let dr = ram_mean[a] - ram_mean[b]
+    let dc = cpu_mean[a] - cpu_mean[b]
+    // Normalize: divide by max to make scale-independent
+    let max_ram = ram_mean[a]
+    if ram_mean[b] > max_ram { max_ram = ram_mean[b] }
+    if max_ram < 1.0 { max_ram = 1.0 }
+    let max_cpu = cpu_mean[a]
+    if cpu_mean[b] > max_cpu { max_cpu = cpu_mean[b] }
+    if max_cpu < 1.0 { max_cpu = 1.0 }
+
+    let dr_n = dr / max_ram
+    let dc_n = dc / max_cpu
+    let dist_sq = dr_n * dr_n + dc_n * dc_n
+    let dist = to_float(exec("python3 -c \"import math;print(f'{math.sqrt(" + to_string(dist_sq) + "):.4f}')\" 2>/dev/null").trim())
+    return dist
+}
+
+// Print full 8×8 distance matrix
+fn print_matrix(sigs: auto) -> str {
+    let ram_mean = sigs[0]
+    let cpu_mean = sigs[1]
+    let counts = sigs[4]
+
+    println("")
+    println("  signature distance matrix (normalized euclidean)")
+    println("  ══════════════════════════════════════════════════════════════")
+    // Header
+    let header = "           "
+    let g = 0
+    while g < 8 {
+        let name = gate_name(g)
+        // Pad to 9 chars
+        header = header + name + "\t"
+        g = g + 1
+    }
+    println(header)
+    println("  ─────────────────────────────────────────────────────────────")
+
+    let a = 0
+    while a < 8 {
+        let row = "  " + gate_name(a) + "\t"
+        let b = 0
+        while b < 8 {
+            if a == b {
+                row = row + "  ---\t"
+            }
+            if a != b {
+                let d = sig_distance(sigs, a, b)
+                if d < 0.0 {
+                    row = row + "  n/a\t"
+                }
+                if d >= 0.0 {
+                    row = row + to_string(d) + "\t"
+                }
+            }
+            b = b + 1
+        }
+        println(row)
+        a = a + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Compare two specific gates in detail
+fn print_compare(sigs: auto, a: int, b: int) -> str {
+    let ram_mean = sigs[0]
+    let cpu_mean = sigs[1]
+    let ram_std = sigs[2]
+    let cpu_std = sigs[3]
+    let counts = sigs[4]
+
+    let name_a = gate_name(a)
+    let name_b = gate_name(b)
+
+    println("")
+    println("  signature diff: " + name_a + " vs " + name_b)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  axis        " + name_a + "\t\t" + name_b + "\t\tdelta")
+    println("  ──────────  ────────────────  ────────────────  ────────────")
+
+    // RAM
+    let ram_delta = ram_mean[a] - ram_mean[b]
+    if ram_delta < 0.0 { ram_delta = -ram_delta }
+    println("  RAM (MB)    " + to_string(ram_mean[a]) + " +/-" + to_string(ram_std[a]) + "\t" + to_string(ram_mean[b]) + " +/-" + to_string(ram_std[b]) + "\t" + to_string(ram_delta))
+
+    // CPU
+    let cpu_delta = cpu_mean[a] - cpu_mean[b]
+    if cpu_delta < 0.0 { cpu_delta = -cpu_delta }
+    println("  CPU (%)     " + to_string(cpu_mean[a]) + " +/-" + to_string(cpu_std[a]) + "\t" + to_string(cpu_mean[b]) + " +/-" + to_string(cpu_std[b]) + "\t" + to_string(cpu_delta))
+
+    // Samples
+    println("  Samples     " + to_string(to_int(counts[a])) + "\t\t\t" + to_string(to_int(counts[b])))
+
+    // Distance
+    let dist = sig_distance(sigs, a, b)
+    println("")
+    println("  normalized distance: " + to_string(dist))
+
+    // Similarity verdict
+    if dist >= 0.0 {
+        if dist < 0.1 {
+            println("  verdict: SIMILAR — nearly identical resource profile")
+        }
+        if dist >= 0.1 {
+            if dist < 0.3 {
+                println("  verdict: MODERATE — some differences in resource usage")
+            }
+        }
+        if dist >= 0.3 {
+            if dist < 0.6 {
+                println("  verdict: DIFFERENT — distinct resource signatures")
+            }
+        }
+        if dist >= 0.6 {
+            println("  verdict: VERY DIFFERENT — completely distinct workload types")
+        }
+    }
+    println("")
+    return "ok"
+}
+
+// Cluster gates by similarity (simple single-linkage)
+fn print_clusters(sigs: auto) -> str {
+    let counts = sigs[4]
+
+    println("")
+    println("  gate clusters (distance < 0.2 = same cluster)")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Find closest pairs
+    let closest_pairs = ""
+    let threshold = 0.2
+    let a = 0
+    while a < 8 {
+        let b = a + 1
+        while b < 8 {
+            if counts[a] > 0.0 {
+                if counts[b] > 0.0 {
+                    let d = sig_distance(sigs, a, b)
+                    if d >= 0.0 {
+                        if d < threshold {
+                            println("  cluster: " + gate_name(a) + " ~ " + gate_name(b) + "  (dist=" + to_string(d) + ")")
+                        }
+                    }
+                }
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+
+    // Find most unique (largest min-distance to any other)
+    println("")
+    println("  uniqueness ranking:")
+    let g = 0
+    while g < 8 {
+        if counts[g] > 0.0 {
+            let min_d = 999.0
+            let nearest = -1
+            let h = 0
+            while h < 8 {
+                if h != g {
+                    if counts[h] > 0.0 {
+                        let d = sig_distance(sigs, g, h)
+                        if d >= 0.0 {
+                            if d < min_d {
+                                min_d = d
+                                nearest = h
+                            }
+                        }
+                    }
+                }
+                h = h + 1
+            }
+            let tag = ""
+            if min_d > 0.5 { tag = " <-- UNIQUE" }
+            if nearest >= 0 {
+                println("  " + gate_name(g) + "\tmin_dist=" + to_string(min_d) + "\tnearest=" + gate_name(nearest) + tag)
+            }
+        }
+        g = g + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Workload fingerprint — classify current system state
+fn print_fingerprint(sigs: auto) -> str {
+    let ram_mean = sigs[0]
+    let cpu_mean = sigs[1]
+    let counts = sigs[4]
+
+    println("")
+    println("  workload fingerprint")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Find dominant gate (highest RAM)
+    let max_ram = 0.0
+    let dom_gate = 0
+    let g = 0
+    while g < 8 {
+        if ram_mean[g] > max_ram {
+            max_ram = ram_mean[g]
+            dom_gate = g
+        }
+        g = g + 1
+    }
+    println("  dominant gate: " + gate_name(dom_gate) + " (" + to_string(max_ram) + " MB avg)")
+
+    // Find most CPU-intensive
+    let max_cpu = 0.0
+    let cpu_gate = 0
+    g = 0
+    while g < 8 {
+        if cpu_mean[g] > max_cpu {
+            max_cpu = cpu_mean[g]
+            cpu_gate = g
+        }
+        g = g + 1
+    }
+    println("  CPU hotspot:   " + gate_name(cpu_gate) + " (" + to_string(max_cpu) + "% avg)")
+
+    // Total RAM across all gates
+    let total_ram = 0.0
+    let total_cpu = 0.0
+    g = 0
+    while g < 8 {
+        total_ram = total_ram + ram_mean[g]
+        total_cpu = total_cpu + cpu_mean[g]
+        g = g + 1
+    }
+
+    // Classify workload
+    println("")
+    println("  resource distribution:")
+    g = 0
+    while g < 8 {
+        if counts[g] > 0.0 {
+            let ram_pct = 0.0
+            let cpu_pct = 0.0
+            if total_ram > 0.0 { ram_pct = ram_mean[g] * 100.0 / total_ram }
+            if total_cpu > 0.0 { cpu_pct = cpu_mean[g] * 100.0 / total_cpu }
+            // Bar
+            let bar_len = to_int(ram_pct / 5.0)
+            if bar_len < 0 { bar_len = 0 }
+            let bar = exec("python3 -c \"print('▓'*" + to_string(bar_len) + "+'░'*(20-" + to_string(bar_len) + "))\" 2>/dev/null").trim()
+            println("  " + gate_name(g) + "\tRAM " + to_string(to_int(ram_pct)) + "%  " + bar + "  CPU " + to_string(to_int(cpu_pct)) + "%")
+        }
+        g = g + 1
+    }
+
+    // Browser comparison (chrome vs safari)
+    println("")
+    if counts[3] > 0.0 {
+        if counts[4] > 0.0 {
+            let browser_dist = sig_distance(sigs, 3, 4)
+            println("  browser comparison: chrome vs safari")
+            println("    chrome RAM: " + to_string(ram_mean[3]) + " MB, CPU: " + to_string(cpu_mean[3]) + "%")
+            println("    safari RAM: " + to_string(ram_mean[4]) + " MB, CPU: " + to_string(cpu_mean[4]) + "%")
+            println("    distance:   " + to_string(browser_dist))
+            if ram_mean[3] > ram_mean[4] * 1.5 {
+                println("    insight: Chrome uses significantly more RAM than Safari")
+            }
+            if ram_mean[4] > ram_mean[3] * 1.5 {
+                println("    insight: Safari uses significantly more RAM than Chrome")
+            }
+            if ram_mean[3] > 0.0 {
+                if ram_mean[4] > 0.0 {
+                    let ratio = ram_mean[3] / ram_mean[4]
+                    if ratio > 1.0 {
+                        println("    RAM ratio: Chrome/Safari = " + to_string(ratio) + "x")
+                    }
+                    if ratio <= 1.0 {
+                        if ratio > 0.0 {
+                            println("    RAM ratio: Safari/Chrome = " + to_string(1.0 / ratio) + "x")
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println("")
+    return "ok"
+}
+
+fn sigdiff_help() -> str {
+    println("sigdiff v" + VERSION + " — cross-source signature comparison")
+    println("")
+    println("Usage: sigdiff <command>")
+    println("")
+    println("Commands:")
+    println("  matrix          — 8x8 pairwise distance matrix")
+    println("  compare <A> <B> — detailed diff between gate A and B")
+    println("  clusters        — group similar gates, rank uniqueness")
+    println("  fingerprint     — workload classification + browser comparison")
+    println("  help            — show this message")
+    println("")
+    println("Gates: 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools")
+    println("")
+    println("Examples:")
+    println("  sigdiff compare 3 4   — Chrome vs Safari")
+    println("  sigdiff compare 0 7   — macOS vs Devtools")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness SigDiffRouter {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "matrix"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" {
+        sigdiff_help()
+    }
+    if cmd == "matrix" {
+        let sigs = load_signatures()
+        if len(sigs) > 0 { print_matrix(sigs) }
+    }
+    if cmd == "compare" {
+        let a = 3  // default: chrome
+        let b = 4  // default: safari
+        if len(argv) > 4 { a = to_int(argv[4]) }
+        if len(argv) > 5 { b = to_int(argv[5]) }
+        let sigs = load_signatures()
+        if len(sigs) > 0 { print_compare(sigs, a, b) }
+    }
+    if cmd == "clusters" {
+        let sigs = load_signatures()
+        if len(sigs) > 0 { print_clusters(sigs) }
+    }
+    if cmd == "fingerprint" {
+        let sigs = load_signatures()
+        if len(sigs) > 0 { print_fingerprint(sigs) }
+    }
+}
