@@ -113,15 +113,25 @@
       "fix": "cl 스크립트에서 .zprofile/.zshrc 수동 source + exec ~/.local/bin/claude (full path 사용)",
       "commit": "21d04d8"
     }
+    {
+      "id": "TS-012",
+      "date": "2026-04-06",
+      "title": "script -q 래핑 시 Claude Code TUI 먹통",
+      "symptom": "cl 실행 → 계정 선택 후 Claude Code 진입은 되나 TUI 반응 없음 (키 입력 무시, 화면 멈춤)",
+      "root_cause": "script -q는 자체 PTY를 생성 → Claude Code도 자체 PTY 사용 → 이중 PTY 래핑으로 터미널 I/O 충돌. rate limit 감지용 출력 캡처 목적이었으나 TUI 앱과 비호환",
+      "fix": "script -q 제거 → claude 직접 실행. 종료 후 세션 JSONL 파일에서 rate limit 패턴 검색으로 대체",
+      "commit": "a8678c6 → 후속 수정"
+    }
   ],
   "convergence_pattern": {
-    "description": "10건의 트러블슈팅이 하나의 목표로 수렴: cl 단일 진입점으로 Claude Code 멀티계정 자동 관리",
+    "description": "12건의 트러블슈팅이 하나의 목표로 수렴: cl 단일 진입점으로 Claude Code 멀티계정 자동 관리",
     "layers": [
       "L1: hexa 언어 호환성 (TS-001, TS-002, TS-003)",
       "L2: 쉘 래퍼 ↔ hexa 역할 분리 (TS-004, TS-005, TS-009, TS-010, TS-011)",
       "L3: 데이터 스키마 정합성 (TS-006)",
       "L4: 환경변수 오염 (TS-007)",
-      "L5: 레거시 시스템 폐기 (TS-008)"
+      "L5: 레거시 시스템 폐기 (TS-008)",
+      "L6: TUI 호환성 (TS-005, TS-012) — PTY 이중 래핑 금지"
     ],
     "result": "ccmon(py+sh) 9파일 → cl(hexa+sh) 3파일로 수렴. 단일 명령어 cl로 계정 선택·usage 갱신·Claude Code 실행 통합"
   }

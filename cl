@@ -206,20 +206,32 @@ try:
 except: print('unknown')
 " 2>/dev/null)
 SWITCH_COUNT=0
-MAX_SWITCHES=9  # 10개 계정 - 1
+# 활성 계정 수에서 동적으로 계산 (폐기 제외)
+MAX_SWITCHES=$(python3 -c "
+import json, os
+try:
+    d = json.load(open(os.path.expanduser('$ACCOUNTS_FILE')))
+    active = [a for a in d['accounts'] if not a.get('removed')]
+    print(max(len(active) - 1, 1))
+except: print(9)
+" 2>/dev/null)
 
 while true; do
     echo ""
     echo "  ▶ Claude Code 시작 [$CURRENT_NAME]"
     echo "  ─────────────────────────────────────"
 
-    # script로 출력 캡처하면서 실행 (같은 화면)
+    # claude 직접 실행 (TUI 호환) — 종료 후 세션 JSONL에서 rate limit 감지
     export CLAUDE_CONFIG_DIR="$CURRENT_DIR"
-    > "$LOGFILE"  # clear log
 
-    # script -q: quiet, 출력 캡처 + 화면 표시 동시
-    script -q "$LOGFILE" ~/.local/bin/claude
+    ~/.local/bin/claude
     EXIT_CODE=$?
+
+    # 세션 JSONL에서 rate limit 패턴 검색 (최근 파일)
+    LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
+    if [ -n "$LATEST_JSONL" ]; then
+        tail -50 "$LATEST_JSONL" > "$LOGFILE" 2>/dev/null
+    fi
 
     # 오염 체크
     check_contamination "$CURRENT_DIR"
