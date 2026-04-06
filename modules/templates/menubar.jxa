@@ -1,0 +1,55 @@
+// airgenome forge — macOS menu bar (JXA)
+// Generated and launched by forge.hexa
+ObjC.import('Cocoa');
+
+const app = $.NSApplication.sharedApplication;
+app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+
+const statusBar = $.NSStatusBar.systemStatusBar;
+const statusItem = statusBar.statusItemWithLength($.NSVariableStatusItemLength);
+statusItem.button.title = $('TITLE_PLACEHOLDER');
+
+const menu = $.NSMenu.alloc.init;
+
+// Toggle
+const toggleItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(
+    $('TOGGLE_PLACEHOLDER'), ObjC.selector('terminate:'), $(''));
+menu.addItem(toggleItem);
+
+menu.addItem($.NSMenuItem.separatorItem);
+
+// Account items
+ACCOUNTS_PLACEHOLDER
+
+menu.addItem($.NSMenuItem.separatorItem);
+
+// Quit
+const quitItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent(
+    $('Quit forge'), ObjC.selector('terminate:'), $('q'));
+menu.addItem(quitItem);
+
+statusItem.menu = menu;
+
+// Timer: reload state every 5s
+const timer = $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(5.0, true, () => {
+    try {
+        const pipe = $.NSPipe.pipe;
+        const task = $.NSTask.alloc.init;
+        task.executableURL = $.NSURL.fileURLWithPath($('/bin/cat'));
+        task.arguments = $(['STATE_PATH_PLACEHOLDER']);
+        task.standardOutput = pipe;
+        task.launchAndReturnError(null);
+        task.waitUntilExit();
+        const data = pipe.fileHandleForReading.readDataToEndOfFile;
+        const str = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
+        if (str.includes('"active": true')) {
+            statusItem.button.title = $('\u25C9 forge');
+        } else {
+            statusItem.button.title = $('\u25CB forge');
+        }
+    } catch(e) {
+        statusItem.button.title = $('\u26A0 forge');
+    }
+});
+
+app.run;

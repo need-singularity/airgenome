@@ -396,7 +396,56 @@ fn forge_off() -> str {
 }
 
 fn forge_menubar() -> str {
-    println("[menubar] not yet implemented")
+    println("  ── launching menu bar ──")
+    // Read JXA template
+    let template = read_file("modules/templates/menubar.jxa")
+
+    // Determine current state
+    let state = exec("cat forge/state.json 2>/dev/null").trim()
+    let title = "○ forge"
+    let toggle_label = "Start monitoring"
+    if state.contains("true") {
+        title = "◉ forge"
+        toggle_label = "Stop monitoring"
+    }
+
+    // Build account usage lines
+    let account_lines = ""
+    let i = 0
+    while i < 10 {
+        let name = ACCOUNT_NAMES[i]
+        let label = KEYCHAIN_LABELS[i]
+        let status_text = name + ": --"
+        let raw = read_keychain(label)
+        if len(raw) > 0 {
+            let token = extract_token(raw)
+            if len(token) > 0 {
+                let usage = fetch_usage_api(token)
+                if usage.contains("five_hour") {
+                    let s_pct = parse_usage_block(usage, "five_hour")
+                    let w_pct = parse_usage_block(usage, "seven_day")
+                    status_text = name + ": S=" + s_pct + "% W=" + w_pct + "%"
+                }
+            }
+        }
+        account_lines = account_lines + "menu.addItem($.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('" + status_text + "'), null, $('')));\n"
+        i = i + 1
+    }
+
+    // Fill template
+    let jxa = template
+    jxa = jxa.replace("TITLE_PLACEHOLDER", title)
+    jxa = jxa.replace("TOGGLE_PLACEHOLDER", toggle_label)
+    jxa = jxa.replace("ACCOUNTS_PLACEHOLDER", account_lines)
+    let abs_state = exec("pwd").trim() + "/forge/state.json"
+    jxa = jxa.replace("STATE_PATH_PLACEHOLDER", abs_state)
+
+    // Write and execute
+    let tmp = "/tmp/airgenome-menubar.jxa"
+    write_file(tmp, jxa)
+    println("  menu bar active — click ○/◉ in top bar")
+    println("  (Ctrl+C or Quit menu to exit)")
+    exec("osascript -l JavaScript " + tmp)
     return "ok"
 }
 
