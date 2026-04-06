@@ -7,7 +7,7 @@ var args = $.NSProcessInfo.processInfo.arguments;
 var configPath = args.count > 4 ? args.objectAtIndex(4).js : '/tmp/airgenome-config.json';
 
 var app = $.NSApplication.sharedApplication;
-app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
+app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
 var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, forge: false, guard: false};
 
@@ -108,12 +108,77 @@ function makeToggle(y, name, isOn) {
 var forgeToggle = makeToggle(78, 'token-forge (10-account manager)', cfg.forge);
 var guardToggle = makeToggle(48, 'resource-guard (CPU/RAM limiter)', cfg.guard);
 
+// --- Reset button ---
+var resetBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(20, 12, 300, 28));
+resetBtn.title = $('\u21BA Reset to Profile Defaults');
+resetBtn.bezelStyle = $.NSBezelStyleRounded;
+cv.addSubview(resetBtn);
+
+// Profile defaults (read from profiles.json via args or hardcoded detection)
+var profileDefaults = null;
+function loadProfileDefaults() {
+    try {
+        var scriptDir = args.count > 3 ? args.objectAtIndex(3).js : '';
+        var profPath = scriptDir.replace(/\/[^\/]*$/, '') + '/profiles.json';
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(profPath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return null;
+        var data = JSON.parse(str.js);
+
+        var pipe = $.NSPipe.pipe;
+        var task = $.NSTask.alloc.init;
+        task.executableURL = $.NSURL.fileURLWithPath($('/usr/sbin/sysctl'));
+        task.arguments = $(['-n', 'machdep.cpu.brand_string']);
+        task.standardOutput = pipe;
+        task.launchAndReturnError(null);
+        task.waitUntilExit();
+        var chipStr = $.NSString.alloc.initWithDataEncoding(
+            pipe.fileHandleForReading.readDataToEndOfFile, $.NSUTF8StringEncoding).js.trim();
+        var chipMatch = chipStr.match(/M\d+/);
+        var chip = chipMatch ? chipMatch[0] : '';
+
+        var pipe2 = $.NSPipe.pipe;
+        var task2 = $.NSTask.alloc.init;
+        task2.executableURL = $.NSURL.fileURLWithPath($('/usr/sbin/sysctl'));
+        task2.arguments = $(['-n', 'hw.memsize']);
+        task2.standardOutput = pipe2;
+        task2.launchAndReturnError(null);
+        task2.waitUntilExit();
+        var memStr = $.NSString.alloc.initWithDataEncoding(
+            pipe2.fileHandleForReading.readDataToEndOfFile, $.NSUTF8StringEncoding).js.trim();
+        var ramGB = Math.round(parseInt(memStr) / 1073741824);
+
+        var profiles = data.profiles;
+        for (var k in profiles) {
+            if (k === 'default') continue;
+            var m = profiles[k].match || {};
+            if (m.chip && chip.indexOf(m.chip) >= 0 && m.ram_gb === ramGB) {
+                return profiles[k];
+            }
+        }
+        return profiles['default'];
+    } catch(e) { return {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, note: 'default'}; }
+}
+profileDefaults = loadProfileDefaults();
+var resetPressed = false;
+
 win.makeKeyAndOrderFront(null);
 app.activateIgnoringOtherApps(true);
 
 var lastAllVal = allAvg;
 
+var lastResetState = $.NSControlStateValueOff;
 $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
+    // Reset button check (toggle style — detect state change)
+    if (resetBtn.isHighlighted && profileDefaults) {
+        var d = profileDefaults;
+        cpuRow.slider.doubleValue = d.cpu_ceil;
+        ramRow.slider.doubleValue = d.ram_ceil;
+        swapRow.slider.doubleValue = d.swap_ceil;
+        var avg = Math.round((d.cpu_ceil + d.ram_ceil + d.swap_ceil) / 3);
+        allRow.slider.doubleValue = avg;
+        forgeToggle.button.state = $.NSControlStateValueOff;
+        guardToggle.button.state = $.NSControlStateValueOff;
+    }
     function snap5(v) { return Math.round(v / 5) * 5; }
     var av = snap5(allRow.slider.doubleValue);
     var cc = snap5(cpuRow.slider.doubleValue);
