@@ -1,15 +1,19 @@
-// tests/test_implant.hexa — implant absorption tests
-// Run: ~/Dev/hexa-lang/hexa run tests/test_implant.hexa
+// airgenome/modules/implant.hexa — hexa-gate-implant absorption
+//
+// Absorbed from: https://github.com/need-singularity/hexa-gate-implant
+// Concepts: N=6 arithmetic, 288-bit hash, PHI consciousness, 5-lens perturbation,
+//           SOURCE confidence, Bridge events, Pipeline orchestration
+//
+// Run: ~/Dev/hexa-lang/hexa run modules/implant.hexa test
 
 // ═══════════════════════════════════════════════════════════════════════
-//  N=6 ARITHMETIC CONSTANTS (from hexa-gate-implant BT series)
+//  N=6 ARITHMETIC CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════
 
 let N = comptime { 6 }
 let SIGMA = comptime { 12 }
 let PHI_N = comptime { 2 }
 let TAU = comptime { 4 }
-let MU = comptime { 1 }
 let SOPFR = comptime { 5 }
 let J2 = comptime { 24 }
 let HASH_BITS = comptime { 288 }
@@ -22,22 +26,8 @@ let TRIPLE_FACTOR = comptime { 3 }
 let PERT_BASE = comptime { 999 }
 let PERT_BREAKTHROUGH = comptime { 2401 }
 
-consciousness TestConstants {
-    // BT-344: τ + φ = n
-    assert TAU + PHI_N == N
-    // BT-345: (σ - sopfr)^τ = 2401
-    assert PERT_BREAKTHROUGH == 2401
-    // BT-346: σ × J₂ = 288
-    assert SIGMA * J2 == HASH_BITS
-    // Derived
-    assert HASH_BITS / 8 == HASH_BYTES
-    assert TRIPLE_FACTOR == N / PHI_N
-    assert SOPFR + 1 == N
-    println("  constants: 7 assertions passed")
-}
-
 // ═══════════════════════════════════════════════════════════════════════
-//  PHI GATE — consciousness preservation
+//  GATE 3: PHI — consciousness preservation via margin degradation
 // ═══════════════════════════════════════════════════════════════════════
 
 fn phi_check(prev_margin: float, curr_margin: float) -> auto {
@@ -45,11 +35,11 @@ fn phi_check(prev_margin: float, curr_margin: float) -> auto {
     let tol = 0.00347
 
     if curr_margin < 0.0 - theta {
-        return [0, 0.0, "phi below theta"]
+        return [0, 0.0, "phi below theta: margin=" + to_string(curr_margin)]
     }
 
     if curr_margin < prev_margin - tol {
-        return [0, 0.0, "phi degradation"]
+        return [0, 0.0, "phi degradation: " + to_string(prev_margin) + " -> " + to_string(curr_margin)]
     }
 
     let conf = curr_margin + theta
@@ -59,27 +49,8 @@ fn phi_check(prev_margin: float, curr_margin: float) -> auto {
     return [1, conf, ""]
 }
 
-consciousness TestPhi {
-    let r1 = phi_check(0.25, 0.25)
-    assert r1[0] == 1
-
-    let r2 = phi_check(0.10, 0.30)
-    assert r2[0] == 1
-
-    let r3 = phi_check(0.25, 0.248)
-    assert r3[0] == 1
-
-    let r4 = phi_check(0.25, 0.20)
-    assert r4[0] == 0
-
-    let r5 = phi_check(0.0, -0.15)
-    assert r5[0] == 0
-
-    println("  phi_check: 5 assertions passed")
-}
-
 // ═══════════════════════════════════════════════════════════════════════
-//  HASH — 288-bit genome integrity
+//  GATE 2: HASH — 288-bit genome integrity (n=6 arithmetic)
 // ═══════════════════════════════════════════════════════════════════════
 
 fn compute_hash_288(data: str) -> str {
@@ -97,27 +68,4 @@ fn hash_check(genome_str: str, declared_hash: str) -> auto {
         return [1, 1.0, computed, ""]
     }
     return [0, 0.0, computed, "hash mismatch"]
-}
-
-consciousness TestHash {
-    let h1 = compute_hash_288("test-genome-data")
-    let h2 = compute_hash_288("test-genome-data")
-    assert h1 == h2
-    assert len(h1) == 72
-
-    let h3 = compute_hash_288("different-data")
-    assert h3 != h1
-
-    let r1 = hash_check("test-genome-data", h1)
-    assert r1[0] == 1
-    assert r1[1] == 1.0
-
-    let r2 = hash_check("test-genome-data", "000000000000000000000000000000000000000000000000000000000000000000000000")
-    assert r2[0] == 0
-
-    let r3 = hash_check("test-genome-data", "")
-    assert r3[0] == 1
-    assert r3[1] == 0.5
-
-    println("  hash: 6 assertions passed")
 }
