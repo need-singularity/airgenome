@@ -166,19 +166,37 @@ app.activateIgnoringOtherApps(true);
 
 var lastAllVal = allAvg;
 
-var lastResetState = $.NSControlStateValueOff;
-$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
-    // Reset button check (toggle style — detect state change)
-    if (resetBtn.isHighlighted && profileDefaults) {
-        var d = profileDefaults;
-        cpuRow.slider.doubleValue = d.cpu_ceil;
-        ramRow.slider.doubleValue = d.ram_ceil;
-        swapRow.slider.doubleValue = d.swap_ceil;
-        var avg = Math.round((d.cpu_ceil + d.ram_ceil + d.swap_ceil) / 3);
-        allRow.slider.doubleValue = avg;
-        forgeToggle.button.state = $.NSControlStateValueOff;
-        guardToggle.button.state = $.NSControlStateValueOff;
+var resetCooldown = false;
+
+ObjC.registerSubclass({
+    name: 'ResetHandler',
+    methods: {
+        'doReset:': {
+            types: ['void', ['id']],
+            implementation: function(sender) {
+                if (!profileDefaults || resetCooldown) return;
+                resetCooldown = true;
+                var d = profileDefaults;
+                cpuRow.slider.doubleValue = d.cpu_ceil;
+                ramRow.slider.doubleValue = d.ram_ceil;
+                swapRow.slider.doubleValue = d.swap_ceil;
+                var avg = Math.round((d.cpu_ceil + d.ram_ceil + d.swap_ceil) / 3);
+                allRow.slider.doubleValue = avg;
+                forgeToggle.button.state = $.NSControlStateValueOff;
+                guardToggle.button.state = $.NSControlStateValueOff;
+                // cooldown 1s
+                $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(1.0, false, function() {
+                    resetCooldown = false;
+                });
+            }
+        }
     }
+});
+var resetHandler = $.ResetHandler.alloc.init;
+resetBtn.target = resetHandler;
+resetBtn.action = 'doReset:';
+
+$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
     function snap5(v) { return Math.round(v / 5) * 5; }
     var av = snap5(allRow.slider.doubleValue);
     var cc = snap5(cpuRow.slider.doubleValue);
