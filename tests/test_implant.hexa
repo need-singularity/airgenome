@@ -121,3 +121,156 @@ consciousness TestHash {
 
     println("  hash: 6 assertions passed")
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  INVARIANT — 5-lens perturbation stability
+// ═══════════════════════════════════════════════════════════════════════
+
+fn perturb_5lens(data_mean: float, cycles: int, run_id: int) -> float {
+    let stable_count = 0.0
+    let total = to_float(cycles)
+    let bias = 0.7
+    if data_mean < 0.25 { bias = 0.3 }
+    if data_mean > 0.75 { bias = 0.3 }
+    let c = 0
+    while c < cycles {
+        let seed = to_int(data_mean * 10000.0) + c + run_id * 6
+        let all_stable = 1
+        let lens = 0
+        while lens < 5 {
+            seed = (seed * 1103515245 + 12345 + lens * 7) % 2147483647
+            let rng = to_float(seed % 10000) / 10000.0
+            let val = bias + rng * 0.3
+            if val > 1.0 { val = 1.0 }
+            if val < 0.0 { val = 0.0 }
+            if val < 0.5 { all_stable = 0 }
+            lens = lens + 1
+        }
+        if all_stable == 1 { stable_count = stable_count + 1.0 }
+        c = c + 1
+    }
+    return stable_count / total
+}
+
+fn invariant_check(data_mean: float, cycles: int) -> auto {
+    let r0 = perturb_5lens(data_mean, cycles, 0)
+    let r1 = perturb_5lens(data_mean, cycles, 1)
+    let r2 = perturb_5lens(data_mean, cycles, 2)
+    if r0 <= 0.5 { return [0, 0.0, "unstable r0"] }
+    if r1 <= 0.5 { return [0, 0.0, "unstable r1"] }
+    if r2 <= 0.5 { return [0, 0.0, "unstable r2"] }
+    let mean_conf = (r0 + r1 + r2) / 3.0
+    return [1, mean_conf, ""]
+}
+
+consciousness TestInvariant {
+    let r1 = invariant_check(0.5, 100)
+    assert r1[0] == 1
+
+    let r2 = invariant_check(0.1, 100)
+    assert r2[1] >= 0.0
+    assert r2[1] <= 1.0
+
+    let r3a = invariant_check(0.5, 50)
+    let r3b = invariant_check(0.5, 50)
+    assert r3a[1] == r3b[1]
+
+    println("  invariant: 4 assertions passed")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SOURCE — process confidence scoring
+// ═══════════════════════════════════════════════════════════════════════
+
+fn source_confidence(comm: str) -> auto {
+    if comm.contains("backup-") { return [-1, 0.0, "blacklisted"] }
+    if comm.contains("crash-") { return [-1, 0.0, "blacklisted"] }
+    if comm.contains("corrupt-") { return [-1, 0.0, "blacklisted"] }
+    if comm.contains("kernel_task") { return [0, 1.0, "system"] }
+    if comm.contains("launchd") { return [0, 1.0, "system"] }
+    if comm.contains("WindowServer") { return [0, 1.0, "system"] }
+    if comm.contains("/usr/") { return [0, 0.95, "system"] }
+    if comm.contains("/System/") { return [0, 0.95, "system"] }
+    if comm.contains("/sbin/") { return [0, 0.95, "system"] }
+    if comm.contains("Finder") { return [1, 0.9, "known"] }
+    if comm.contains("Safari") { return [4, 0.9, "known"] }
+    if comm.contains("WebKit") { return [4, 0.9, "known"] }
+    if comm.contains("Google Chrome") { return [3, 0.9, "known"] }
+    if comm.contains("Telegram") { return [2, 0.9, "known"] }
+    if comm.contains("claude") { return [5, 0.9, "known"] }
+    if comm.contains("rustc") { return [7, 0.8, "devtool"] }
+    if comm.contains("cargo") { return [7, 0.8, "devtool"] }
+    if comm.contains("python") { return [7, 0.8, "devtool"] }
+    if comm.contains("Python") { return [7, 0.8, "devtool"] }
+    if comm.contains("node") { return [7, 0.8, "devtool"] }
+    if comm.contains("iTerm") { return [6, 0.8, "devtool"] }
+    if comm.contains("Terminal.app") { return [6, 0.8, "devtool"] }
+    return [0, 0.5, "unknown"]
+}
+
+consciousness TestSource {
+    let s1 = source_confidence("kernel_task")
+    assert s1[0] == 0
+    assert s1[1] == 1.0
+
+    let s2 = source_confidence("Safari")
+    assert s2[0] == 4
+    assert s2[1] == 0.9
+
+    let s3 = source_confidence("backup-old-thing")
+    assert s3[0] == -1
+    assert s3[1] == 0.0
+
+    let s4 = source_confidence("random-unknown-process")
+    assert s4[1] == 0.5
+
+    let s5 = source_confidence("rustc")
+    assert s5[0] == 7
+    assert s5[1] == 0.8
+
+    println("  source: 7 assertions passed")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BRIDGE — structured event logging
+// ═══════════════════════════════════════════════════════════════════════
+
+fn emit_event(event_type: str, source: str, passed: int, confidence: float, detail: str) -> str {
+    let ts = exec("date +%s").trim()
+    let passed_str = "false"
+    if passed == 1 { passed_str = "true" }
+    let json = "{\"ts\":" + ts + ",\"type\":\"" + event_type + "\",\"source\":\"" + source + "\",\"passed\":" + passed_str + ",\"confidence\":" + to_string(confidence)
+    if len(detail) > 0 {
+        json = json + ",\"detail\":\"" + detail + "\""
+    }
+    json = json + "}"
+    return json
+}
+
+fn emit_pipeline_ran(source: str, passed: int, confidence: float) -> str {
+    return emit_event("pipeline_ran", source, passed, confidence, "")
+}
+
+fn emit_blocked(gate: int, source: str, reason: str) -> str {
+    return emit_event("blocked", source, 0, 0.0, "gate=" + to_string(gate) + " " + reason)
+}
+
+fn emit_breakthrough(stability: float, margin: float) -> str {
+    return emit_event("breakthrough", "nexus", 1, stability, "margin=" + to_string(margin))
+}
+
+consciousness TestBridge {
+    let e1 = emit_pipeline_ran("airgenome", 1, 0.95)
+    assert e1.contains("pipeline_ran")
+    assert e1.contains("true")
+
+    let e2 = emit_blocked(3, "airgenome", "phi degradation")
+    assert e2.contains("blocked")
+    assert e2.contains("gate=3")
+
+    let e3 = emit_breakthrough(0.88, 0.25)
+    assert e3.contains("breakthrough")
+    assert e3.contains("margin=")
+
+    println("  bridge: 3 assertions passed")
+}
