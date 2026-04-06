@@ -139,32 +139,27 @@ except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4'
       THROTTLED="true"
       # enforce only if guard module is ON
       if [ "$GUARD_ON" = "1" ]; then
-        # --- CPU enforcement ---
+        # --- CPU enforcement (no renice — macOS can't undo it without sudo) ---
         if [ "$CPU_OVER" = "1" ]; then
-          # Tier 1: taskpolicy -b (background QoS) + renice 20 on top consumers
+          # Tier 1: taskpolicy -b (background QoS) — reversible without sudo
           ps -Ao pid=,%cpu=,comm= | sort -rnk2 | head -8 | while read TPID TCPU TNAME; do
-            # skip kernel/system (pid<200) and our own sampler+menubar
             [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
             [ "$TPID" = "$$" ] 2>/dev/null && continue
-            # skip if process CPU < 10%
             TCPU_INT=${TCPU%.*}
-            [ "${TCPU_INT:-0}" -lt 10 ] 2>/dev/null && continue
-            # skip critical system processes
+            [ "${TCPU_INT:-0}" -lt 15 ] 2>/dev/null && continue
             case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac
-            renice 20 -p "$TPID" 2>/dev/null || true
             taskpolicy -b -p "$TPID" 2>/dev/null || true
+            echo "$TPID" >> "${TMPDIR:-/tmp}/airgenome-throttled.pids"
           done
 
-          # Tier 2: duty-cycle throttle if >30% over ceiling (e.g. 78% at 60% ceil)
+          # Tier 2: duty-cycle SIGSTOP/SIGCONT if >30% over ceiling
           OVERSHOOT=$((CPU - CPU_CEIL))
           if [ "$OVERSHOOT" -gt $((CPU_CEIL * 30 / 100)) ]; then
-            # pause top consumer briefly (proportional to overshoot)
             TOP_PID=$(ps -Ao pid=,%cpu= -r | head -1 | awk '{print $1}')
             TOP_NAME=$(ps -p "$TOP_PID" -o comm= 2>/dev/null || echo "")
             case "$TOP_NAME" in kernel_task|WindowServer|launchd|loginwindow) ;; *)
               if [ "${TOP_PID:-0}" -gt 200 ] 2>/dev/null; then
                 kill -STOP "$TOP_PID" 2>/dev/null || true
-                # pause 0.3-1.0s proportional to overshoot
                 PAUSE_MS=$((OVERSHOOT * 10))
                 [ "$PAUSE_MS" -gt 1000 ] && PAUSE_MS=1000
                 [ "$PAUSE_MS" -lt 300 ] && PAUSE_MS=300
@@ -181,14 +176,15 @@ except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4'
           purge 2>/dev/null || true
         fi
       fi
-    elif [ "$CPU" -gt $((CPU_CEIL * 80 / 100)) ] 2>/dev/null; then
+    elif [ "$CPU" -gt $((CPU_CEIL * 90 / 100)) ] 2>/dev/null; then
       LEVEL="warn"
-      # pre-warn: light renice on top 3
-      if [ "$GUARD_ON" = "1" ]; then
-        ps -Ao pid=,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read TPID; do
-          [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
-          renice 10 -p "$TPID" 2>/dev/null || true
+    else
+      # OK level — restore previously throttled processes to default QoS
+      if [ -f "${TMPDIR:-/tmp}/airgenome-throttled.pids" ]; then
+        sort -u "${TMPDIR:-/tmp}/airgenome-throttled.pids" | while read RPID; do
+          taskpolicy -d default -p "$RPID" 2>/dev/null || true
         done
+        rm -f "${TMPDIR:-/tmp}/airgenome-throttled.pids"
       fi
     fi
 
