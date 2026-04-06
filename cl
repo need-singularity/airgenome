@@ -1,8 +1,8 @@
 #!/bin/zsh
-# cl2 — Claude Code multi-account launcher v2 (contamination-free)
+# cl2 — Claude Code multi-account launcher v2 (python3-free)
 # - rate limit → auto-switch (same terminal)
 # - /login → direct CLAUDE_CONFIG_DIR auth (no symlink dance)
-# - no backup/restore/contamination checks
+# - 순수 awk/grep/sed — python3 제거
 
 [ -f ~/.zprofile ] && source ~/.zprofile
 [ -f ~/.zshrc ] && source ~/.zshrc
@@ -27,30 +27,37 @@ RATE_PATTERNS=(
     "exceeded.*limit"
 )
 
+# ─── JSON helpers (pure awk/grep/sed) ───
+_json_get() {
+    # Extract simple field from JSON file: _json_get file key
+    sed 's/"//g;s/.*'"$2"'://;s/[,}].*//' "$1" 2>/dev/null | tr -d ' '
+}
+
+_json_config_dir() {
+    # Get config_dir for account name from accounts.json
+    local name="$1"
+    grep -oE '"name":"[^"]*"|"config_dir":"[^"]*"' "$ACCOUNTS_FILE" 2>/dev/null | \
+      sed 's/"//g;s/:/|/' | \
+      awk -F'|' -v n="$name" '{if($1=="name")cur=$2;if($1=="config_dir"&&cur==n){print $2;exit}}'
+}
+
+_json_cache_field() {
+    # Get field from usage cache for account: _json_cache_field name field
+    sed 's/.*"'"$1"'":{//;s/}.*//' "$USAGE_CACHE" 2>/dev/null | \
+      grep -o '"'"$2"'":[^,}]*' | sed 's/[^:]*://;s/"//g'
+}
+
 # ─── login ───
 if [[ "$1" == "login" ]]; then
     TARGET="${2:-}"
     if [ -z "$TARGET" ]; then
-        TARGET=$(python3 -c "
-import json, os
-try:
-    d = json.load(open(os.path.expanduser('$STATE_FILE')))
-    print(d['active'])
-except: print('')
-" 2>/dev/null)
+        TARGET=$(_json_get "$STATE_FILE" "active")
     fi
     if [ -z "$TARGET" ]; then
         echo "  ✗ 계정 지정 필요: cl2 login claude3"
         exit 1
     fi
-    TARGET_DIR=$(python3 -c "
-import json, os
-d = json.load(open(os.path.expanduser('$ACCOUNTS_FILE')))
-for a in d['accounts']:
-    if a['name'] == '$TARGET':
-        print(a['config_dir'])
-        break
-" 2>/dev/null)
+    TARGET_DIR=$(_json_config_dir "$TARGET")
     if [ -z "$TARGET_DIR" ]; then
         echo "  ✗ 계정 없음: $TARGET"
         exit 1
@@ -80,8 +87,8 @@ start_account_watcher() {
             local dir=$(dirname "$changed_file")
             local name=$(basename "$dir" | sed 's/^\.//' | sed 's/^claude-//')
             if [ -f "$ACCOUNTS_FILE" ]; then
-                local exists=$(python3 -c "import json;d=json.load(open('$ACCOUNTS_FILE'));print('yes' if any(a['name']=='$name' for a in d['accounts']) else 'no')" 2>/dev/null)
-                if [ "$exists" = "no" ]; then
+                local exists=$(grep -c "\"name\":\"$name\"" "$ACCOUNTS_FILE" 2>/dev/null)
+                if [ "${exists:-0}" -eq 0 ]; then
                     echo ""
                     echo "  ⬡ 🆕 새 계정 감지: $name ($dir)"
                     cd "$AIRGENOME"
@@ -109,39 +116,24 @@ check_rate_limit() {
 
 pick_next_account() {
     local current="$1"
-    python3 -c "
-import json, os
-try:
-    accounts = json.load(open(os.path.expanduser('$ACCOUNTS_FILE')))['accounts']
-    try: usage = json.load(open(os.path.expanduser('$USAGE_CACHE')))
-    except: usage = {}
-    best = None; best_week = 999
-    for a in accounts:
-        if a.get('removed'): continue
-        n = a['name']
-        if n == '$current': continue
-        u = usage.get(n, {})
-        w = u.get('week_all_pct', 999)
-        try: w = float(w)
-        except: w = 999
-        if w >= 100: continue
-        if w < best_week: best = n; best_week = w
-    if best: print(f'{best}')
-    else: print('none')
-except: print('none')
-" 2>/dev/null
+    # List accounts: name|config_dir|removed, find lowest week usage
+    grep -oE '"name":"[^"]*"|"config_dir":"[^"]*"|"removed":[a-z]+' "$ACCOUNTS_FILE" 2>/dev/null | \
+      sed 's/"//g;s/:/|/' | \
+      awk -F'|' '{if($1=="name")n=$2;if($1=="removed"){r=$2;if(n!="")print n"|"r;n=""}}' | \
+      while read entry; do
+        local n="${entry%%|*}"
+        local r="${entry##*|}"
+        [ "$r" = "true" ] && continue
+        [ "$n" = "$current" ] && continue
+        local w=$(_json_cache_field "$n" "week_all_pct")
+        local wi=$(echo "${w:-999}" | awk '{printf "%.0f",$1+0}')
+        [ "$wi" -ge 100 ] 2>/dev/null && continue
+        echo "$wi|$n"
+      done | sort -n | head -1 | cut -d'|' -f2
 }
 
 get_config_dir() {
-    local name="$1"
-    python3 -c "
-import json, os
-d = json.load(open(os.path.expanduser('$ACCOUNTS_FILE')))
-for a in d['accounts']:
-    if a['name'] == '$name':
-        print(a['config_dir'])
-        break
-" 2>/dev/null
+    _json_config_dir "$1"
 }
 
 # ─── Cleanup ───
@@ -173,22 +165,12 @@ fi
 start_account_watcher
 
 CURRENT_DIR="$LAUNCH_DIR"
-CURRENT_NAME=$(python3 -c "
-import json, os
-try:
-    d = json.load(open(os.path.expanduser('$STATE_FILE')))
-    print(d['active'])
-except: print('unknown')
-" 2>/dev/null)
+CURRENT_NAME=$(_json_get "$STATE_FILE" "active")
+[ -z "$CURRENT_NAME" ] && CURRENT_NAME="unknown"
 SWITCH_COUNT=0
-MAX_SWITCHES=$(python3 -c "
-import json, os
-try:
-    d = json.load(open(os.path.expanduser('$ACCOUNTS_FILE')))
-    active = [a for a in d['accounts'] if not a.get('removed')]
-    print(max(len(active) - 1, 1))
-except: print(9)
-" 2>/dev/null)
+# Count non-removed accounts for max switches
+MAX_SWITCHES=$(grep -oE '"removed":[a-z]+' "$ACCOUNTS_FILE" 2>/dev/null | grep -c 'false')
+MAX_SWITCHES=$((MAX_SWITCHES > 1 ? MAX_SWITCHES - 1 : 1))
 
 while true; do
     echo ""
@@ -212,7 +194,7 @@ while true; do
 
         NEXT=$(pick_next_account "$CURRENT_NAME")
 
-        if [ "$NEXT" = "none" ]; then
+        if [ -z "$NEXT" ] || [ "$NEXT" = "none" ]; then
             echo "  ✗ 사용 가능한 계정 없음 — 모두 소진"
             echo ""
             cd "$AIRGENOME"
@@ -230,18 +212,12 @@ while true; do
         mkdir -p ~/.airgenome
         echo "{\"active\":\"$NEXT\"}" > "$STATE_FILE"
 
-        local usage_info=$(python3 -c "
-import json, os
-try:
-    d = json.load(open(os.path.expanduser('$USAGE_CACHE')))
-    e = d.get('$NEXT', {})
-    s = e.get('session_pct', '?')
-    w = e.get('week_all_pct', '?')
-    print(f'session={s}%  week={w}%')
-except: print('session=?%  week=?%')
-" 2>/dev/null)
+        local s_pct=$(_json_cache_field "$NEXT" "session_pct")
+        local w_pct=$(_json_cache_field "$NEXT" "week_all_pct")
+        [ -z "$s_pct" ] && s_pct="?"
+        [ -z "$w_pct" ] && w_pct="?"
 
-        echo "  ⬡ $NEXT  $usage_info"
+        echo "  ⬡ $NEXT  session=${s_pct}%  week=${w_pct}%"
         echo "    $NEXT_DIR"
 
         CURRENT_DIR="$NEXT_DIR"

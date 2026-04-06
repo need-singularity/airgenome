@@ -48,28 +48,30 @@ echo "$MODEL_NAME" | grep -qi "Pro" && HAS_FAN="true"
 if [ ! -f "$CONFIG" ]; then
   PROFILE_JSON="$DIR/profiles.json"
   if [ -f "$PROFILE_JSON" ]; then
-    eval "$(python3 << PYEOF
-import json
-with open('$PROFILE_JSON') as f: data=json.load(f)
-chip='$CHIP'
-ram=$TOTAL_RAM_GB
-fan=$( [ "$HAS_FAN" = "true" ] && echo "True" || echo "False" )
-best=data['profiles']['default']
-for k,v in data['profiles'].items():
-    if k=='default': continue
-    m=v.get('match',{})
-    mc=m.get('chip','')
-    mr=m.get('ram_gb',0)
-    mf=m.get('fan',None)
-    if mc and mc in chip and mr==ram and (mf is None or mf==fan):
-        best=v
-        break
-print(f"CPU_C={best['cpu_ceil']}")
-print(f"RAM_C={best['ram_ceil']}")
-print(f"SWAP_C={best['swap_ceil']}")
-print(f"PROFILE_NOTE='{best['note']}'")
-PYEOF
-)" || { CPU_C=75; RAM_C=70; SWAP_C=30; PROFILE_NOTE="default"; }
+    eval "$(awk -v chip="$CHIP" -v ram="$TOTAL_RAM_GB" -v fan="$HAS_FAN" '
+    BEGIN{RS="{";best_cpu=75;best_ram=70;best_swap=30;best_note="default";found=0}
+    /"chip"/{
+      mc="";mr=0;mf="";cc=0;rc=0;sc=0;note=""
+      for(i=1;i<=NF;i++){
+        if($i~/"chip"/)  {split($i,a,"\"");mc=a[4]}
+        if($i~/"ram_gb"/){gsub(/[^0-9]/,"",$i);mr=$i+0}
+        if($i~/"fan"/)   {mf=($i~/true/)?"true":"false"}
+        if($i~/"cpu_ceil"/){gsub(/[^0-9]/,"",$i);cc=$i+0}
+        if($i~/"ram_ceil"/){gsub(/[^0-9]/,"",$i);rc=$i+0}
+        if($i~/"swap_ceil"/){gsub(/[^0-9]/,"",$i);sc=$i+0}
+        if($i~/"note"/)  {split($i,a,"\"");note=a[4]}
+      }
+      if(mc!=""&&cc>0&&!found){
+        chip_ok=(index(chip,mc)>0)
+        ram_ok=(mr==ram+0)
+        fan_ok=(mf==""||mf==fan)
+        if(chip_ok&&ram_ok&&fan_ok){
+          best_cpu=cc;best_ram=rc;best_swap=sc;best_note=note;found=1
+        }
+      }
+    }
+    END{printf "CPU_C=%d\nRAM_C=%d\nSWAP_C=%d\nPROFILE_NOTE='\''%s'\''\n",best_cpu,best_ram,best_swap,best_note}
+    ' "$PROFILE_JSON" 2>/dev/null)" || { CPU_C=75; RAM_C=70; SWAP_C=30; PROFILE_NOTE="default"; }
   else
     CPU_C=75; RAM_C=70; SWAP_C=30; PROFILE_NOTE="default"
   fi
@@ -80,10 +82,13 @@ PYEOF
 CJSON
 fi
 
-# read back config for initial state
-CPU_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['cpu_ceil'])" 2>/dev/null || echo 75)
-RAM_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['ram_ceil'])" 2>/dev/null || echo 70)
-SWAP_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['swap_ceil'])" 2>/dev/null || echo 30)
+# read back config for initial state (pure awk)
+eval "$(awk -F'[,:}]' '{for(i=1;i<=NF;i++){
+  gsub(/["{[:space:]]/,"",$i)
+  if($i=="cpu_ceil")printf "CPU_C=%d\n",$(i+1)
+  if($i=="ram_ceil")printf "RAM_C=%d\n",$(i+1)
+  if($i=="swap_ceil")printf "SWAP_C=%d\n",$(i+1)
+}}' "$CONFIG" 2>/dev/null)" || { CPU_C=75; RAM_C=70; SWAP_C=30; }
 
 # 5. Write initial state
 cat > "$STATE" <<SJSON
