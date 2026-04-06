@@ -172,10 +172,8 @@ trap cleanup EXIT INT TERM
 
 # ─── Main: auto-switch loop ───
 
-# Usage 캐시 갱신
-cd "$AIRGENOME"
-$HEXA run modules/usage.hexa auto 2>/dev/null
-cd "$ORIG_DIR"
+# Usage 캐시 갱신 (백그라운드)
+(cd "$AIRGENOME" && $HEXA run modules/usage.hexa auto 2>/dev/null &)
 
 # 첫 계정 선택
 cd "$AIRGENOME"
@@ -241,10 +239,8 @@ while true; do
         echo ""
         echo "  ⚠ Rate limit 감지! 자동 계정 전환 중..."
 
-        # Usage 캐시 갱신
-        cd "$AIRGENOME"
-        $HEXA run modules/usage.hexa auto 2>/dev/null
-        cd "$ORIG_DIR"
+        # Usage 캐시 갱신 (백그라운드)
+        (cd "$AIRGENOME" && $HEXA run modules/usage.hexa auto 2>/dev/null &)
 
         NEXT=$(pick_next_account "$CURRENT_NAME")
 
