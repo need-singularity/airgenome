@@ -11,6 +11,8 @@ app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
 var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, forge: false, guard: false, autostart: true};
 var plistPath = $.NSHomeDirectory().js + '/Library/LaunchAgents/com.airgenome.menubar.plist';
+var accountsPath = $.NSHomeDirectory().js + '/.airgenome/accounts.json';
+var usageCachePath = $.NSHomeDirectory().js + '/.airgenome/usage-cache.json';
 
 function isAutoStartEnabled() {
     return $.NSFileManager.defaultManager.fileExistsAtPath($(plistPath));
@@ -44,7 +46,7 @@ function writeFullConfig(obj) {
 var cfg = readConfig();
 
 var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(0, 0, 340, 500),
+    $.NSMakeRect(0, 0, 420, 540),
     $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
     $.NSBackingStoreBuffered, false
 );
@@ -52,7 +54,24 @@ win.title = $('airgenome Settings');
 win.level = $.NSFloatingWindowLevel;
 win.center;
 
-var cv = win.contentView;
+// ─── Tab View (기본 설정 | 계정 관리) ───
+var tabView = $.NSTabView.alloc.initWithFrame($.NSMakeRect(0, 0, 420, 540));
+
+var settingsTab = $.NSTabViewItem.alloc.initWithIdentifier($('settings'));
+settingsTab.label = $('기본 설정');
+var settingsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 490));
+settingsTab.view = settingsView;
+
+var accountsTab = $.NSTabViewItem.alloc.initWithIdentifier($('accounts'));
+accountsTab.label = $('계정 관리');
+var accountsView = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, 400, 490));
+accountsTab.view = accountsView;
+
+tabView.addTabViewItem(settingsTab);
+tabView.addTabViewItem(accountsTab);
+win.contentView.addSubview(tabView);
+
+var cv = settingsView;
 
 function makeRow(y, name, min, max, val) {
     var lbl = $.NSTextField.alloc.initWithFrame($.NSMakeRect(20, y + 28, 300, 18));
@@ -269,6 +288,212 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
     }
 
     writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, forge: forgeOn, guard: guardOn, autostart: autoOn});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  계정 관리 탭
+// ═══════════════════════════════════════════════════════════════════════
+
+function readAccounts() {
+    try {
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(accountsPath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return [];
+        return JSON.parse(str.js).accounts || [];
+    } catch(e) { return []; }
+}
+
+function readUsageCache() {
+    try {
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(usageCachePath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return {};
+        return JSON.parse(str.js);
+    } catch(e) { return {}; }
+}
+
+function writeAccounts(accounts) {
+    var json = JSON.stringify({accounts: accounts}, null, 2);
+    $(json).writeToFileAtomicallyEncodingError($(accountsPath), true, $.NSUTF8StringEncoding, null);
+}
+
+// Title
+var accTitle = $.NSTextField.alloc.initWithFrame($.NSMakeRect(20, 430, 360, 22));
+accTitle.stringValue = $('Claude Code 계정 관리');
+accTitle.bordered = false;
+accTitle.editable = false;
+accTitle.drawsBackground = false;
+accTitle.font = $.NSFont.boldSystemFontOfSize(16);
+accountsView.addSubview(accTitle);
+
+// Scroll view with table
+var scrollView = $.NSScrollView.alloc.initWithFrame($.NSMakeRect(20, 80, 360, 340));
+scrollView.hasVerticalScroller = true;
+scrollView.autohidesScrollers = true;
+scrollView.borderType = $.NSBezelBorder;
+
+var tableView = $.NSTableView.alloc.initWithFrame($.NSMakeRect(0, 0, 340, 340));
+tableView.usesAlternatingRowBackgroundColors = true;
+tableView.rowHeight = 28;
+
+var colName = $.NSTableColumn.alloc.initWithIdentifier($('name'));
+colName.headerCell.stringValue = $('계정');
+colName.width = 80;
+tableView.addTableColumn(colName);
+
+var colSession = $.NSTableColumn.alloc.initWithIdentifier($('session'));
+colSession.headerCell.stringValue = $('세션%');
+colSession.width = 60;
+tableView.addTableColumn(colSession);
+
+var colWeek = $.NSTableColumn.alloc.initWithIdentifier($('week'));
+colWeek.headerCell.stringValue = $('주간%');
+colWeek.width = 60;
+tableView.addTableColumn(colWeek);
+
+var colStatus = $.NSTableColumn.alloc.initWithIdentifier($('status'));
+colStatus.headerCell.stringValue = $('상태');
+colStatus.width = 120;
+tableView.addTableColumn(colStatus);
+
+var accountData = [];
+function refreshAccountData() {
+    accountData = readAccounts();
+    var usage = readUsageCache();
+    for (var i = 0; i < accountData.length; i++) {
+        var a = accountData[i];
+        var u = usage[a.name] || {};
+        a._session = u.session_pct != null ? u.session_pct : '?';
+        a._week = u.week_all_pct != null ? u.week_all_pct : '?';
+        a._status = '';
+        if (a.removed) a._status = '폐기됨';
+        else if (a._week !== '?' && parseFloat(a._week) >= 100) a._status = '✗ EXHAUSTED';
+        else if (a._week !== '?' && parseFloat(a._week) >= 80) a._status = '⚠ HIGH';
+        else a._status = '✓ OK';
+    }
+}
+refreshAccountData();
+
+ObjC.registerSubclass({
+    name: 'AccountTableDS',
+    protocols: ['NSTableViewDataSource', 'NSTableViewDelegate'],
+    methods: {
+        'numberOfRowsInTableView:': {
+            types: ['long', ['id']],
+            implementation: function(tv) {
+                return accountData.length;
+            }
+        },
+        'tableView:objectValueForTableColumn:row:': {
+            types: ['id', ['id', 'id', 'long']],
+            implementation: function(tv, col, row) {
+                if (row >= accountData.length) return $('');
+                var a = accountData[row];
+                var cid = col.identifier.js;
+                if (cid === 'name') return $(a.name);
+                if (cid === 'session') return $(String(a._session));
+                if (cid === 'week') return $(String(a._week));
+                if (cid === 'status') return $(a._status);
+                return $('');
+            }
+        }
+    }
+});
+
+var tableDS = $.AccountTableDS.alloc.init;
+tableView.dataSource = tableDS;
+tableView.delegate = tableDS;
+
+scrollView.documentView = tableView;
+accountsView.addSubview(scrollView);
+
+// Buttons
+ObjC.registerSubclass({
+    name: 'AccountActions',
+    methods: {
+        'removeAccount:': {
+            types: ['void', ['id']],
+            implementation: function(sender) {
+                var row = tableView.selectedRow;
+                if (row < 0 || row >= accountData.length) return;
+                var a = accountData[row];
+                if (a.removed) return;
+
+                // 확인 다이얼로그
+                var alert = $.NSAlert.alloc.init;
+                alert.messageText = $('계정 폐기');
+                alert.informativeText = $('\"' + a.name + '\" 계정을 폐기하시겠습니까?\n(복원 가능: accounts.json에서 removed를 false로 변경)');
+                alert.addButtonWithTitle($('폐기'));
+                alert.addButtonWithTitle($('취소'));
+                alert.alertStyle = $.NSAlertStyleWarning;
+
+                if (alert.runModal() === $.NSAlertFirstButtonReturn) {
+                    accountData[row].removed = true;
+                    writeAccounts(accountData);
+                    refreshAccountData();
+                    tableView.reloadData();
+                }
+            }
+        },
+        'restoreAccount:': {
+            types: ['void', ['id']],
+            implementation: function(sender) {
+                var row = tableView.selectedRow;
+                if (row < 0 || row >= accountData.length) return;
+                var a = accountData[row];
+                if (!a.removed) return;
+
+                accountData[row].removed = false;
+                writeAccounts(accountData);
+                refreshAccountData();
+                tableView.reloadData();
+            }
+        },
+        'refreshTable:': {
+            types: ['void', ['id']],
+            implementation: function(sender) {
+                refreshAccountData();
+                tableView.reloadData();
+            }
+        }
+    }
+});
+
+var accActions = $.AccountActions.alloc.init;
+
+var removeBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(20, 40, 100, 28));
+removeBtn.title = $('폐기');
+removeBtn.bezelStyle = $.NSBezelStyleRounded;
+removeBtn.target = accActions;
+removeBtn.action = 'removeAccount:';
+accountsView.addSubview(removeBtn);
+
+var restoreBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(130, 40, 100, 28));
+restoreBtn.title = $('복원');
+restoreBtn.bezelStyle = $.NSBezelStyleRounded;
+restoreBtn.target = accActions;
+restoreBtn.action = 'restoreAccount:';
+accountsView.addSubview(restoreBtn);
+
+var refreshBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(240, 40, 100, 28));
+refreshBtn.title = $('↻ 새로고침');
+refreshBtn.bezelStyle = $.NSBezelStyleRounded;
+refreshBtn.target = accActions;
+refreshBtn.action = 'refreshTable:';
+accountsView.addSubview(refreshBtn);
+
+// Hint
+var hintLabel = $.NSTextField.alloc.initWithFrame($.NSMakeRect(20, 10, 360, 22));
+hintLabel.stringValue = $('계정 선택 후 폐기/복원. /login은 자동 감지됩니다.');
+hintLabel.bordered = false;
+hintLabel.editable = false;
+hintLabel.drawsBackground = false;
+hintLabel.font = $.NSFont.systemFontOfSize(11);
+hintLabel.textColor = $.NSColor.secondaryLabelColor;
+accountsView.addSubview(hintLabel);
+
+// Auto-refresh table every 10s
+$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(10.0, true, function() {
+    refreshAccountData();
+    tableView.reloadData();
 });
 
 app.run;
