@@ -1,0 +1,232 @@
+// airgenome/modules/guard.hexa — CPU/RAM limit guard module
+//
+// Monitors system resource usage and enforces soft limits.
+// Prime directive compliant: observes + reports, never kills.
+//
+// Usage: ~/Dev/hexa-lang/hexa run modules/guard.hexa <command>
+// Commands: status, limits, watch, help
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION = "0.1.0"
+let STATE_FILE = "forge/guard-state.json"
+
+// Default limits (from resource_guard.rs)
+let DEFAULT_RSS_WARN_MB = 384
+let DEFAULT_RSS_CRIT_MB = 480
+let DEFAULT_RSS_HARD_MB = 512
+let DEFAULT_CPU_WARN_PCT = 80
+let DEFAULT_CPU_CRIT_PCT = 95
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYSTEM PROBES — read-only macOS resource queries
+// ═══════════════════════════════════════════════════════════════════════
+
+fn get_total_ram_mb() -> str {
+    let raw = exec("sysctl -n hw.memsize 2>/dev/null || echo 0").trim()
+    // Convert bytes to MB via shell to avoid float issues
+    let mb = exec("echo $((" + raw + " / 1048576))").trim()
+    return mb
+}
+
+fn get_used_ram_mb() -> str {
+    // vm_stat → pages → MB via shell arithmetic
+    let mb = exec("vm_stat 2>/dev/null | awk '/Pages active/{a=$3}/Pages wired/{w=$4}/compressor/{c=$5}END{gsub(/\\./,\"\",a);gsub(/\\./,\"\",w);gsub(/\\./,\"\",c);print int((a+w+c)*16384/1048576)}' || echo 0").trim()
+    return mb
+}
+
+fn get_cpu_usage_pct() -> str {
+    let raw = exec("top -l1 -n0 2>/dev/null | awk '/CPU usage/ {gsub(/%/, \"\"); printf \"%d\", $3+$5}' || echo 0").trim()
+    return raw
+}
+
+fn get_swap_used_mb() -> str {
+    let raw = exec("sysctl -n vm.swapusage 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i==\"used\") {gsub(/M/,\"\",$(i-1)); printf \"%d\", $(i-1)}}' || echo 0").trim()
+    return raw
+}
+
+fn get_memory_pressure() -> str {
+    let raw = exec("memory_pressure 2>/dev/null | tail -1 || echo 'normal'").trim()
+    if raw.contains("critical") {
+        return "critical"
+    }
+    if raw.contains("warn") {
+        return "warn"
+    }
+    return "normal"
+}
+
+fn get_claude_processes() -> str {
+    let raw = exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' 2>/dev/null || echo ''").trim()
+    return raw
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  THROTTLE LEVEL ASSESSMENT
+// ═══════════════════════════════════════════════════════════════════════
+
+fn assess_level(ram_pct_str: str, cpu_pct_str: str) -> str {
+    let ram_pct = to_int(ram_pct_str)
+    let cpu_pct = to_int(cpu_pct_str)
+    let cpu_crit = DEFAULT_CPU_CRIT_PCT
+    let cpu_warn = DEFAULT_CPU_WARN_PCT
+    if ram_pct > 90 {
+        return "critical"
+    }
+    if cpu_pct > cpu_crit {
+        return "critical"
+    }
+    if ram_pct > 75 {
+        return "warn"
+    }
+    if cpu_pct > cpu_warn {
+        return "warn"
+    }
+    return "normal"
+}
+
+fn level_icon(level: str) -> str {
+    if level == "warn" {
+        return "🟡"
+    }
+    if level == "critical" {
+        return "🔴"
+    }
+    return "🟢"
+}
+
+fn pct_bar(pct_str: str, width: int) -> str {
+    // Generate bar via shell to avoid reassignment issues
+    let bar = exec("python3 -c \"p=min(100,max(0,int('" + pct_str + "' or '0')));w=" + to_string(width) + ";f=int(p/100*w);print('▓'*f+'░'*(w-f))\" 2>/dev/null || echo '░░░░░░░░░░'").trim()
+    return bar
+}
+
+fn compute_ram_pct(used: str, total: str) -> str {
+    let pct = exec("python3 -c \"t=int('" + total + "' or '1');u=int('" + used + "' or '0');print(u*100//t if t>0 else 0)\" 2>/dev/null || echo 0").trim()
+    return pct
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn guard_status() -> str {
+    let total_ram = get_total_ram_mb()
+    let used_ram = get_used_ram_mb()
+    let cpu_pct = get_cpu_usage_pct()
+    let swap = get_swap_used_mb()
+    let ram_pct = compute_ram_pct(used_ram, total_ram)
+    let level = assess_level(ram_pct, cpu_pct)
+
+    println("  " + level_icon(level) + " system: " + level)
+    println("")
+    println("  RAM:  " + used_ram + " / " + total_ram + " MB  (" + ram_pct + "%)  " + pct_bar(ram_pct, 20))
+    println("  CPU:  " + cpu_pct + "%  " + pct_bar(cpu_pct, 20))
+    println("  Swap: " + swap + " MB")
+    println("")
+
+    // Claude processes breakdown
+    let procs = get_claude_processes()
+    if len(procs) > 0 {
+        println("  ── claude processes ──")
+        let lines = procs.split("\n")
+        let p = 0
+        while p < len(lines) {
+            let line = lines[p].trim()
+            if len(line) > 0 {
+                println("    " + line)
+            }
+            p = p + 1
+        }
+    }
+    if len(procs) == 0 {
+        println("  no claude processes running")
+    }
+
+    return "ok"
+}
+
+fn guard_limits() -> str {
+    println("  ── current limits ──")
+    println("  RAM warn:     " + to_string(DEFAULT_RSS_WARN_MB) + " MB")
+    println("  RAM critical: " + to_string(DEFAULT_RSS_CRIT_MB) + " MB")
+    println("  RAM hard:     " + to_string(DEFAULT_RSS_HARD_MB) + " MB")
+    println("  CPU warn:     " + to_string(DEFAULT_CPU_WARN_PCT) + "%")
+    println("  CPU critical: " + to_string(DEFAULT_CPU_CRIT_PCT) + "%")
+    println("")
+    println("  (prime directive: observe only, never kill)")
+    return "ok"
+}
+
+fn guard_watch() -> str {
+    println("  ── watching (5s interval, Ctrl+C to stop) ──")
+    println("")
+    let count = 0
+    while count < 999999 {
+        let total_ram = get_total_ram_mb()
+        let used_ram = get_used_ram_mb()
+        let cpu_pct = get_cpu_usage_pct()
+        let ram_pct = compute_ram_pct(used_ram, total_ram)
+        let level = assess_level(ram_pct, cpu_pct)
+        let ts = exec("date +%H:%M:%S").trim()
+        let proc_count = exec("ps aux | grep '[c]laude' | wc -l").trim()
+
+        println("  [" + ts + "] " + level_icon(level) + " RAM=" + ram_pct + "% " + pct_bar(ram_pct, 10) + "  CPU=" + cpu_pct + "% " + pct_bar(cpu_pct, 10) + "  procs=" + proc_count)
+
+        // Write state for menubar
+        let state_json = "{\"level\": \"" + level + "\", \"ram_pct\": " + ram_pct + ", \"cpu_pct\": " + cpu_pct + ", \"ts\": " + exec("date +%s").trim() + "}"
+        write_file(STATE_FILE, state_json)
+
+        exec("sleep 5")
+        count = count + 1
+    }
+    return "ok"
+}
+
+fn guard_help() -> str {
+    println("guard v" + VERSION + " — CPU/RAM limit monitor")
+    println("")
+    println("Usage: guard <command>")
+    println("")
+    println("Commands:")
+    println("  status  — show current RAM/CPU/swap + throttle level")
+    println("  limits  — show configured thresholds")
+    println("  watch   — continuous monitoring (5s interval)")
+    println("  help    — show this message")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK — args router
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness GuardRouter {
+    // self-test
+    assert DEFAULT_RSS_WARN_MB == 384
+    assert DEFAULT_RSS_CRIT_MB == 480
+    assert DEFAULT_RSS_HARD_MB == 512
+
+    let argv = args()
+    let cmd = "help"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "status" { guard_status() }
+    if cmd == "limits" { guard_limits() }
+    if cmd == "watch"  { guard_watch() }
+    if cmd == "help"   { guard_help() }
+
+    if cmd != "status" {
+        if cmd != "limits" {
+            if cmd != "watch" {
+                if cmd != "help" {
+                    println("unknown command: " + cmd)
+                    guard_help()
+                }
+            }
+        }
+    }
+}

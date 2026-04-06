@@ -237,7 +237,7 @@ fn forge_usage() -> str {
 fn scan_session_tokens(path: str) -> str {
     // Python one-liner: parse JSONL, aggregate usage fields
     // Returns: input_tokens\toutput_tokens\tcache_read\ttool_calls\tthinking_chars
-    let cmd = "python3 -c \"import sys,json;it=ot=cr=tc=th=0\nfor l in open('" + path + "'):\n d=json.loads(l)\n if d.get('type')=='assistant':\n  u=d.get('message',{}).get('usage',{})\n  if u:\n   it+=u.get('input_tokens',0);ot+=u.get('output_tokens',0);cr+=u.get('cache_read_input_tokens',0)\n  for c in d.get('message',{}).get('content',[]):\n   if isinstance(c,dict):\n    if c.get('type')=='tool_use':tc+=1\n    if c.get('type')=='thinking':th+=len(str(c.get('thinking','')))\nprint(f'{it}\t{ot}\t{cr}\t{tc}\t{th}')\" 2>/dev/null"
+    let cmd = "python3 -c \"import sys,json;it=ot=cr=tc=th=0\nfor l in open('" + path + "'):\n try:\n  d=json.loads(l)\n except:continue\n if d.get('type')=='assistant':\n  u=d.get('message',{}).get('usage',{})\n  if u:\n   it+=u.get('input_tokens',0);ot+=u.get('output_tokens',0);cr+=u.get('cache_read_input_tokens',0)\n  for c in d.get('message',{}).get('content',[]):\n   if isinstance(c,dict):\n    if c.get('type')=='tool_use':tc+=1\n    if c.get('type')=='thinking':th+=len(str(c.get('thinking','')))\nprint(f'{it}\t{ot}\t{cr}\t{tc}\t{th}')\" 2>/dev/null || echo '0\t0\t0\t0\t0'"
     let result = exec(cmd)
     return result.trim()
 }
@@ -309,7 +309,7 @@ fn forge_compress() -> str {
                     let size_str = exec("wc -c < '" + path + "' 2>/dev/null").trim()
                     let size = to_int(size_str)
                     // Extract user + assistant text only (strip tool results, thinking, base64)
-                    let extract_cmd = "python3 -c \"import sys,json;lines=[]\nfor l in open('" + path + "'):\n d=json.loads(l)\n t=d.get('type','')\n if t in('user','assistant'):\n  c=d.get('message',{}).get('content','')\n  if isinstance(c,str):lines.append(c[:500])\n  elif isinstance(c,list):\n   for b in c:\n    if isinstance(b,dict) and b.get('type')=='text':lines.append(b.get('text','')[:500])\nprint('\\n---\\n'.join(lines[:100]))\" 2>/dev/null"
+                    let extract_cmd = "python3 -c \"import sys,json;lines=[]\nfor l in open('" + path + "'):\n try:\n  d=json.loads(l)\n except:continue\n t=d.get('type','')\n if t in('user','assistant'):\n  c=d.get('message',{}).get('content','')\n  if isinstance(c,str):lines.append(c[:500])\n  elif isinstance(c,list):\n   for b in c:\n    if isinstance(b,dict) and b.get('type')=='text':lines.append(b.get('text','')[:500])\nprint('\\n---\\n'.join(lines[:100]))\" 2>/dev/null || echo ''"
                     let conversation = exec(extract_cmd).trim()
                     if len(conversation) > 0 {
                         let name_parts = path.split("/")
