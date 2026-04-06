@@ -46,8 +46,8 @@ fn pct_bar(pct_str: str, width: int) -> str {
     let bar = ""
     let i = 0
     while i < width {
-        if i < filled { bar = bar + "\u2593" }
-        if i >= filled { bar = bar + "\u2591" }
+        if i < filled { bar = bar + "▓" }
+        if i >= filled { bar = bar + "░" }
         i = i + 1
     }
     return bar
@@ -63,10 +63,10 @@ fn limit_tag(pct_str: str) -> str {
 
 fn limit_icon(pct_str: str) -> str {
     let w_int = to_int(exec("echo '" + pct_str + "' | awk '{printf \"%.0f\", $1+0}'").trim())
-    if w_int >= 100 { return "\u2717" }
-    if w_int >= 80 { return "\u26a0" }
-    if w_int >= 50 { return "\u25b3" }
-    return "\u2713"
+    if w_int >= 100 { return "✗" }
+    if w_int >= 80 { return "⚠" }
+    if w_int >= 50 { return "△" }
+    return "✓"
 }
 
 fn format_reset_time(iso_str: str) -> str {
@@ -187,10 +187,10 @@ fn bootstrap_accounts() -> str {
         return existing
     }
 
-    println("  \u2b21 \ucca8 \uc2e4\ud589: Claude \uacc4\uc815 \uc2a4\uce94 \uc911...")
+    println("  ⬡ 첨 실행: Claude 계정 스캔 중...")
     let raw = discover_accounts()
     if len(raw) == 0 {
-        println("  \u2717 ~/.claude-claude*/ \ub514\ub809\ud1a0\ub9ac \uc5c6\uc74c")
+        println("  ✗ ~/.claude-claude*/ 디렉토리 없음")
         return ""
     }
 
@@ -214,7 +214,7 @@ fn bootstrap_accounts() -> str {
     json = json + "]}"
 
     save_accounts_json(json)
-    println("  \u2b21 " + to_string(count) + "\uac1c \uacc4\uc815 \ubc1c\uacac")
+    println("  ⬡ " + to_string(count) + "개 계정 발견")
     return json
 }
 
@@ -256,7 +256,7 @@ fn pick_best_account(accounts_json: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  \uc624\uc5fc \ubc29\uc9c0 (Contamination Guard)
+//  오염 방지 (Contamination Guard)
 // ═══════════════════════════════════════════════════════════════════════
 
 fn extract_uuid(config_dir: str) -> str {
@@ -281,11 +281,11 @@ fn check_contamination(config_dir: str, original_uuid: str) -> bool {
     }
     let current_uuid = extract_uuid(config_dir)
     if current_uuid != original_uuid {
-        println("  \u26a0 \uc624\uc5fc \uac10\uc9c0! UUID \ubcc0\uacbd: " + original_uuid + " \u2192 " + current_uuid)
+        println("  ⚠ 오염 감지! UUID 변경: " + original_uuid + " → " + current_uuid)
         let json_path = config_dir + "/.claude.json"
         let backup = config_dir + "/.claude.json.bak"
         exec("cp '" + backup + "' '" + json_path + "'")
-        println("  \u2713 \ubc31\uc5c5\uc5d0\uc11c \ubcf5\uc6d0 \uc644\ub8cc")
+        println("  ✓ 백업에서 복원 완료")
         return true
     }
     return false
@@ -315,7 +315,7 @@ fn resolve_launch(account_name: str) -> str {
     let config_dir = get_config_dir_for(account_name)
 
     if len(config_dir) == 0 {
-        println("  \u2717 \uacc4\uc815 \uc5c6\uc74c: " + account_name)
+        println("  ✗ 계정 없음: " + account_name)
         return ""
     }
 
@@ -327,7 +327,7 @@ fn resolve_launch(account_name: str) -> str {
         week_pct = usage_parts[1]
     }
 
-    println("  \u2b21 " + account_name + "  session=" + session_pct + "%  week=" + week_pct + "%")
+    println("  ⬡ " + account_name + "  session=" + session_pct + "%  week=" + week_pct + "%")
     println("    " + config_dir)
 
     backup_claude_json(config_dir)
@@ -346,7 +346,7 @@ fn add_account(name: str, config_dir: str) -> void {
     let path = exec("echo " + ACCOUNTS_FILE).trim()
     let entries = list_accounts(path)
     if entries.contains(name + "|") {
-        println("  \u2b21 \uacc4\uc815 \uc774\ubbf8 \uc874\uc7ac: " + name)
+        println("  ⬡ 계정 이미 존재: " + name)
         return
     }
     let lines = entries.split("\n")
@@ -366,7 +366,7 @@ fn add_account(name: str, config_dir: str) -> void {
     json = json + "{\"name\":\"" + name + "\",\"config_dir\":\"" + config_dir + "\",\"active\":false,\"removed\":false}"
     json = json + "]}"
     write_file(path, json)
-    println("  \u2b21 \uacc4\uc815 \ucd94\uac00: " + name)
+    println("  ⬡ 계정 추가: " + name)
 }
 
 fn remove_account(name: str) -> void {
@@ -389,7 +389,7 @@ fn remove_account(name: str) -> void {
     }
     json = json + "]}"
     write_file(path, json)
-    println("  \u2b21 \uacc4\uc815 \uc81c\uac70: " + name + " (\ud3d0\uae30 \ud45c\uc2dc)")
+    println("  ⬡ 계정 제거: " + name + " (폐기 표시)")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -401,10 +401,10 @@ fn show_status() -> void {
     if len(accounts_json) == 0 { return }
 
     println("")
-    println("  \u2b21 Claude Code \uacc4\uc815 \ud604\ud669")
-    println("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
-    println("  \uc774\ub984         \uc138\uc158    \uc8fc\uac04    \uc0c1\ud0dc")
-    println("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+    println("  ⬡ Claude Code 계정 현황")
+    println("  ─────────────────────────────────────────")
+    println("  이름         세션    주간    상태")
+    println("  ─────────────────────────────────────────")
 
     let active = get_active_account()
     let path = exec("echo " + ACCOUNTS_FILE).trim()
@@ -418,7 +418,7 @@ fn show_status() -> void {
             let name = parts[0]
             let removed = parts[2]
             if removed == "true" {
-                println("  " + name + "       -       -       [\ud3d0\uae30\ub428]")
+                println("  " + name + "       -       -       [폐기됨]")
             }
             if removed != "true" {
                 let usage = get_account_usage(name)
@@ -428,22 +428,22 @@ fn show_status() -> void {
                 if len(u_parts) > 1 { week = u_parts[1] }
 
                 let status = ""
-                if name == active { status = "\u25cf ACTIVE" }
+                if name == active { status = "● ACTIVE" }
                 let w_check = exec("echo '" + week + "' | awk '{if($1+0>=100)print \"exhausted\";else if($1+0>=80)print \"warn\";else print \"ok\"}'").trim()
-                if w_check == "exhausted" { status = status + " \u2717 EXHAUSTED" }
-                if w_check == "warn" { status = status + " \u26a0" }
+                if w_check == "exhausted" { status = status + " ✗ EXHAUSTED" }
+                if w_check == "warn" { status = status + " ⚠" }
 
                 println("  " + name + "    " + session + "%    " + week + "%    " + status)
             }
         }
         i = i + 1
     }
-    println("  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500")
+    println("  ─────────────────────────────────────────")
     println("")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  cl u — \uc0c1\uc138 \uc0ac\uc6a9\ub7c9 \ub300\uc2dc\ubcf4\ub4dc
+//  cl u — 상세 사용량 대시보드
 // ═══════════════════════════════════════════════════════════════════════
 
 fn show_usage_dashboard() -> void {
@@ -462,11 +462,11 @@ fn show_usage_dashboard() -> void {
     let active = get_active_account()
 
     println("")
-    println("  \u2b22 Claude Code Usage Dashboard          (cached " + age_str + ")")
+    println("  ⬢ Claude Code Usage Dashboard          (cached " + age_str + ")")
     println("")
-    println("  \u250c\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u252c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510")
-    println("  \u2502  #  \u2502  Account    \u2502 Session \u2502                \u2502  Reset \u2502  Week   \u2502                \u2502  Reset \u2502  Limit   \u2502")
-    println("  \u251c\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524")
+    println("  ┌─────┬─────────────┬─────────┬────────────────┬────────┬─────────┬────────────────┬────────┬──────────┐")
+    println("  │  #  │  Account    │ Session │                │  Reset │  Week   │                │  Reset │  Limit   │")
+    println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
 
     let path = exec("echo " + ACCOUNTS_FILE).trim()
     let entries = list_accounts(path)
@@ -481,7 +481,7 @@ fn show_usage_dashboard() -> void {
             let idx = pad_left(to_string(i + 1), 2)
 
             if removed == "true" {
-                println("  \u2502 " + idx + "  \u2502 " + pad_right(name, 10) + "  \u2502     -   \u2502 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 \u2502      - \u2502     -   \u2502 \u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 \u2502      - \u2502 \u2717 \ud3d0\uae30\ub428  \u2502")
+                println("  │ " + idx + "  │ " + pad_right(name, 10) + "  │     -   │ ░░░░░░░░░░░░░░ │      - │     -   │ ░░░░░░░░░░░░░░ │      - │ ✗ 폐기됨  │")
             }
             if removed != "true" {
                 let u = get_full_usage(name)
@@ -500,7 +500,7 @@ fn show_usage_dashboard() -> void {
                 let w_time = pad_left(format_reset_time(w_reset), 6)
 
                 let icon = " "
-                if name == active { icon = "\u2605" }
+                if name == active { icon = "★" }
 
                 if s_pct == "None" { s_pct = "-" }
                 if s_pct == "null" { s_pct = "-" }
@@ -515,16 +515,16 @@ fn show_usage_dashboard() -> void {
 
                 let lim = limit_icon(w_pct) + " " + pad_right(limit_tag(w_pct), 8)
 
-                println("  \u2502 " + idx + icon + " \u2502 " + pad_right(name, 10) + "  \u2502  " + s_val + "  \u2502 " + s_bar + " \u2502 " + s_time + " \u2502  " + w_val + "  \u2502 " + w_bar + " \u2502 " + w_time + " \u2502 " + lim + "\u2502")
+                println("  │ " + idx + icon + " │ " + pad_right(name, 10) + "  │  " + s_val + "  │ " + s_bar + " │ " + s_time + " │  " + w_val + "  │ " + w_bar + " │ " + w_time + " │ " + lim + "│")
             }
 
             if i < len(lines) - 1 {
-                println("  \u251c\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u253c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2524")
+                println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
             }
         }
         i = i + 1
     }
-    println("  \u2514\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518")
+    println("  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┴──────────┘")
     println("")
 }
 
@@ -533,19 +533,19 @@ fn show_usage_dashboard() -> void {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn print_help() -> void {
-    println("cl v" + VERSION + " \u2014 Claude Code multi-account launcher (airgenome)")
+    println("cl v" + VERSION + " — Claude Code multi-account launcher (airgenome)")
     println("")
     println("Commands:")
-    println("  cl              \u2192 \ucd5c\uc801 \uacc4\uc815\uc73c\ub85c claude \uc2e4\ud589")
-    println("  cl status       \u2192 \uacc4\uc815 \ud604\ud669 (\uac04\ub2e8)")
-    println("  cl u            \u2192 \uc0ac\uc6a9\ub7c9 \ub300\uc2dc\ubcf4\ub4dc (\uc138\uc158/\uc8fc\uac04 limit + \ub9ac\uc14b \uc2dc\uac04)")
-    println("  cl pick <name>  \u2192 \uc9c0\uc815 \uacc4\uc815\uc73c\ub85c \uc2e4\ud589")
-    println("  cl add <name> <dir> \u2192 \uacc4\uc815 \ucd94\uac00")
-    println("  cl remove <name>    \u2192 \uacc4\uc815 \ud3d0\uae30")
-    println("  cl help         \u2192 \ub3c4\uc6c0\ub9d0")
+    println("  cl              → 최적 계정으로 claude 실행")
+    println("  cl status       → 계정 현황 (간단)")
+    println("  cl u            → 사용량 대시보드 (세션/주간 limit + 리셋 시간)")
+    println("  cl pick <name>  → 지정 계정으로 실행")
+    println("  cl add <name> <dir> → 계정 추가")
+    println("  cl remove <name>    → 계정 폐기")
+    println("  cl help         → 도움말")
     println("")
-    println("Rate limit \uc2dc \uc790\ub3d9 \uc804\ud658. \uc624\uc5fc \ubc29\uc9c0 \ub0b4\uc7a5.")
-    println("\ud3d0\uae30: \uc774 \ud30c\uc77c \uc0ad\uc81c + ~/.zshrc\uc5d0\uc11c cl \uc81c\uac70")
+    println("Rate limit 시 자동 전환. 오염 방지 내장.")
+    println("폐기: 이 파일 삭제 + ~/.zshrc에서 cl 제거")
 }
 
 fn main() {
@@ -565,7 +565,7 @@ fn main() {
                 resolve_launch(bp[0])
             }
             if bp[0] == "none" {
-                println("  \u2717 \uc0ac\uc6a9 \uac00\ub2a5\ud55c \uacc4\uc815 \uc5c6\uc74c")
+                println("  ✗ 사용 가능한 계정 없음")
                 show_status()
             }
         }
