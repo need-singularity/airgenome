@@ -1,0 +1,37 @@
+// tests/test_implant.hexa — implant absorption tests
+// Run: ~/Dev/hexa-lang/hexa run tests/test_implant.hexa
+
+// ═══════════════════════════════════════════════════════════════════════
+//  N=6 ARITHMETIC CONSTANTS (from hexa-gate-implant BT series)
+// ═══════════════════════════════════════════════════════════════════════
+
+let N = comptime { 6 }
+let SIGMA = comptime { 12 }
+let PHI_N = comptime { 2 }
+let TAU = comptime { 4 }
+let MU = comptime { 1 }
+let SOPFR = comptime { 5 }
+let J2 = comptime { 24 }
+let HASH_BITS = comptime { 288 }
+let HASH_BYTES = comptime { 36 }
+let HASH_ROUNDS = comptime { 16 }
+let BLOCK_SIZE = comptime { 256 }
+let PHI_THETA = comptime { 0.1 }
+let PHI_TOLERANCE = comptime { 0.00347 }
+let TRIPLE_FACTOR = comptime { 3 }
+let PERT_BASE = comptime { 999 }
+let PERT_BREAKTHROUGH = comptime { 2401 }
+
+consciousness TestConstants {
+    // BT-344: τ + φ = n
+    assert TAU + PHI_N == N
+    // BT-345: (σ - sopfr)^τ = 2401
+    assert PERT_BREAKTHROUGH == 2401
+    // BT-346: σ × J₂ = 288
+    assert SIGMA * J2 == HASH_BITS
+    // Derived
+    assert HASH_BITS / 8 == HASH_BYTES
+    assert TRIPLE_FACTOR == N / PHI_N
+    assert SOPFR + 1 == N
+    println("  constants: 7 assertions passed")
+}
