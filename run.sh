@@ -120,12 +120,11 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
         if($i=="cpu_ceil")printf "CPU_CEIL=%d\n",$(i+1)
         if($i=="ram_ceil")printf "RAM_CEIL=%d\n",$(i+1)
         if($i=="swap_ceil")printf "SWAP_CEIL=%d\n",$(i+1)
-        if($i=="guard"&&$(i+1)~/true/)printf "GUARD_ON=1\n"
-        if($i=="guard"&&$(i+1)~/false/)printf "GUARD_ON=0\n"
         if($i=="bridge_max")printf "BRIDGE_MAX=%d\n",$(i+1)
       }}' "$CONFIG" 2>/dev/null)"
     fi
-    : "${CPU_CEIL:=90}" "${RAM_CEIL:=80}" "${SWAP_CEIL:=50}" "${GUARD_ON:=0}" "${BRIDGE_MAX:=4}"
+    : "${CPU_CEIL:=90}" "${RAM_CEIL:=80}" "${SWAP_CEIL:=50}" "${BRIDGE_MAX:=4}"
+    GUARD_ON=1  # 무조건 자동 사용
 
     # ── BRIDGE LIMITER ───────────────────────────────────────
     if [ "$GUARD_ON" = "1" ] && [ "${BRIDGE_MAX:-0}" -gt 0 ]; then
@@ -137,91 +136,74 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
           kill "$BPID" 2>/dev/null || true
         done
       fi
-      # RAM critical (< 512MB free): reduce bridges to 1
-      if [ "$FREE_MB" -lt 512 ] && [ "$BRIDGE_COUNT" -gt 1 ]; then
-        echo "$BRIDGE_PIDS" | head -$((BRIDGE_COUNT - 1)) | while read BPID; do
-          kill "$BPID" 2>/dev/null || true
-        done
-      fi
     fi
 
-    # ── LEVEL ASSESSMENT (multi-signal) ──────────────────────
+    # ══════════════════════════════════════════════════════════
+    #  SINGULARITY GUARD — 죽지않는 선만 방어, 나머지는 자유
+    #
+    #  철학: ceiling은 "목표"가 아니라 "경고선"
+    #        실제 개입은 시스템이 진짜 죽을 때만
+    #
+    #  4단계:
+    #    ok       — 전부 자유, throttle 해제
+    #    warn     — 표시만, 개입 없음
+    #    danger   — purge만 (프로세스 안 건드림)
+    #    critical — 생존 모드 (purge + bridge 축소 + taskpolicy)
+    # ══════════════════════════════════════════════════════════
     LEVEL="ok"
     THROTTLED="false"
-    CPU_OVER=0; RAM_OVER=0; SWAP_OVER=0; RAM_CRIT=0
-    [ "$CPU"  -gt "$CPU_CEIL"  ] 2>/dev/null && CPU_OVER=1
-    [ "$RAM"  -gt "$RAM_CEIL"  ] 2>/dev/null && RAM_OVER=1
-    [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null && SWAP_OVER=1
-    [ "$FREE_MB" -lt 256 ] 2>/dev/null && RAM_CRIT=1
 
-    # Emergency: RAM < 256MB free → immediate action regardless of ceiling
-    if [ "$RAM_CRIT" = "1" ]; then
+    # 실제 위험 신호 (하드웨어 한계 기반, ceiling 무관)
+    SWAP_THRASH=0  # swap > 10GB → disk I/O death spiral
+    [ "$SWAP_MB" -gt 10240 ] 2>/dev/null && SWAP_THRASH=1
+    LOAD_SATURATED=0  # load > NCPU × 5 → 완전 포화
+    [ "$LOAD" -gt $((NCPU * 5)) ] 2>/dev/null && LOAD_SATURATED=1
+
+    # ── CRITICAL: 시스템 생존 위협 ──
+    if [ "$FREE_MB" -lt 200 ] 2>/dev/null || [ "$SWAP_THRASH" = "1" ]; then
       LEVEL="critical"
       THROTTLED="true"
       if [ "$GUARD_ON" = "1" ]; then
+        # 1) purge — 비파괴 캐시 해제
         purge 2>/dev/null || true
-        # background QoS on top 5 RAM consumers (non-system)
+        # 2) bridge 전부 정리 (가장 큰 메모리 절약)
+        if [ -n "$BRIDGE_PIDS" ] && [ "$BRIDGE_COUNT" -gt 0 ]; then
+          echo "$BRIDGE_PIDS" | while read BPID; do
+            kill "$BPID" 2>/dev/null || true
+          done
+        fi
+        # 3) top 5 RAM consumer에 background QoS (시스템 프로세스 제외)
         ps -eo pid=,rss=,comm= | sort -rnk2 | head -5 | while read TPID TRSS TNAME; do
           [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
-          case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow) continue ;; esac
+          case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac
           taskpolicy -b -p "$TPID" 2>/dev/null || true
           echo "$TPID" >> "$THROTTLE_FILE"
         done
       fi
 
-    elif [ "$CPU_OVER" = "1" ] || [ "$RAM_OVER" = "1" ] || [ "$SWAP_OVER" = "1" ]; then
+    # ── DANGER: ceiling 초과, 아직 살 수 있음 ──
+    elif [ "$FREE_MB" -lt 512 ] 2>/dev/null || [ "$LOAD_SATURATED" = "1" ]; then
       LEVEL="danger"
       THROTTLED="true"
       if [ "$GUARD_ON" = "1" ]; then
-        # CPU enforcement: taskpolicy -b on top consumers
-        if [ "$CPU_OVER" = "1" ]; then
-          ps -Ao pid=,%cpu=,comm= | sort -rnk2 | head -8 | while read TPID TCPU TNAME; do
-            [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
-            TCPU_INT=${TCPU%.*}
-            [ "${TCPU_INT:-0}" -lt 15 ] 2>/dev/null && continue
-            case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac
-            taskpolicy -b -p "$TPID" 2>/dev/null || true
-            echo "$TPID" >> "$THROTTLE_FILE"
+        # purge만 — 프로세스에 taskpolicy 안 건드림
+        purge 2>/dev/null || true
+        # bridge만 1개로 축소 (bridge가 있을 때만)
+        if [ -n "$BRIDGE_PIDS" ] && [ "$BRIDGE_COUNT" -gt 1 ]; then
+          echo "$BRIDGE_PIDS" | head -$((BRIDGE_COUNT - 1)) | while read BPID; do
+            kill "$BPID" 2>/dev/null || true
           done
-
-          # Duty-cycle if >30% over ceiling
-          OVERSHOOT=$((CPU - CPU_CEIL))
-          if [ "$OVERSHOOT" -gt $((CPU_CEIL * 30 / 100)) ]; then
-            TOP_PID=$(ps -Ao pid=,%cpu= -r | head -1 | awk '{print $1}')
-            TOP_NAME=$(ps -p "$TOP_PID" -o comm= 2>/dev/null || echo "")
-            case "$TOP_NAME" in kernel_task|WindowServer|launchd|loginwindow) ;; *)
-              if [ "${TOP_PID:-0}" -gt 200 ] 2>/dev/null; then
-                kill -STOP "$TOP_PID" 2>/dev/null || true
-                PAUSE_MS=$((OVERSHOOT * 10))
-                [ "$PAUSE_MS" -gt 1000 ] && PAUSE_MS=1000
-                [ "$PAUSE_MS" -lt 300 ] && PAUSE_MS=300
-                perl -e "select(undef,undef,undef,$PAUSE_MS/1000)" 2>/dev/null || sleep 1
-                kill -CONT "$TOP_PID" 2>/dev/null || true
-              fi
-            ;; esac
-          fi
-        fi
-
-        # RAM enforcement: purge
-        if [ "$RAM_OVER" = "1" ]; then
-          purge 2>/dev/null || true
         fi
       fi
 
-    elif [ "$CPU" -gt $((CPU_CEIL * 90 / 100)) ] 2>/dev/null || [ "$LOAD" -gt $((NCPU * 3)) ] 2>/dev/null; then
+    # ── WARN: ceiling 근처, 표시만 ──
+    elif [ "$RAM" -gt "$RAM_CEIL" ] 2>/dev/null || [ "$CPU" -gt "$CPU_CEIL" ] 2>/dev/null || [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null; then
       LEVEL="warn"
-      # Warn: bridge에만 경량 taskpolicy (user 앱은 안 건드림)
-      if [ "$GUARD_ON" = "1" ]; then
-        ps -eo pid=,%cpu=,comm= | grep 'hexa' | sort -rnk2 | head -3 | while read TPID TCPU TNAME; do
-          TCPU_INT=${TCPU%.*}
-          [ "${TCPU_INT:-0}" -lt 20 ] 2>/dev/null && continue
-          taskpolicy -b -p "$TPID" 2>/dev/null || true
-          echo "$TPID" >> "$THROTTLE_FILE"
-        done
-      fi
+      # 표시만, 개입 없음 — 시스템이 알아서 관리
 
+    # ── OK: 전부 자유 ──
     else
-      # OK — restore all throttled processes
+      # throttle 걸려있던 프로세스 복구
       if [ -f "$THROTTLE_FILE" ]; then
         sort -u "$THROTTLE_FILE" | while read RPID; do
           taskpolicy -d default -p "$RPID" 2>/dev/null || true
@@ -230,13 +212,12 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
       fi
     fi
 
-    # Track level transitions for smarter decisions
     PREV_LEVEL="$LEVEL"
 
     cat > "$STATE" <<EOF
 {"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL}
 EOF
-    sleep 3
+    sleep 5
   done
 ) &
 SAMPLER_PID=$!
