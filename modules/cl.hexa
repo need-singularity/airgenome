@@ -115,25 +115,9 @@ fn get_account_usage(name: str) -> str {
 
 fn pick_best_account(accounts_json: str) -> str {
     // Returns best account name (lowest week usage, not exhausted, not removed)
-    let result = exec("/opt/homebrew/bin/python3.12 -c \"" +
-        "import json\n" +
-        "accounts=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'))['accounts']\n" +
-        "cache_path='" + exec("echo " + USAGE_CACHE).trim() + "'\n" +
-        "try: usage=json.load(open(cache_path))\n" +
-        "except: usage={}\n" +
-        "best=None; best_week=999\n" +
-        "for a in accounts:\n" +
-        "  if a.get('removed'): continue\n" +
-        "  n=a['name']\n" +
-        "  u=usage.get(n,{})\n" +
-        "  w=u.get('week_all_pct',999)\n" +
-        "  try: w=float(w)\n" +
-        "  except: w=999\n" +
-        "  if w>=100: continue\n" +
-        "  if w<best_week: best=n; best_week=w\n" +
-        "if best: print(f'{best}|{best_week}')\n" +
-        "else: print('none|0')\n" +
-        "\" 2>/dev/null").trim()
+    let accts_path = exec("echo " + ACCOUNTS_FILE).trim()
+    let cache_path = exec("echo " + USAGE_CACHE).trim()
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"import json;accounts=json.load(open('" + accts_path + "'))['accounts'];cache_path='" + cache_path + "'\ntry: usage=json.load(open(cache_path))\nexcept: usage={}\nbest=None; best_week=999\nfor a in accounts:\n  if a.get('removed'): continue\n  n=a['name'];u=usage.get(n,{});w=u.get('week_all_pct',999)\n  try: w=float(w)\n  except: w=999\n  if w>=100: continue\n  if w<best_week: best=n; best_week=w\nif best: print(f'{best}|{best_week}')\nelse: print('none|0')\" 2>/dev/null").trim()
     return result
 }
 
@@ -255,28 +239,13 @@ fn launch_claude(account_name: str) -> int {
 
 fn add_account(name: str, config_dir: str) -> void {
     let path = exec("echo " + ACCOUNTS_FILE).trim()
-    exec("/opt/homebrew/bin/python3.12 -c \"" +
-        "import json\n" +
-        "d=json.load(open('" + path + "'))\n" +
-        "names=[a['name'] for a in d['accounts']]\n" +
-        "if '" + name + "' not in names:\n" +
-        "  d['accounts'].append({'name':'" + name + "','config_dir':'" + config_dir + "','active':False,'removed':False})\n" +
-        "  json.dump(d,open('" + path + "','w'),indent=2)\n" +
-        "  print('added')\n" +
-        "else: print('exists')\n" +
-        "\"")
+    exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + path + "'));names=[a['name'] for a in d['accounts']]\nif '" + name + "' not in names:\n  d['accounts'].append({'name':'" + name + "','config_dir':'" + config_dir + "','active':False,'removed':False});json.dump(d,open('" + path + "','w'),indent=2);print('added')\nelse: print('exists')\"")
     println("  ⬡ 계정 추가: " + name)
 }
 
 fn remove_account(name: str) -> void {
     let path = exec("echo " + ACCOUNTS_FILE).trim()
-    exec("/opt/homebrew/bin/python3.12 -c \"" +
-        "import json\n" +
-        "d=json.load(open('" + path + "'))\n" +
-        "for a in d['accounts']:\n" +
-        "  if a['name']=='" + name + "': a['removed']=True\n" +
-        "json.dump(d,open('" + path + "','w'),indent=2)\n" +
-        "\"")
+    exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + path + "'))\nfor a in d['accounts']:\n  if a['name']=='" + name + "': a['removed']=True\njson.dump(d,open('" + path + "','w'),indent=2)\"")
     println("  ⬡ 계정 제거: " + name + " (폐기 표시)")
 }
 
