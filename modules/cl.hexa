@@ -16,7 +16,7 @@
 let VERSION = "0.1.0"
 let ACCOUNTS_FILE = "~/.airgenome/accounts.json"
 let STATE_FILE = "~/.airgenome/cl-state.json"
-let USAGE_CACHE = "~/.ccmon-usage-cache.json"
+let USAGE_CACHE = "~/.airgenome/usage-cache.json"
 
 // Rate limit detection patterns
 let RATE_PATTERNS = ["rate limit", "limit reached", "usage cap", "rate_limit_error", "Too many requests", "overloaded_error"]
@@ -300,6 +300,8 @@ fn main() {
     }
 
     if cmd == "" {
+        // Usage 캐시 자동 갱신 (5분 이상 경과 시)
+        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null")
         // Default: auto-pick best → launch
         let accounts = bootstrap_accounts()
         if len(accounts) > 0 {
@@ -314,7 +316,10 @@ fn main() {
             }
         }
     }
-    if cmd == "status" { show_status() }
+    if cmd == "status" {
+        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null")
+        show_status()
+    }
     if cmd == "pick" {
         if len(argv) > 4 {
             resolve_launch(argv[4])
