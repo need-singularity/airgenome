@@ -99,18 +99,28 @@ SJSON
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
 
-    CPU_CEIL=$(python3 -c "import json;print(json.load(open('$CONFIG'))['cpu_ceil'])" 2>/dev/null || echo 90)
-    RAM_CEIL=$(python3 -c "import json;print(json.load(open('$CONFIG'))['ram_ceil'])" 2>/dev/null || echo 80)
-    SWAP_CEIL=$(python3 -c "import json;print(json.load(open('$CONFIG'))['swap_ceil'])" 2>/dev/null || echo 50)
+    eval "$(python3 -c "
+import json
+try:
+    c=json.load(open('$CONFIG'))
+    print(f\"CPU_CEIL={c.get('cpu_ceil',90)}\")
+    print(f\"RAM_CEIL={c.get('ram_ceil',80)}\")
+    print(f\"SWAP_CEIL={c.get('swap_ceil',50)}\")
+    print(f\"GUARD_ON={'1' if c.get('guard',False) else '0'}\")
+except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0')
+" 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; }
 
     LEVEL="ok"
     THROTTLED="false"
     if [ "$CPU" -gt "$CPU_CEIL" ] 2>/dev/null || [ "$RAM" -gt "$RAM_CEIL" ] 2>/dev/null || [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null; then
       LEVEL="danger"
       THROTTLED="true"
-      ps -Ao pid,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read PID; do
-        renice 15 -p "$PID" 2>/dev/null || true
-      done
+      # renice only if guard module is ON
+      if [ "$GUARD_ON" = "1" ]; then
+        ps -Ao pid,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read PID; do
+          renice 15 -p "$PID" 2>/dev/null || true
+        done
+      fi
     elif [ "$CPU" -gt $((CPU_CEIL * 80 / 100)) ] 2>/dev/null; then
       LEVEL="warn"
     fi
