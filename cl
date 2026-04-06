@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/zsh -l
 ORIG_DIR="$(pwd)"
 cd ~/Dev/airgenome
 OUTPUT=$(~/Dev/hexa-lang/hexa run modules/cl.hexa "$@" 2>&1)
@@ -10,4 +10,9 @@ echo "$OUTPUT" | grep -v '^LAUNCH:'
 if [ -n "$LAUNCH_DIR" ]; then
     export CLAUDE_CONFIG_DIR="$LAUNCH_DIR"
     exec claude
+else
+    echo ""
+    echo "[cl] claude 실행 실패 — LAUNCH 마커 없음"
+    echo "[cl] 아무 키나 누르면 종료..."
+    read -r _
 fi
