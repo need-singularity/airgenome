@@ -9,13 +9,12 @@ var configPath = args.count > 4 ? args.objectAtIndex(4).js : '/tmp/airgenome-con
 var app = $.NSApplication.sharedApplication;
 app.setActivationPolicy($.NSApplicationActivationPolicyRegular);
 
-// read current config
 function readConfig() {
     try {
         var str = $.NSString.stringWithContentsOfFileEncodingError($(configPath), $.NSUTF8StringEncoding, null);
-        if (str.isNil()) return {cpu_ceil: 90, ram_ceil: 80, swap_ceil: 50};
+        if (str.isNil()) return {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30};
         return JSON.parse(str.js);
-    } catch(e) { return {cpu_ceil: 90, ram_ceil: 80, swap_ceil: 50}; }
+    } catch(e) { return {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30}; }
 }
 
 function writeConfig(c, r, s) {
@@ -25,9 +24,8 @@ function writeConfig(c, r, s) {
 
 var cfg = readConfig();
 
-// window
 var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(0, 0, 340, 280),
+    $.NSMakeRect(0, 0, 340, 370),
     $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
     $.NSBackingStoreBuffered, false
 );
@@ -51,27 +49,59 @@ function makeRow(y, name, min, max, val) {
     sl.maxValue = max;
     sl.doubleValue = val;
     sl.continuous = true;
+    sl.numberOfTickMarks = Math.floor((max - min) / 5) + 1;
+    sl.allowsTickMarkValuesOnly = true;
     cv.addSubview(sl);
 
     return {label: lbl, slider: sl, name: name};
 }
 
-var cpuRow  = makeRow(190, 'CPU Ceiling',  10, 100, cfg.cpu_ceil);
-var ramRow  = makeRow(120, 'RAM Ceiling',  10, 100, cfg.ram_ceil);
-var swapRow = makeRow(50,  'Swap Ceiling',  0, 100, cfg.swap_ceil);
+// --- All (master) slider at top ---
+var sep1 = $.NSBox.alloc.initWithFrame($.NSMakeRect(20, 268, 300, 1));
+sep1.boxType = $.NSBoxSeparator;
+cv.addSubview(sep1);
+
+var allAvg = Math.round((cfg.cpu_ceil + cfg.ram_ceil + cfg.swap_ceil) / 3);
+var allRow = makeRow(280, 'All', 0, 100, allAvg);
+allRow.label.font = $.NSFont.boldSystemFontOfSize(14);
+
+// --- Individual sliders ---
+var cpuRow  = makeRow(200, 'CPU Ceiling',  10, 100, cfg.cpu_ceil);
+var ramRow  = makeRow(130, 'RAM Ceiling',  10, 100, cfg.ram_ceil);
+var swapRow = makeRow(60,  'Swap Ceiling',  0, 100, cfg.swap_ceil);
 
 win.makeKeyAndOrderFront(null);
 app.activateIgnoringOtherApps(true);
 
-// poll sliders and save
-$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.5, true, function() {
-    var cc = Math.round(cpuRow.slider.doubleValue);
-    var rc = Math.round(ramRow.slider.doubleValue);
-    var sc = Math.round(swapRow.slider.doubleValue);
+var lastAllVal = allAvg;
 
-    cpuRow.label.stringValue  = $(cpuRow.name + ': ' + cc + '%');
-    ramRow.label.stringValue  = $(ramRow.name + ': ' + rc + '%');
-    swapRow.label.stringValue = $(swapRow.name + ': ' + sc + '%');
+$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
+    function snap5(v) { return Math.round(v / 5) * 5; }
+    var av = snap5(allRow.slider.doubleValue);
+    var cc = snap5(cpuRow.slider.doubleValue);
+    var rc = snap5(ramRow.slider.doubleValue);
+    var sc = snap5(swapRow.slider.doubleValue);
+
+    // If All slider moved, sync all three
+    if (av !== lastAllVal) {
+        cc = av;
+        rc = av;
+        sc = Math.max(0, av);
+        cpuRow.slider.doubleValue = cc;
+        ramRow.slider.doubleValue = rc;
+        swapRow.slider.doubleValue = sc;
+        lastAllVal = av;
+    } else {
+        // individual moved — update All to average
+        var newAvg = Math.round((cc + rc + sc) / 3);
+        allRow.slider.doubleValue = newAvg;
+        lastAllVal = newAvg;
+    }
+
+    allRow.label.stringValue   = $('All: ' + av + '%');
+    cpuRow.label.stringValue   = $(cpuRow.name + ': ' + cc + '%');
+    ramRow.label.stringValue   = $(ramRow.name + ': ' + rc + '%');
+    swapRow.label.stringValue  = $(swapRow.name + ': ' + sc + '%');
 
     writeConfig(cc, rc, sc);
 });

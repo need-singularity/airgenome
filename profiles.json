@@ -1,0 +1,81 @@
+{
+  "profiles": {
+    "air-m3-24": {
+      "match": {"chip": "M3", "ram_gb": 24, "fan": false},
+      "cpu_ceil": 75,
+      "ram_ceil": 70,
+      "swap_ceil": 30,
+      "note": "MacBook Air M3 24GB — fanless, SSD swap 주의"
+    },
+    "air-m3-16": {
+      "match": {"chip": "M3", "ram_gb": 16, "fan": false},
+      "cpu_ceil": 70,
+      "ram_ceil": 65,
+      "swap_ceil": 25,
+      "note": "MacBook Air M3 16GB — RAM 부족 주의"
+    },
+    "air-m3-8": {
+      "match": {"chip": "M3", "ram_gb": 8, "fan": false},
+      "cpu_ceil": 65,
+      "ram_ceil": 60,
+      "swap_ceil": 20,
+      "note": "MacBook Air M3 8GB — 최소 사양, 보수적 운영"
+    },
+    "air-m2-24": {
+      "match": {"chip": "M2", "ram_gb": 24, "fan": false},
+      "cpu_ceil": 70,
+      "ram_ceil": 70,
+      "swap_ceil": 30,
+      "note": "MacBook Air M2 24GB — fanless"
+    },
+    "air-m2-16": {
+      "match": {"chip": "M2", "ram_gb": 16, "fan": false},
+      "cpu_ceil": 65,
+      "ram_ceil": 65,
+      "swap_ceil": 25,
+      "note": "MacBook Air M2 16GB"
+    },
+    "air-m2-8": {
+      "match": {"chip": "M2", "ram_gb": 8, "fan": false},
+      "cpu_ceil": 60,
+      "ram_ceil": 55,
+      "swap_ceil": 20,
+      "note": "MacBook Air M2 8GB — 최소 사양"
+    },
+    "pro-m3-36": {
+      "match": {"chip": "M3", "ram_gb": 36, "fan": true},
+      "cpu_ceil": 85,
+      "ram_ceil": 80,
+      "swap_ceil": 35,
+      "note": "MacBook Pro M3 36GB — 팬 있음, 여유"
+    },
+    "pro-m3-18": {
+      "match": {"chip": "M3", "ram_gb": 18, "fan": true},
+      "cpu_ceil": 80,
+      "ram_ceil": 75,
+      "swap_ceil": 30,
+      "note": "MacBook Pro M3 18GB"
+    },
+    "pro-m4-24": {
+      "match": {"chip": "M4", "ram_gb": 24, "fan": true},
+      "cpu_ceil": 85,
+      "ram_ceil": 80,
+      "swap_ceil": 35,
+      "note": "MacBook Pro M4 24GB — 최신, 효율적"
+    },
+    "pro-m4-48": {
+      "match": {"chip": "M4", "ram_gb": 48, "fan": true},
+      "cpu_ceil": 90,
+      "ram_ceil": 85,
+      "swap_ceil": 40,
+      "note": "MacBook Pro M4 Max 48GB — 넉넉"
+    },
+    "default": {
+      "match": {},
+      "cpu_ceil": 75,
+      "ram_ceil": 70,
+      "swap_ceil": 30,
+      "note": "기본값 — 안전 우선"
+    }
+  }
+}

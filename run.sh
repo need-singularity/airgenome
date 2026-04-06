@@ -36,16 +36,57 @@ pkill -f 'osascript.*airgenome-menubar' 2>/dev/null || true
 
 # 3. System info
 TOTAL_RAM_MB=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}')
+TOTAL_RAM_GB=$((TOTAL_RAM_MB / 1024))
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || echo 8)
+CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -oE 'M[0-9]+' | head -1)
+MODEL_NAME=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Model Name" | awk -F: '{print $2}' | xargs)
+HAS_FAN="false"
+echo "$MODEL_NAME" | grep -qi "Pro" && HAS_FAN="true"
 
-# 4. Default config (all in %)
-[ ! -f "$CONFIG" ] && cat > "$CONFIG" <<CJSON
-{"cpu_ceil": 90, "ram_ceil": 80, "swap_ceil": 50}
+# 4. Auto-detect profile → default config
+if [ ! -f "$CONFIG" ]; then
+  PROFILE_JSON="$DIR/profiles.json"
+  if [ -f "$PROFILE_JSON" ]; then
+    eval "$(python3 << PYEOF
+import json
+with open('$PROFILE_JSON') as f: data=json.load(f)
+chip='$CHIP'
+ram=$TOTAL_RAM_GB
+fan=$( [ "$HAS_FAN" = "true" ] && echo "True" || echo "False" )
+best=data['profiles']['default']
+for k,v in data['profiles'].items():
+    if k=='default': continue
+    m=v.get('match',{})
+    mc=m.get('chip','')
+    mr=m.get('ram_gb',0)
+    mf=m.get('fan',None)
+    if mc and mc in chip and mr==ram and (mf is None or mf==fan):
+        best=v
+        break
+print(f"CPU_C={best['cpu_ceil']}")
+print(f"RAM_C={best['ram_ceil']}")
+print(f"SWAP_C={best['swap_ceil']}")
+print(f"PROFILE_NOTE='{best['note']}'")
+PYEOF
+)" || { CPU_C=75; RAM_C=70; SWAP_C=30; PROFILE_NOTE="default"; }
+  else
+    CPU_C=75; RAM_C=70; SWAP_C=30; PROFILE_NOTE="default"
+  fi
+  echo "⬡ profile: $CHIP ${TOTAL_RAM_GB}GB → CPU ${CPU_C}% RAM ${RAM_C}% Swap ${SWAP_C}%"
+  echo "  $PROFILE_NOTE"
+  cat > "$CONFIG" <<CJSON
+{"cpu_ceil": $CPU_C, "ram_ceil": $RAM_C, "swap_ceil": $SWAP_C}
 CJSON
+fi
+
+# read back config for initial state
+CPU_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['cpu_ceil'])" 2>/dev/null || echo 75)
+RAM_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['ram_ceil'])" 2>/dev/null || echo 70)
+SWAP_C=$(python3 -c "import json;print(json.load(open('$CONFIG'))['swap_ceil'])" 2>/dev/null || echo 30)
 
 # 5. Write initial state
-cat > "$STATE" <<'SJSON'
-{"active":true,"cpu":0,"ram":0,"swap":0,"level":"ok","throttled":false,"cpu_ceil":90,"ram_ceil":80,"swap_ceil":50}
+cat > "$STATE" <<SJSON
+{"active":true,"cpu":0,"ram":0,"swap":0,"level":"ok","throttled":false,"cpu_ceil":$CPU_C,"ram_ceil":$RAM_C,"swap_ceil":$SWAP_C}
 SJSON
 
 # 6. Background sampler + safety net
