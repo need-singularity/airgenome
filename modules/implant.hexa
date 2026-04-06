@@ -187,3 +187,39 @@ fn bridge_log(event_json: str) -> str {
     append_file(EVENTS_FILE, event_json + "\n")
     return "ok"
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PIPELINE — 4-gate sequential validation
+// ═══════════════════════════════════════════════════════════════════════
+
+fn pipeline_run(genome_str: str, source_comm: str, prev_margin: float, curr_margin: float, declared_hash: str) -> auto {
+    // G1: SOURCE
+    let g1 = source_confidence(source_comm)
+    let g1_passed = 1
+    if g1[0] < 0 { g1_passed = 0 }
+    let g1_conf = g1[1]
+
+    // G2: HASH
+    let g2 = hash_check(genome_str, declared_hash)
+    let g2_passed = g2[0]
+    let g2_conf = g2[1]
+
+    // G3: PHI
+    let g3 = phi_check(prev_margin, curr_margin)
+    let g3_passed = g3[0]
+    let g3_conf = g3[1]
+
+    // G4: INVARIANT (reduced cycles for pipeline speed)
+    let data_mean = to_float(len(genome_str) % 100) / 100.0
+    if data_mean < 0.1 { data_mean = 0.5 }
+    let g4 = invariant_check(data_mean, 100)
+    let g4_passed = g4[0]
+    let g4_conf = g4[1]
+
+    let all_passed = g1_passed * g2_passed * g3_passed * g4_passed
+    let mean_conf = (g1_conf + g2_conf + g3_conf + g4_conf) / 4.0
+
+    let verdicts = "G1=" + to_string(g1_passed) + "(" + to_string(g1_conf) + ") G2=" + to_string(g2_passed) + "(" + to_string(g2_conf) + ") G3=" + to_string(g3_passed) + "(" + to_string(g3_conf) + ") G4=" + to_string(g4_passed) + "(" + to_string(g4_conf) + ")"
+
+    return [all_passed, mean_conf, verdicts]
+}

@@ -274,3 +274,51 @@ consciousness TestBridge {
 
     println("  bridge: 3 assertions passed")
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PIPELINE — 4-gate sequential validation
+// ═══════════════════════════════════════════════════════════════════════
+
+fn pipeline_run(genome_str: str, source_comm: str, prev_margin: float, curr_margin: float, declared_hash: str) -> auto {
+    let g1 = source_confidence(source_comm)
+    let g1_passed = 1
+    if g1[0] < 0 { g1_passed = 0 }
+    let g1_conf = g1[1]
+
+    let g2 = hash_check(genome_str, declared_hash)
+    let g2_passed = g2[0]
+    let g2_conf = g2[1]
+
+    let g3 = phi_check(prev_margin, curr_margin)
+    let g3_passed = g3[0]
+    let g3_conf = g3[1]
+
+    let data_mean = to_float(len(genome_str) % 100) / 100.0
+    if data_mean < 0.1 { data_mean = 0.5 }
+    let g4 = invariant_check(data_mean, 100)
+    let g4_passed = g4[0]
+    let g4_conf = g4[1]
+
+    let all_passed = g1_passed * g2_passed * g3_passed * g4_passed
+    let mean_conf = (g1_conf + g2_conf + g3_conf + g4_conf) / 4.0
+
+    let verdicts = "G1=" + to_string(g1_passed) + " G2=" + to_string(g2_passed) + " G3=" + to_string(g3_passed) + " G4=" + to_string(g4_passed)
+
+    return [all_passed, mean_conf, verdicts]
+}
+
+consciousness TestPipeline {
+    // All gates pass: known source, no hash (permissive), stable margin
+    let r1 = pipeline_run("test-genome", "Safari", 0.25, 0.26, "")
+    assert r1[0] == 1
+
+    // Blacklisted source -> pipeline fails
+    let r2 = pipeline_run("test-genome", "backup-old", 0.25, 0.26, "")
+    assert r2[0] == 0
+
+    // PHI degradation -> pipeline fails
+    let r3 = pipeline_run("test-genome", "Safari", 0.30, 0.10, "")
+    assert r3[0] == 0
+
+    println("  pipeline: 3 assertions passed")
+}
