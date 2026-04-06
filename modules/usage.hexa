@@ -1,24 +1,36 @@
-// airgenome/modules/usage.hexa — Claude Code usage API (ccmon 대체)
+// airgenome/modules/usage.hexa — Claude Code usage API
 //
-// keychain → token refresh → usage API → cache
-// 외부 의존: security(macOS), curl, python3.12(JSON parse)
+// ccmon rate-limit 회피 로직 이식:
+//   1. 글로벌 쿨다운 (IP 기반) — rate limit 1회 → 5분 고정, 전 계정 스킵
+//   2. 계정별 지수 백오프 — 20분 base → 실패마다 2배 → 최대 1시간
+//   3. 성공 시 쿨다운 즉시 해제 (글로벌+계정 모두)
+//   4. 에러 계정만 재조회 (캐시 신선하면)
+//
+// 외부 의존: security(macOS), curl, jq, python3.12(token parse)
 
 let API_URL = "https://api.anthropic.com/api/oauth/usage"
 let TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 let CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-let CACHE_FILE = "~/.airgenome/usage-cache.json"
-let COOLDOWN_FILE = "~/.airgenome/refresh-cooldown.json"
 
-// keychain label map — account name → keychain label
+let HOME = exec("echo $HOME").trim()
+let CACHE_FILE = HOME + "/.airgenome/usage-cache.json"
+let COOLDOWN_FILE = HOME + "/.airgenome/refresh-cooldown.json"
+
+// 쿨다운 상수
+let GLOBAL_COOLDOWN_SECS = 300   // 5분 고정 (IP 기반)
+let COOLDOWN_BASE = 1200         // 20분 base
+let COOLDOWN_MAX = 3600          // 1시간 max
+
+// keychain label map
 let LABELS = ["claude1|Claude Code-credentials-2b949392", "claude2|Claude Code-credentials-26492e81", "claude3|Claude Code-credentials-200a5e32", "claude4|Claude Code-credentials-2adfc64a", "claude5|Claude Code-credentials-7f9319ca", "claude6|Claude Code-credentials-71a31b2a", "claude7|Claude Code-credentials-02580ebb", "claude8|Claude Code-credentials-156d23f8", "claude9|Claude Code-credentials-90c36814", "claude10|Claude Code-credentials-90defae3"]
+
+let NOW_TS = to_int(exec("date +%s").trim())
 
 fn get_label(name: str) -> str {
     let i = 0
     while i < len(LABELS) {
         let parts = LABELS[i].split("|")
-        if parts[0] == name {
-            return parts[1]
-        }
+        if parts[0] == name { return parts[1] }
         i = i + 1
     }
     return ""
@@ -36,63 +48,119 @@ fn get_all_names() -> str {
     return result
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  COOLDOWN (ccmon 동일)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cooldown(key: str) -> str {
+    // Returns "timestamp|fail_count" or ""
+    let exists = exec("[ -f '" + COOLDOWN_FILE + "' ] && echo y || echo n").trim()
+    if exists == "n" { return "" }
+    return exec("jq -r '.\"" + key + "\" // empty | \"\\(.t // 0)|\\(.n // 0)\"' '" + COOLDOWN_FILE + "' 2>/dev/null || echo ''").trim()
+}
+
+fn is_global_rate_limited() -> bool {
+    let cd = load_cooldown("_global")
+    if len(cd) == 0 { return false }
+    let parts = cd.split("|")
+    let t = to_int(parts[0])
+    return (NOW_TS - t) < GLOBAL_COOLDOWN_SECS
+}
+
+fn is_account_on_cooldown(name: str) -> bool {
+    if is_global_rate_limited() { return true }
+    let cd = load_cooldown(name)
+    if len(cd) == 0 { return false }
+    let parts = cd.split("|")
+    let t = to_int(parts[0])
+    let n = to_int(parts[1])
+    if n < 1 { n = 1 }
+    // 지수 백오프: base * 2^(n-1), capped at max — pure computation
+    let wait = to_int(exec("awk 'BEGIN{w=" + to_string(COOLDOWN_BASE) + ";for(i=1;i<" + to_string(n) + ";i++){w*=2;if(w>" + to_string(COOLDOWN_MAX) + ")w=" + to_string(COOLDOWN_MAX) + "};print w}'").trim())
+    return (NOW_TS - t) < wait
+}
+
+fn set_cooldown(name: str, failed: bool) -> void {
+    exec("mkdir -p " + HOME + "/.airgenome && [ -f '" + COOLDOWN_FILE + "' ] || echo '{}' > '" + COOLDOWN_FILE + "'")
+    if failed {
+        let prev_n = to_int(exec("jq -r '.\"" + name + "\".n // 0' '" + COOLDOWN_FILE + "' 2>/dev/null || echo 0").trim())
+        let new_n = prev_n + 1
+        exec("jq '.\"" + name + "\"={\"t\":" + to_string(NOW_TS) + ",\"n\":" + to_string(new_n) + "} | .\"_global\"={\"t\":" + to_string(NOW_TS) + "}' '" + COOLDOWN_FILE + "' > '" + COOLDOWN_FILE + ".tmp' && mv '" + COOLDOWN_FILE + ".tmp' '" + COOLDOWN_FILE + "'")
+    }
+    if failed == false {
+        exec("jq 'del(.\"" + name + "\") | del(.\"_global\")' '" + COOLDOWN_FILE + "' > '" + COOLDOWN_FILE + ".tmp' && mv '" + COOLDOWN_FILE + ".tmp' '" + COOLDOWN_FILE + "' 2>/dev/null || true")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TOKEN & API
+// ═══════════════════════════════════════════════════════════════════════
+
 fn read_keychain(label: str) -> str {
-    // Returns raw JSON from keychain
-    let result = exec("security find-generic-password -l '" + label + "' -w 2>/dev/null").trim()
-    return result
+    return exec("security find-generic-password -l '" + label + "' -w 2>/dev/null").trim()
 }
 
 fn extract_token_info(keychain_json: str) -> str {
     // Returns: access_token|refresh_token|expires_at
-    let cache_file = exec("echo " + CACHE_FILE).trim()
-    let result = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});print(o.get(\"accessToken\",\"\")+\"|\"+o.get(\"refreshToken\",\"\")+\"|\"+str(o.get(\"expiresAt\",0)))' <<< '" + keychain_json + "' 2>/dev/null").trim()
-    return result
+    return exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});print(o.get(\"accessToken\",\"\")+\"|\"+o.get(\"refreshToken\",\"\")+\"|\"+str(o.get(\"expiresAt\",0)))' <<< '" + keychain_json + "' 2>/dev/null").trim()
 }
 
 fn is_token_expired(expires_at_str: str) -> bool {
-    let check = exec("/opt/homebrew/bin/python3.12 -c 'import time;ea=" + expires_at_str + ";print(\"yes\" if ea/1000 < time.time()+60 else \"no\")' 2>/dev/null").trim()
-    return check == "yes"
+    let ea = to_int(expires_at_str)
+    // expiresAt is in milliseconds
+    return (ea / 1000) < (NOW_TS + 60)
 }
 
 fn refresh_token(refresh_tok: str, account_name: str) -> str {
-    // Returns new access_token or empty
     let payload = "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"" + refresh_tok + "\",\"client_id\":\"" + CLIENT_ID + "\"}"
     let result = exec("curl -s --max-time 10 '" + TOKEN_URL + "' -H 'Content-Type: application/json' -d '" + payload + "' 2>/dev/null").trim()
     if len(result) == 0 { return "" }
-    let token = exec("/opt/homebrew/bin/python3.12 -c 'import json;d=json.loads(\"\"\"" + result + "\"\"\");print(d.get(\"access_token\",\"\"))' 2>/dev/null").trim()
-    return token
+    return exec("echo '" + result + "' | jq -r '.access_token // empty' 2>/dev/null").trim()
 }
 
 fn call_usage_api(access_token: str, account_name: str) -> str {
-    // Returns: session_pct|session_resets|week_pct|week_resets|sonnet_pct|sonnet_resets
+    // Returns: session_pct|session_resets|week_pct|week_resets or "api_error"
     let result = exec("curl -s --max-time 10 '" + API_URL + "' -H 'Authorization: Bearer " + access_token + "' -H 'anthropic-beta: oauth-2025-04-20' 2>/dev/null").trim()
-    if len(result) == 0 { return "||||||error" }
-    let parsed = exec("/opt/homebrew/bin/python3.12 -c 'import json;d=json.loads(\"\"\"" + result + "\"\"\");f=d.get(\"five_hour\",{});s=d.get(\"seven_day\",{});sn=d.get(\"seven_day_sonnet\",{});print(str(f.get(\"utilization\",\"\"))+\"|\"+str(f.get(\"resets_at\",\"\"))+\"|\"+str(s.get(\"utilization\",\"\"))+\"|\"+str(s.get(\"resets_at\",\"\"))+\"|\"+str(sn.get(\"utilization\",\"\") if sn else \"\")+\"|\"+str(sn.get(\"resets_at\",\"\") if sn else \"\"))' 2>/dev/null").trim()
+    if len(result) == 0 { return "api_error" }
+    // API 에러 감지
+    let err = exec("echo '" + result + "' | jq -r '.error.type // empty' 2>/dev/null").trim()
+    if len(err) > 0 { return "api_error" }
+    // 파싱
+    let parsed = exec("echo '" + result + "' | jq -r '[(.five_hour.utilization // empty),(.five_hour.resets_at // empty),(.seven_day.utilization // empty),(.seven_day.resets_at // empty)] | join(\"|\")' 2>/dev/null").trim()
+    if len(parsed) == 0 { return "api_error" }
     return parsed
 }
 
 fn fetch_one(name: str) -> str {
-    // Returns: name|session_pct|week_pct|error_or_empty
+    // Returns: name|session_pct|session_resets|week_pct|week_resets or name + "||||api_error"
+
+    // 쿨다운 체크
+    if is_account_on_cooldown(name) {
+        return name + "||||cooldown"
+    }
+
     let label = get_label(name)
-    if len(label) == 0 { return name + "|||no_label" }
+    if len(label) == 0 { return name + "||||no_label" }
 
     let kc = read_keychain(label)
-    if len(kc) == 0 { return name + "|||no_keychain" }
+    if len(kc) == 0 { return name + "||||no_keychain" }
 
     let info = extract_token_info(kc)
     let parts = info.split("|")
-    if len(parts) < 3 { return name + "|||parse_error" }
+    if len(parts) < 3 { return name + "||||parse_error" }
 
     let access = parts[0]
     let refresh = parts[1]
     let expires = parts[2]
 
-    // Token expired? refresh
     if len(access) == 0 {
         if len(refresh) > 0 {
             access = refresh_token(refresh, name)
         }
-        if len(access) == 0 { return name + "|||token_error" }
+        if len(access) == 0 {
+            set_cooldown(name, true)
+            return name + "||||token_error"
+        }
     }
     if is_token_expired(expires) {
         if len(refresh) > 0 {
@@ -102,43 +170,89 @@ fn fetch_one(name: str) -> str {
     }
 
     let usage = call_usage_api(access, name)
+    if usage == "api_error" {
+        set_cooldown(name, true)
+        return name + "||||api_error"
+    }
+
+    // 성공 → 쿨다운 해제
+    set_cooldown(name, false)
     let u = usage.split("|")
     if len(u) >= 4 {
-        // name|session_pct|session_resets|week_pct|week_resets
         return name + "|" + u[0] + "|" + u[1] + "|" + u[2] + "|" + u[3]
     }
     return name + "||||api_error"
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  CACHE
+// ═══════════════════════════════════════════════════════════════════════
+
 fn save_cache(results: str) -> void {
-    let cache_path = exec("echo " + CACHE_FILE).trim()
-    exec("mkdir -p ~/.airgenome")
-    // results = lines of "name|session_pct|session_resets|week_pct|week_resets"
-    // Convert to JSON
-    let py_script = "import json,time,sys\nlines=sys.stdin.read().strip().split('\\n')\nd={}\nfor l in lines:\n  p=l.split('|')\n  if len(p)>=5:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':p[5] if len(p)>5 and p[5] else None}\n  elif len(p)>=4:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'week_all_pct':float(p[2]) if p[2] else None,'error':p[3] if p[3] else None}\nd['_ts']=time.time()\njson.dump(d,open('" + cache_path + "','w'))\nprint('saved '+str(len(d)-1)+' accounts')"
+    exec("mkdir -p " + HOME + "/.airgenome")
+    // Merge: 에러/쿨다운 계정은 기존 캐시 유지
+    let py_script = "import json,time,sys,os\nlines=sys.stdin.read().strip().split('\\n')\nold={}\ntry:\n  old=json.load(open('" + CACHE_FILE + "'))\n  old.pop('_ts',None)\nexcept: pass\nd=dict(old)\nok=0;skip=0\nfor l in lines:\n  if 'api_error' in l or 'token_error' in l or 'no_keychain' in l or 'parse_error' in l or 'cooldown' in l:\n    skip+=1;continue\n  p=l.split('|')\n  if len(p)>=5:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':None}\n    ok+=1\nd['_ts']=time.time()\njson.dump(d,open('" + CACHE_FILE + "','w'))\nprint(f'saved {ok} / skip {skip} (kept old)')"
     let out = exec("echo '" + results + "' | /opt/homebrew/bin/python3.12 -c \"" + py_script + "\" 2>/dev/null").trim()
     println("  " + out)
 }
 
 fn load_cache_age() -> int {
-    let cache_path = exec("echo " + CACHE_FILE).trim()
-    let age = exec("/opt/homebrew/bin/python3.12 -c 'import json,time;d=json.load(open(\"" + cache_path + "\"));print(int(time.time()-d.get(\"_ts\",0)))' 2>/dev/null").trim()
-    if len(age) == 0 { return 9999 }
-    return to_int(age)
+    let ts_str = exec("jq -r '._ts // 0' '" + CACHE_FILE + "' 2>/dev/null").trim()
+    if len(ts_str) == 0 { return 9999 }
+    let ts = to_int(exec("echo '" + ts_str + "' | awk '{printf \"%.0f\", $1}'").trim())
+    if ts == 0 { return 9999 }
+    return NOW_TS - ts
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  REFRESH
+// ═══════════════════════════════════════════════════════════════════════
 
 fn refresh_all() -> void {
     println("  ⬡ Usage 갱신 중...")
+
+    // 글로벌 rate limit 체크 — 걸려있으면 전부 스킵
+    if is_global_rate_limited() {
+        let cd = load_cooldown("_global")
+        let gt = to_int(cd.split("|")[0])
+        let remaining = GLOBAL_COOLDOWN_SECS - (NOW_TS - gt)
+        println("  ⚠ 글로벌 rate limit 쿨다운 중 (" + to_string(remaining) + "초 남음)")
+        println("  skip all — 기존 캐시 유지")
+        return
+    }
+
     let names = get_all_names().split("\n")
     let results = ""
     let i = 0
+    let hit_rate_limit = false
     while i < len(names) {
         let name = names[i]
+
+        // 이번 실행에서 rate limit 맞았으면 나머지 스킵
+        if hit_rate_limit {
+            println("    " + name + " ⏭ 스킵 (rate limit)")
+            if i > 0 { results = results + "\n" }
+            results = results + name + "||||cooldown"
+            i = i + 1
+            continue
+        }
+
         let r = fetch_one(name)
-        let parts = r.split("|")
+
         let status = "✓"
-        if len(parts) >= 4 {
-            if len(parts[3]) > 0 { status = "✗ " + parts[3] }
+        if r.contains("api_error") {
+            status = "✗ API에러"
+            hit_rate_limit = true  // 첫 에러 → 나머지 전부 스킵
+        }
+        if r.contains("cooldown") { status = "⏭ 쿨다운" }
+        if r.contains("token_error") { status = "✗ 토큰에러" }
+        if r.contains("no_keychain") { status = "✗ 키체인없음" }
+        if r.contains("parse_error") { status = "✗ 파싱에러" }
+        if status == "✓" {
+            let parts = r.split("|")
+            if len(parts) >= 2 {
+                if len(parts[1]) > 0 { status = "✓ s=" + parts[1] }
+            }
         }
         println("    " + name + " " + status)
         if i > 0 { results = results + "\n" }
@@ -149,7 +263,6 @@ fn refresh_all() -> void {
 }
 
 fn refresh_if_stale() -> void {
-    // Refresh only if cache is older than 5 minutes
     let age = load_cache_age()
     if age > 300 {
         refresh_all()

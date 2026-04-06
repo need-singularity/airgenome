@@ -9,6 +9,22 @@ let USAGE_CACHE = "~/.airgenome/usage-cache.json"
 let RATE_PATTERNS = ["rate limit", "limit reached", "usage cap", "rate_limit_error", "Too many requests", "overloaded_error"]
 
 // ═══════════════════════════════════════════════════════════════════════
+//  RESOLVED PATHS (1회 확장, 재사용)
+// ═══════════════════════════════════════════════════════════════════════
+let HOME = exec("echo $HOME").trim()
+let R_ACCOUNTS = HOME + "/.airgenome/accounts.json"
+let R_STATE = HOME + "/.airgenome/cl-state.json"
+let R_USAGE_CACHE = HOME + "/.airgenome/usage-cache.json"
+let NOW_TS = to_int(exec("date -u +%s").trim())
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BULK CACHE — 1회 파싱으로 모든 계정 usage 로드
+// ═══════════════════════════════════════════════════════════════════════
+// Format: lines of "name|session_pct|session_resets|week_all_pct|week_resets"
+// BULK_CACHE: jq로 JSON 1회 파싱 (~9ms, python3 150ms 대비 17x)
+let BULK_CACHE = exec("[ -f '" + HOME + "/.airgenome/usage-cache.json' ] && { jq -r 'to_entries[]|select(.value|type==\"object\")|\"\\(.key)|\\(.value.session_pct//\"\")|\\(.value.session_resets//\"\")|\\(.value.week_all_pct//\"\")|\\(.value.week_resets//(.value.week_all_resets//\"\"))\"' '" + HOME + "/.airgenome/usage-cache.json' 2>/dev/null; grep -o '\"_ts\"[^,}]*' '" + HOME + "/.airgenome/usage-cache.json' | sed 's/\"_ts\" *: */_ts|/;s/\\..*//'; } || echo ''").trim()
+
+// ═══════════════════════════════════════════════════════════════════════
 //  EFFECTS
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -40,8 +56,24 @@ fn pad_left(s: str, width: int) -> str {
     return r
 }
 
+fn parse_pct(s: str) -> int {
+    // Parse "85.0" or "5.0" or "-" or "?" → integer 0~100
+    if s == "-" { return 0 }
+    if s == "?" { return 0 }
+    if s == "None" { return 0 }
+    if s == "null" { return 0 }
+    if s == "" { return 0 }
+    // Remove decimal part
+    let clean = s
+    if clean.contains(".") { clean = clean.split(".")[0] }
+    let v = to_int(clean)
+    if v < 0 { v = 0 }
+    if v > 100 { v = 100 }
+    return v
+}
+
 fn pct_bar(pct_str: str, width: int) -> str {
-    let p = to_int(exec("echo '" + pct_str + "' | awk '{v=$1+0;if(v<0)v=0;if(v>100)v=100;printf \"%.0f\",v}'").trim())
+    let p = parse_pct(pct_str)
     let filled = p * width / 100
     let bar = ""
     let i = 0
@@ -54,7 +86,7 @@ fn pct_bar(pct_str: str, width: int) -> str {
 }
 
 fn limit_tag(pct_str: str) -> str {
-    let w_int = to_int(exec("echo '" + pct_str + "' | awk '{printf \"%.0f\", $1+0}'").trim())
+    let w_int = parse_pct(pct_str)
     if w_int >= 100 { return "EXHAUSTED" }
     if w_int >= 80 { return "HIGH" }
     if w_int >= 50 { return "MID" }
@@ -62,11 +94,26 @@ fn limit_tag(pct_str: str) -> str {
 }
 
 fn limit_icon(pct_str: str) -> str {
-    let w_int = to_int(exec("echo '" + pct_str + "' | awk '{printf \"%.0f\", $1+0}'").trim())
+    let w_int = parse_pct(pct_str)
     if w_int >= 100 { return "✗" }
     if w_int >= 80 { return "⚠" }
     if w_int >= 50 { return "△" }
     return "✓"
+}
+
+fn parse_iso_ts(iso_str: str) -> int {
+    // Parse ISO 8601 → unix timestamp using single date call
+    // Cached per unique value would be ideal but hexa has no map
+    if len(iso_str) < 10 { return 0 }
+    let clean = iso_str
+    // Strip timezone, fractional seconds inline
+    if clean.contains("+") { clean = clean.split("+")[0] }
+    if clean.contains("Z") { clean = clean.split("Z")[0] }
+    if clean.contains(".") {
+        let dp = clean.split(".")
+        clean = dp[0]
+    }
+    return to_int(exec("TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' '" + clean + "' +%s 2>/dev/null || echo 0").trim())
 }
 
 fn format_reset_time(iso_str: str) -> str {
@@ -76,10 +123,8 @@ fn format_reset_time(iso_str: str) -> str {
     if iso_str == "-" { return "-" }
     if iso_str == "" { return "-" }
     if len(iso_str) < 10 { return iso_str }
-    let clean = exec("echo '" + iso_str + "' | sed 's/Z$//;s/+00:00$//;s/\\.[0-9]*//'").trim()
-    let target_ts = to_int(exec("TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' '" + clean + "' +%s 2>/dev/null || echo 0").trim())
-    let now_ts = to_int(exec("date -u +%s").trim())
-    let diff = target_ts - now_ts
+    let target_ts = parse_iso_ts(iso_str)
+    let diff = target_ts - NOW_TS
     if diff < 0 { return "now" }
     if diff < 3600 { return to_string(diff / 60) + "m" }
     let hours = diff / 3600
@@ -99,11 +144,11 @@ fn format_reset_time(iso_str: str) -> str {
 fn list_accounts(file: str) -> str {
     // Returns lines of "name|config_dir|removed"
     // removed 필드 없으면 false 기본값
-    return exec("grep -oE '\"name\":\\s*\"[^\"]*\"|\"config_dir\":\\s*\"[^\"]*\"|\"removed\":\\s*[a-z]+' '" + file + "' 2>/dev/null | sed 's/\"//g;s/: */|/' | awk -F'|' '{if($1==\"name\"){if(n!=\"\")print n\"|\"d\"|\"r;n=$2;d=\"\";r=\"false\"};if($1==\"config_dir\")d=$2;if($1==\"removed\")r=$2}END{if(n!=\"\")print n\"|\"d\"|\"r}'").trim()
+    return exec("grep -oE '\"name\":\\s*\"[^\"]*\"|\"config_dir\":\\s*\"[^\"]*\"|\"removed\":\\s*[a-z]+' '" + file + "' 2>/dev/null | sed 's/\"//g;s/: */|/' | awk -F'|' '{if($1==\"name\"){if(n!=\"\")print n\"|\"d\"|\"r;n=$2;d=\"\";r=\"false\"};if($1==\"config_dir\")d=$2;if($1==\"removed\")r=$2}END{if(n!=\"\")print n\"|\"d\"|\"r}' | awk -F'|' '{n=$1;gsub(/[^0-9]/,\"\",n);printf \"%05d|%s\\n\",n,$0}' | sort -t'|' -k1,1n | cut -d'|' -f2-").trim()
 }
 
 fn get_config_dir_for(name: str) -> str {
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     let entries = list_accounts(path)
     if len(entries) == 0 { return "" }
     let lines = entries.split("\n")
@@ -119,37 +164,73 @@ fn get_config_dir_for(name: str) -> str {
 }
 
 fn get_active_account() -> str {
-    let state_path = exec("echo " + STATE_FILE).trim()
+    let state_path = R_STATE
     return exec("sed 's/\"//g;s/.*active *: *//;s/[,}].*//' '" + state_path + "' 2>/dev/null").trim()
 }
 
 fn cache_field(name: str, field: str) -> str {
-    let cache_path = exec("echo " + USAGE_CACHE).trim()
-    return exec("sed 's/.*\"" + name + "\" *: *{//;s/}.*//' '" + cache_path + "' 2>/dev/null | grep -o '\"" + field + "\" *: *[^,}]*' | sed 's/[^:]*: *//;s/\"//g;s/ //g'").trim()
+    let full = get_full_usage(name)
+    let p = full.split("|")
+    if field == "session_pct" { return p[0] }
+    if field == "session_resets" { if len(p) > 1 { return p[1] } }
+    if field == "week_all_pct" { if len(p) > 2 { return p[2] } }
+    if field == "week_resets" { if len(p) > 3 { return p[3] } }
+    return ""
 }
 
 fn load_cache_age() -> int {
-    let cache_path = exec("echo " + USAGE_CACHE).trim()
-    let ts = exec("grep -o '\"_ts\" *: *[0-9.]*' '" + cache_path + "' 2>/dev/null | sed 's/.*: *//;s/\\..*//'").trim()
-    if len(ts) == 0 { return 9999 }
-    let now = to_int(exec("date +%s").trim())
-    let cache_ts = to_int(ts)
-    return now - cache_ts
+    // Use BULK_CACHE to find _ts line
+    let bc_lines = BULK_CACHE.split("\n")
+    let i = 0
+    while i < len(bc_lines) {
+        if bc_lines[i].contains("_ts|") {
+            let p = bc_lines[i].split("|")
+            if len(p) >= 2 {
+                let ts_str = p[1]
+                // Remove decimal
+                if ts_str.contains(".") {
+                    ts_str = ts_str.split(".")[0]
+                }
+                let cache_ts = to_int(ts_str)
+                if cache_ts > 0 { return NOW_TS - cache_ts }
+            }
+        }
+        i = i + 1
+    }
+    return 9999
 }
 
 fn get_full_usage(name: str) -> str {
-    // Returns: session_pct|session_resets|week_all_pct|week_resets
-    let cache_path = exec("echo " + USAGE_CACHE).trim()
-    let result = exec("sed 's/.*\"" + name + "\" *: *{//;s/}.*//' '" + cache_path + "' 2>/dev/null | sed 's/\"//g' | awk -F, '{sp=\"?\";sr=\"?\";wp=\"?\";wr=\"?\";for(i=1;i<=NF;i++){gsub(/^ +/,\"\",$i);k=$i;sub(/ *:.*/,\"\",k);v=$i;sub(/[^:]*: */,\"\",v);gsub(/ /,\"\",v);if(k==\"session_pct\")sp=v;if(k==\"session_resets\")sr=v;if(k==\"week_all_pct\")wp=v;if(k==\"week_resets\")wr=v};print sp\"|\"sr\"|\"wp\"|\"wr}'").trim()
-    if len(result) == 0 { return "?|?|?|?" }
-    return result
+    // Returns: session_pct|session_resets|week_all_pct|week_resets from BULK_CACHE
+    let bc_lines = BULK_CACHE.split("\n")
+    let i = 0
+    while i < len(bc_lines) {
+        let p = bc_lines[i].split("|")
+        if len(p) >= 5 {
+            if p[0] == name {
+                let sp = p[1]
+                let sr = p[2]
+                let wp = p[3]
+                let wr = p[4]
+                // null/empty = 미사용 → 0% (로그인됨, 사용 기록 없음)
+                if sp == "" { sp = "0.0" }
+                if sp == "None" { sp = "0.0" }
+                if wp == "" { wp = "0.0" }
+                if wp == "None" { wp = "0.0" }
+                if sr == "" { sr = "-" }
+                if sr == "None" { sr = "-" }
+                if wr == "" { wr = "-" }
+                if wr == "None" { wr = "-" }
+                return sp + "|" + sr + "|" + wp + "|" + wr
+            }
+        }
+        i = i + 1
+    }
+    return "?|?|?|?"
 }
 
 fn get_account_usage(name: str) -> str {
     // Returns: session_pct|week_all_pct
-    let cache_path = exec("echo " + USAGE_CACHE).trim()
-    let exists = exec("[ -f '" + cache_path + "' ] && echo 'yes' || echo 'no'").trim()
-    if exists == "no" { return "?|?" }
     let full = get_full_usage(name)
     let parts = full.split("|")
     let sp = parts[0]
@@ -168,7 +249,7 @@ fn discover_accounts() -> str {
 }
 
 fn load_accounts_json() -> str {
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     let exists = exec("[ -f '" + path + "' ] && echo 'yes' || echo 'no'").trim()
     if exists == "yes" {
         return exec("cat '" + path + "'").trim()
@@ -177,7 +258,7 @@ fn load_accounts_json() -> str {
 }
 
 fn save_accounts_json(json: str) -> void {
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     exec("mkdir -p ~/.airgenome")
     write_file(path, json)
 }
@@ -220,17 +301,90 @@ fn bootstrap_accounts() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  PICK BEST ACCOUNT
+//  ANSI COLOR HELPERS
 // ═══════════════════════════════════════════════════════════════════════
 
-fn pick_best_account(accounts_json: str) -> str {
-    let accts_path = exec("echo " + ACCOUNTS_FILE).trim()
+let ESC = exec("printf '\\033'").trim()
+let RESET = ESC + "[0m"
+let BOLD = ESC + "[1m"
+let DIM = ESC + "[2m"
+let C_GREEN = ESC + "[32m"
+let C_YELLOW = ESC + "[33m"
+let C_CYAN = ESC + "[36m"
+let C_WHITE = ESC + "[97m"
+let C_NEON = ESC + "[1;97;48;2;88;0;255m"  // bold white on purple
+
+fn color(text: str, style: str) -> str {
+    if style == "neon" { return C_NEON + text + RESET }
+    if style == "green" { return BOLD + C_GREEN + text + RESET }
+    if style == "yellow" { return BOLD + C_YELLOW + text + RESET }
+    if style == "dim" { return DIM + text + RESET }
+    if style == "cyan" { return C_CYAN + text + RESET }
+    if style == "bold" { return BOLD + text + RESET }
+    return text
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SCORING ALGORITHM (ccmon 동일)
+//  낭비방지 60% + 주간여유 40%
+// ═══════════════════════════════════════════════════════════════════════
+
+fn reset_seconds(iso_str: str) -> int {
+    if iso_str == "?" { return 999 * 3600 }
+    if iso_str == "None" { return 999 * 3600 }
+    if iso_str == "null" { return 999 * 3600 }
+    if iso_str == "-" { return 999 * 3600 }
+    if iso_str == "" { return 999 * 3600 }
+    if len(iso_str) < 10 { return 999 * 3600 }
+    let target_ts = parse_iso_ts(iso_str)
+    let diff = target_ts - NOW_TS
+    if diff < 0 { return 36 }
+    return diff
+}
+
+fn score_account(name: str) -> int {
+    // Returns score * 100 (integer). -100 = exhausted, -200 = error
+    let full = get_full_usage(name)
+    let parts = full.split("|")
+    let s_pct_str = parts[0]
+    let s_reset = "?"
+    let w_pct_str = "?"
+    let w_reset = "?"
+    if len(parts) > 1 { s_reset = parts[1] }
+    if len(parts) > 2 { w_pct_str = parts[2] }
+    if len(parts) > 3 { w_reset = parts[3] }
+
+    let s_pct = parse_pct(s_pct_str)
+    let w_pct = parse_pct(w_pct_str)
+
+    if w_pct >= 100 { return -100 }
+
+    let session_remaining = 100 - s_pct
+    let weekly_remaining = 100 - w_pct
+    let s_secs = reset_seconds(s_reset)
+    let s_hours_x10 = s_secs * 10 / 3600
+    if s_hours_x10 < 1 { s_hours_x10 = 1 }
+
+    // urgency = min(5.0 / session_hours, 5.0) — integer math * 100
+    let urgency_x100 = 50 * 100 / s_hours_x10
+    if urgency_x100 > 500 { urgency_x100 = 500 }
+
+    // waste_score = session_remaining * urgency (0~500)
+    let waste_x100 = session_remaining * urgency_x100
+
+    // final = waste * 0.6 + weekly_remaining * 0.4, scaled to int
+    let score = waste_x100 * 6 / 1000 + weekly_remaining * 40 / 100
+    return score
+}
+
+fn rank_accounts() -> str {
+    // Returns sorted lines: "score|name" (descending score, usable only)
+    let accts_path = R_ACCOUNTS
     let entries = list_accounts(accts_path)
-    if len(entries) == 0 { return "none|0" }
+    if len(entries) == 0 { return "" }
 
     let lines = entries.split("\n")
-    let best_name = "none"
-    let best_week = 999
+    let result = ""
     let i = 0
     while i < len(lines) {
         let parts = lines[i].split("|")
@@ -238,22 +392,25 @@ fn pick_best_account(accounts_json: str) -> str {
             let name = parts[0]
             let removed = parts[2]
             if removed != "true" {
-                let w_str = cache_field(name, "week_all_pct")
-                let w = 999
-                if len(w_str) > 0 {
-                    w = to_int(exec("echo '" + w_str + "' | awk '{printf \"%.0f\",$1}'").trim())
-                }
-                if w < 100 {
-                    if w < best_week {
-                        best_name = name
-                        best_week = w
-                    }
-                }
+                let sc = score_account(name)
+                if result != "" { result = result + "\n" }
+                result = result + to_string(sc) + "|" + name
             }
         }
         i = i + 1
     }
-    return best_name + "|" + to_string(best_week)
+    // Sort descending by score, then by account number ascending (stable tiebreak)
+    return exec("echo '" + result + "' | awk -F'|' '{n=$2;gsub(/[^0-9]/,\"\",n);printf \"%s|%s|%05d\\n\",$1,$2,n}' | sort -t'|' -k1 -rn -k3,3n | cut -d'|' -f1,2").trim()
+}
+
+fn pick_best_account(accounts_json: str) -> str {
+    let ranked = rank_accounts()
+    if len(ranked) == 0 { return "none|0" }
+    let lines = ranked.split("\n")
+    let parts = lines[0].split("|")
+    let sc = to_int(parts[0])
+    if sc < 0 { return "none|0" }
+    return parts[1] + "|" + parts[0]
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -333,7 +490,7 @@ fn resolve_launch(account_name: str) -> str {
 
     backup_claude_json(config_dir)
 
-    exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + account_name + "\"}' > " + exec("echo " + STATE_FILE).trim())
+    exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + account_name + "\"}' > " + R_STATE)
 
     println("LAUNCH:" + config_dir)
     return config_dir
@@ -344,7 +501,7 @@ fn resolve_launch(account_name: str) -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn add_account(name: str, config_dir: str) -> void {
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     let entries = list_accounts(path)
     if entries.contains(name + "|") {
         println("  ⬡ 계정 이미 존재: " + name)
@@ -371,7 +528,7 @@ fn add_account(name: str, config_dir: str) -> void {
 }
 
 fn remove_account(name: str) -> void {
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     let entries = list_accounts(path)
     let lines = entries.split("\n")
     let json = "{\"accounts\":["
@@ -408,7 +565,7 @@ fn show_status() -> void {
     println("  ─────────────────────────────────────────")
 
     let active = get_active_account()
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let path = R_ACCOUNTS
     let entries = list_accounts(path)
     if len(entries) == 0 { return }
     let lines = entries.split("\n")
@@ -430,7 +587,10 @@ fn show_status() -> void {
 
                 let status = ""
                 if name == active { status = "● ACTIVE" }
-                let w_check = exec("echo '" + week + "' | awk '{if($1+0>=100)print \"exhausted\";else if($1+0>=80)print \"warn\";else print \"ok\"}'").trim()
+                let w_val = parse_pct(week)
+                let w_check = "ok"
+                if w_val >= 80 { w_check = "warn" }
+                if w_val >= 100 { w_check = "exhausted" }
                 if w_check == "exhausted" { status = status + " ✗ EXHAUSTED" }
                 if w_check == "warn" { status = status + " ⚠" }
 
@@ -448,8 +608,13 @@ fn show_status() -> void {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn show_usage_dashboard() -> void {
+    show_usage_dashboard_ranked(false)
+}
+
+fn show_usage_dashboard_ranked(show_select: bool) -> str {
+    // Returns best account name (for selection mode)
     let accounts_json = bootstrap_accounts()
-    if len(accounts_json) == 0 { return }
+    if len(accounts_json) == 0 { return "" }
 
     let cache_age = load_cache_age()
     let age_str = ""
@@ -460,18 +625,36 @@ fn show_usage_dashboard() -> void {
         age_str = to_string(cache_age / 3600) + "h ago"
     }
 
-    let active = get_active_account()
+    // Build rankings
+    let ranked = rank_accounts()
+    let rank_lines = ranked.split("\n")
+    // Build name→rank map (rank 0 = best)
+    // We'll check inline since hexa has no map type
 
-    println("")
-    println("  ⬢ Claude Code Usage Dashboard          (cached " + age_str + ")")
-    println("")
-    println("  ┌─────┬─────────────┬─────────┬────────────────┬────────┬─────────┬────────────────┬────────┬──────────┐")
-    println("  │  #  │  Account    │ Session │                │  Reset │  Week   │                │  Reset │  Limit   │")
-    println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
+    let rank_icons = ["★", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+    let best_name = ""
+    if len(rank_lines) > 0 {
+        if len(rank_lines[0]) > 0 {
+            let bp = rank_lines[0].split("|")
+            if len(bp) >= 2 {
+                let bscore = to_int(bp[0])
+                if bscore >= 0 { best_name = bp[1] }
+            }
+        }
+    }
 
-    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let nl = "\n"
+    let buf = ""
+    buf = buf + nl
+    buf = buf + "  " + BOLD + "⬢ Claude Code Usage" + RESET + "          " + DIM + "(cached " + age_str + ")" + RESET + nl
+    buf = buf + nl
+    buf = buf + "  ┌─────┬─────────────┬─────────┬────────────────┬────────┬─────────┬────────────────┬────────┐" + nl
+    buf = buf + "  │  #  │  Account    │ Session │                │  Reset │  Week   │                │  Reset │" + nl
+    buf = buf + "  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┤" + nl
+
+    let path = R_ACCOUNTS
     let entries = list_accounts(path)
-    if len(entries) == 0 { return }
+    if len(entries) == 0 { return "" }
     let lines = entries.split("\n")
     let i = 0
     while i < len(lines) {
@@ -479,10 +662,13 @@ fn show_usage_dashboard() -> void {
         if len(parts) >= 3 {
             let name = parts[0]
             let removed = parts[2]
-            let idx = pad_left(to_string(i + 1), 2)
+            let num = i + 1
+            let idx_display = to_string(num)
+            if num == 10 { idx_display = "0" }
+            idx_display = pad_left(idx_display, 2)
 
             if removed == "true" {
-                println("  │ " + idx + "  │ " + pad_right(name, 10) + "  │     -   │ ░░░░░░░░░░░░░░ │      - │     -   │ ░░░░░░░░░░░░░░ │      - │ ✗ 폐기됨  │")
+                buf = buf + "  │ " + DIM + idx_display + "  │ " + pad_right(name, 10) + "  │     -   │ ░░░░░░░░░░░░░░ │      - │     -   │ ░░░░░░░░░░░░░░ │      - " + RESET + "│" + nl
             }
             if removed != "true" {
                 let u = get_full_usage(name)
@@ -500,33 +686,81 @@ fn show_usage_dashboard() -> void {
                 let s_time = pad_left(format_reset_time(s_reset), 6)
                 let w_time = pad_left(format_reset_time(w_reset), 6)
 
-                let icon = " "
-                if name == active { icon = "★" }
-
                 if s_pct == "None" { s_pct = "-" }
                 if s_pct == "null" { s_pct = "-" }
+                if s_pct == "?" { s_pct = "-" }
                 if w_pct == "None" { w_pct = "-" }
                 if w_pct == "null" { w_pct = "-" }
+                if w_pct == "?" { w_pct = "-" }
                 let s_display = s_pct
-                if s_pct != "-" { if s_pct != "?" { s_display = s_pct + "%" } }
+                if s_pct != "-" { s_display = s_pct + "%" }
                 let w_display = w_pct
-                if w_pct != "-" { if w_pct != "?" { w_display = w_pct + "%" } }
+                if w_pct != "-" { w_display = w_pct + "%" }
                 let s_val = pad_left(s_display, 5)
                 let w_val = pad_left(w_display, 5)
 
-                let lim = limit_icon(w_pct) + " " + pad_right(limit_tag(w_pct), 8)
+                // Determine rank for this account
+                let my_rank = -1
+                let ri = 0
+                while ri < len(rank_lines) {
+                    let rp = rank_lines[ri].split("|")
+                    if len(rp) >= 2 {
+                        if rp[1] == name {
+                            let rsc = to_int(rp[0])
+                            if rsc >= 0 { my_rank = ri }
+                        }
+                    }
+                    ri = ri + 1
+                }
 
-                println("  │ " + idx + icon + " │ " + pad_right(name, 10) + "  │  " + s_val + "  │ " + s_bar + " │ " + s_time + " │  " + w_val + "  │ " + w_bar + " │ " + w_time + " │ " + lim + "│")
+                // Rank tag — top 3 only, rest blank
+                let tag = " "
+                if my_rank >= 0 {
+                    if my_rank < 3 { tag = rank_icons[my_rank] }
+                }
+                if my_rank < 0 { tag = "✗" }
+
+                // Style per cell — borders stay plain (ccmon-style)
+                let w_int = parse_pct(w_pct)
+                let sty = ""
+                if my_rank == 0 { sty = "neon" }
+                if my_rank > 0 {
+                    if w_int < 80 { sty = "green" }
+                    if w_int >= 80 { sty = "yellow" }
+                }
+                if my_rank < 0 { sty = "dim" }
+
+                let c_idx = color(idx_display + tag, sty)
+                let c_name = color(pad_right(name, 10), sty)
+                let c_spct = color(pad_left(s_display, 7), sty)
+                let c_wpct = color(pad_left(w_display, 7), sty)
+                let c_sbar = s_bar
+                let c_wbar = w_bar
+                let c_stime = color(s_time, "dim")
+                let c_wtime = color(w_time, "dim")
+
+                buf = buf + "  │ " + c_idx + " │ " + c_name + "  │" + c_spct + "  │ " + c_sbar + " │ " + c_stime + " │" + c_wpct + "  │ " + c_wbar + " │ " + c_wtime + " │" + nl
             }
 
             if i < len(lines) - 1 {
-                println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
+                buf = buf + "  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┤" + nl
             }
         }
         i = i + 1
     }
-    println("  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┴──────────┘")
-    println("")
+    buf = buf + "  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┘" + nl
+
+    if show_select {
+        buf = buf + nl
+        let hint = ""
+        if best_name != "" {
+            hint = "  " + C_NEON + " Space/Enter = " + best_name + " " + RESET
+        }
+        buf = buf + "  " + BOLD + "Select:" + RESET + "  " + C_CYAN + "1" + RESET + "-" + C_CYAN + "9" + RESET + "=claude1-9  " + C_CYAN + "0" + RESET + "=claude10  " + C_CYAN + "q" + RESET + "=취소" + hint + nl
+    }
+
+    println(buf)
+    return best_name
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -537,16 +771,13 @@ fn print_help() -> void {
     println("cl v" + VERSION + " — Claude Code multi-account launcher (airgenome)")
     println("")
     println("Commands:")
-    println("  cl              → 최적 계정으로 claude 실행")
-    println("  cl status       → 계정 현황 (간단)")
-    println("  cl u            → 사용량 대시보드 (세션/주간 limit + 리셋 시간)")
+    println("  cl              → 대시보드 + 계정 선택 → claude 실행")
     println("  cl pick <name>  → 지정 계정으로 실행")
     println("  cl add <name> <dir> → 계정 추가")
     println("  cl remove <name>    → 계정 폐기")
     println("  cl help         → 도움말")
     println("")
     println("Rate limit 시 자동 전환. 오염 방지 내장.")
-    println("폐기: 이 파일 삭제 + ~/.zshrc에서 cl 제거")
 }
 
 fn main() {
@@ -557,26 +788,45 @@ fn main() {
     }
 
     if cmd == "" {
-        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto >/dev/null 2>&1 &")
         let accounts = bootstrap_accounts()
         if len(accounts) > 0 {
-            let best = pick_best_account(accounts)
-            let bp = best.split("|")
-            if bp[0] != "none" {
-                resolve_launch(bp[0])
+            let best = show_usage_dashboard_ranked(true)
+            // Read single keypress via stty raw
+            let ch = exec("stty raw -echo </dev/tty; dd bs=1 count=1 2>/dev/null </dev/tty; stty sane </dev/tty").trim()
+
+            let selected = ""
+            if ch == "" { selected = best }
+            if ch == " " { selected = best }
+            if ch == "q" {
+                println("  " + DIM + "취소" + RESET)
+                return
             }
-            if bp[0] == "none" {
+
+            // Number keys
+            let path = R_ACCOUNTS
+            let entries = list_accounts(path)
+            let acct_lines = entries.split("\n")
+
+            if ch == "1" { if len(acct_lines) >= 1 { selected = acct_lines[0].split("|")[0] } }
+            if ch == "2" { if len(acct_lines) >= 2 { selected = acct_lines[1].split("|")[0] } }
+            if ch == "3" { if len(acct_lines) >= 3 { selected = acct_lines[2].split("|")[0] } }
+            if ch == "4" { if len(acct_lines) >= 4 { selected = acct_lines[3].split("|")[0] } }
+            if ch == "5" { if len(acct_lines) >= 5 { selected = acct_lines[4].split("|")[0] } }
+            if ch == "6" { if len(acct_lines) >= 6 { selected = acct_lines[5].split("|")[0] } }
+            if ch == "7" { if len(acct_lines) >= 7 { selected = acct_lines[6].split("|")[0] } }
+            if ch == "8" { if len(acct_lines) >= 8 { selected = acct_lines[7].split("|")[0] } }
+            if ch == "9" { if len(acct_lines) >= 9 { selected = acct_lines[8].split("|")[0] } }
+            if ch == "0" { if len(acct_lines) >= 10 { selected = acct_lines[9].split("|")[0] } }
+
+            // Fallback: Enter or unknown → best
+            if selected == "" { selected = best }
+            if selected == "" {
                 println("  ✗ 사용 가능한 계정 없음")
-                show_status()
+                return
             }
+
+            resolve_launch(selected)
         }
-    }
-    if cmd == "status" {
-        exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto >/dev/null 2>&1 &")
-        show_status()
-    }
-    if cmd == "u" {
-        show_usage_dashboard()
     }
     if cmd == "pick" {
         if len(argv) > 4 {

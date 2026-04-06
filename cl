@@ -71,9 +71,7 @@ if [[ "$1" == "login" ]]; then
 fi
 
 # ─── Subcommands ───
-if [[ "$1" == "status" || "$1" == "u" || "$1" == "-u" || "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" ]]; then
-    # -u → u 변환
-    [[ "$1" == "-u" ]] && set -- "u" "${@:2}"
+if [[ "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" ]]; then
     cd "$AIRGENOME"
     $HEXA run modules/cl.hexa "$@" 2>&1
     cd "$ORIG_DIR"
@@ -148,18 +146,23 @@ trap cleanup EXIT INT TERM
 (cd "$AIRGENOME" && $HEXA run modules/usage.hexa auto >/dev/null 2>&1 &)
 
 cd "$AIRGENOME"
-OUTPUT=$($HEXA run modules/cl.hexa "$@" 2>&1)
-LAUNCH_DIR=$(echo "$OUTPUT" | grep -a '^LAUNCH:' | sed 's/^LAUNCH://')
+# LAUNCH 마커를 파일로 전달 (대시보드+키입력은 tty 직접)
+LAUNCH_MARKER="/tmp/cl-launch-$$"
+rm -f "$LAUNCH_MARKER"
+export CL_LAUNCH_MARKER="$LAUNCH_MARKER"
+$HEXA run modules/cl.hexa "$@" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+        LAUNCH:*) echo "${line#LAUNCH:}" > "$LAUNCH_MARKER" ;;
+        *) printf '%s\n' "$line" ;;
+    esac
+done
+LAUNCH_DIR=""
+[ -f "$LAUNCH_MARKER" ] && LAUNCH_DIR=$(cat "$LAUNCH_MARKER")
+rm -f "$LAUNCH_MARKER"
 cd "$ORIG_DIR"
 
-echo "$OUTPUT" | grep -av '^LAUNCH:'
-
 if [ -z "$LAUNCH_DIR" ]; then
-    echo ""
-    echo "[cl] claude 실행 실패 — LAUNCH 마커 없음"
-    echo "[cl] 아무 키나 누르면 종료..."
-    read -r _
-    exit 1
+    exit 0
 fi
 
 start_account_watcher
@@ -180,6 +183,9 @@ while true; do
     export CLAUDE_CONFIG_DIR="$CURRENT_DIR"
     ~/.local/bin/claude
     EXIT_CODE=$?
+
+    # 세션 종료 후 해당 계정 usage 즉시 갱신 (백그라운드)
+    (cd "$AIRGENOME" && $HEXA run modules/usage.hexa refresh >/dev/null 2>&1 &)
 
     LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
     if [ -n "$LATEST_JSONL" ]; then
