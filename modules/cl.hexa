@@ -1,0 +1,404 @@
+// airgenome/modules/cl.hexa — Claude Code multi-account launcher
+//
+// Features:
+//   1. cl / claude → auto-pick best account, launch claude code
+//   2. Rate limit → auto-switch to next account (오염 방지)
+//   3. /login capture → add new account to management
+//   4. cl status → show all accounts usage
+//   5. cl remove <name> → remove account
+//
+// 폐기 가능: 이 파일 삭제 + ~/.zshrc에서 cl 제거하면 끝
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION = "0.1.0"
+let ACCOUNTS_FILE = "~/.airgenome/accounts.json"
+let STATE_FILE = "~/.airgenome/cl-state.json"
+let USAGE_CACHE = "~/.ccmon-usage-cache.json"
+
+// Rate limit detection patterns
+let RATE_PATTERNS = ["rate limit", "limit reached", "usage cap", "rate_limit_error", "Too many requests", "overloaded_error"]
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EFFECTS
+// ═══════════════════════════════════════════════════════════════════════
+
+effect KeychainAccess {
+    fn read_keychain(label: str) -> str
+    fn delete_keychain(label: str) -> void
+}
+
+effect AccountManager {
+    fn discover_accounts() -> str
+    fn load_accounts() -> str
+    fn save_accounts(json: str) -> void
+    fn get_usage(name: str) -> str
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ACCOUNT DISCOVERY
+// ═══════════════════════════════════════════════════════════════════════
+
+fn discover_accounts() -> str {
+    // Scan ~/.claude-claude*/ directories
+    let result = exec("ls -d ~/.claude-claude*/ 2>/dev/null | while read dir; do name=$(basename \"$dir\" | sed 's/^\\.//' | sed 's/^claude-//'); has_json='false'; [ -f \"$dir/.claude.json\" ] && has_json='true'; echo \"$name|$dir|$has_json\"; done").trim()
+    return result
+}
+
+fn load_accounts_json() -> str {
+    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    let exists = exec("[ -f '" + path + "' ] && echo 'yes' || echo 'no'").trim()
+    if exists == "yes" {
+        return exec("cat '" + path + "'").trim()
+    }
+    return ""
+}
+
+fn save_accounts_json(json: str) -> void {
+    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    exec("mkdir -p ~/.airgenome")
+    write_file(path, json)
+}
+
+fn bootstrap_accounts() -> str {
+    let existing = load_accounts_json()
+    if len(existing) > 10 {
+        return existing
+    }
+
+    println("  ⬡ 첫 실행: Claude 계정 스캔 중...")
+    let raw = discover_accounts()
+    if len(raw) == 0 {
+        println("  ✗ ~/.claude-claude*/ 디렉토리 없음")
+        return ""
+    }
+
+    let lines = raw.split("\n")
+    let json = "{\"accounts\":["
+    let i = 0
+    let count = 0
+    while i < len(lines) {
+        let parts = lines[i].split("|")
+        if len(parts) >= 3 {
+            if parts[2] == "true" {
+                if count > 0 {
+                    json = json + ","
+                }
+                json = json + "{\"name\":\"" + parts[0] + "\",\"config_dir\":\"" + parts[1] + "\",\"active\":false,\"removed\":false}"
+                count = count + 1
+            }
+        }
+        i = i + 1
+    }
+    json = json + "]}"
+
+    save_accounts_json(json)
+    println("  ⬡ " + to_string(count) + "개 계정 발견")
+    return json
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  USAGE API (reads ccmon cache, no API calls)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn get_account_usage(name: str) -> str {
+    let cache_path = exec("echo " + USAGE_CACHE).trim()
+    let exists = exec("[ -f '" + cache_path + "' ] && echo 'yes' || echo 'no'").trim()
+    if exists == "no" {
+        return "?|?"
+    }
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + cache_path + "'));e=d.get('" + name + "',{});print(f'{e.get(\"session_pct\",\"?\")}'+'|'+f'{e.get(\"week_all_pct\",\"?\")}')\" 2>/dev/null || echo '?|?'").trim()
+    return result
+}
+
+fn pick_best_account(accounts_json: str) -> str {
+    // Returns best account name (lowest week usage, not exhausted, not removed)
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"" +
+        "import json\n" +
+        "accounts=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'))['accounts']\n" +
+        "cache_path='" + exec("echo " + USAGE_CACHE).trim() + "'\n" +
+        "try: usage=json.load(open(cache_path))\n" +
+        "except: usage={}\n" +
+        "best=None; best_week=999\n" +
+        "for a in accounts:\n" +
+        "  if a.get('removed'): continue\n" +
+        "  n=a['name']\n" +
+        "  u=usage.get(n,{})\n" +
+        "  w=u.get('week_all_pct',999)\n" +
+        "  try: w=float(w)\n" +
+        "  except: w=999\n" +
+        "  if w>=100: continue\n" +
+        "  if w<best_week: best=n; best_week=w\n" +
+        "if best: print(f'{best}|{best_week}')\n" +
+        "else: print('none|0')\n" +
+        "\" 2>/dev/null").trim()
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  오염 방지 (Contamination Guard)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn backup_claude_json(config_dir: str) -> str {
+    let json_path = config_dir + "/.claude.json"
+    let backup = config_dir + "/.claude.json.bak"
+    let exists = exec("[ -f '" + json_path + "' ] && echo 'yes' || echo 'no'").trim()
+    if exists == "yes" {
+        exec("cp '" + json_path + "' '" + backup + "'")
+        // Extract original accountUuid
+        let uuid = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + json_path + "'));print(d.get('oauthAccount',{}).get('accountUuid',''))\" 2>/dev/null").trim()
+        return uuid
+    }
+    return ""
+}
+
+fn check_contamination(config_dir: str, original_uuid: str) -> bool {
+    if len(original_uuid) == 0 {
+        return false
+    }
+    let json_path = config_dir + "/.claude.json"
+    let current_uuid = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + json_path + "'));print(d.get('oauthAccount',{}).get('accountUuid',''))\" 2>/dev/null").trim()
+    if current_uuid != original_uuid {
+        println("  ⚠ 오염 감지! UUID 변경: " + original_uuid + " → " + current_uuid)
+        let backup = config_dir + "/.claude.json.bak"
+        exec("cp '" + backup + "' '" + json_path + "'")
+        println("  ✓ 백업에서 복원 완료")
+        return true
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RATE LIMIT DETECTION
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_rate_limit(logfile: str) -> bool {
+    let i = 0
+    while i < len(RATE_PATTERNS) {
+        let found = exec("grep -qi '" + RATE_PATTERNS[i] + "' '" + logfile + "' 2>/dev/null && echo 'yes' || echo 'no'").trim()
+        if found == "yes" {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LAUNCH
+// ═══════════════════════════════════════════════════════════════════════
+
+fn launch_claude(account_name: str) -> int {
+    // Find config dir for this account
+    let config_dir = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'));[print(a['config_dir']) for a in d['accounts'] if a['name']=='" + account_name + "']\" 2>/dev/null").trim()
+
+    if len(config_dir) == 0 {
+        println("  ✗ 계정 없음: " + account_name)
+        return 1
+    }
+
+    // Usage info
+    let usage = get_account_usage(account_name)
+    let usage_parts = usage.split("|")
+    let session_pct = usage_parts[0]
+    let week_pct = "?"
+    if len(usage_parts) > 1 {
+        week_pct = usage_parts[1]
+    }
+
+    println("")
+    println("  ⬡ " + account_name + "  session=" + session_pct + "%  week=" + week_pct + "%")
+    println("    " + config_dir)
+    println("")
+
+    // 오염 방지: 백업
+    let orig_uuid = backup_claude_json(config_dir)
+
+    // Save active state
+    exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + account_name + "\"}' > " + exec("echo " + STATE_FILE).trim())
+
+    // Launch claude with CLAUDE_CONFIG_DIR
+    let logfile = "/tmp/cl-output-" + to_string(to_int(exec("date +%s").trim())) + ".log"
+    let claude_bin = exec("which claude 2>/dev/null || echo ~/.local/bin/claude").trim()
+
+    // script -q preserves PTY for claude's TUI
+    let exit_code = to_int(exec("CLAUDE_CONFIG_DIR='" + config_dir + "' script -q '" + logfile + "' '" + claude_bin + "'; echo $?").trim())
+
+    // 오염 검증
+    check_contamination(config_dir, orig_uuid)
+
+    // Rate limit 체크
+    if check_rate_limit(logfile) {
+        println("  ⚠ Rate limit 감지: " + account_name)
+        let best = pick_best_account("")
+        let best_parts = best.split("|")
+        let next_name = best_parts[0]
+        if next_name != "none" {
+            if next_name != account_name {
+                println("  → 자동 전환: " + next_name)
+                exec("rm -f '" + logfile + "'")
+                return launch_claude(next_name)
+            }
+        }
+        println("  ✗ 사용 가능한 계정 없음")
+    }
+
+    exec("rm -f '" + logfile + "'")
+    return exit_code
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ACCOUNT MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════
+
+fn add_account(name: str, config_dir: str) -> void {
+    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    exec("/opt/homebrew/bin/python3.12 -c \"" +
+        "import json\n" +
+        "d=json.load(open('" + path + "'))\n" +
+        "names=[a['name'] for a in d['accounts']]\n" +
+        "if '" + name + "' not in names:\n" +
+        "  d['accounts'].append({'name':'" + name + "','config_dir':'" + config_dir + "','active':False,'removed':False})\n" +
+        "  json.dump(d,open('" + path + "','w'),indent=2)\n" +
+        "  print('added')\n" +
+        "else: print('exists')\n" +
+        "\"")
+    println("  ⬡ 계정 추가: " + name)
+}
+
+fn remove_account(name: str) -> void {
+    let path = exec("echo " + ACCOUNTS_FILE).trim()
+    exec("/opt/homebrew/bin/python3.12 -c \"" +
+        "import json\n" +
+        "d=json.load(open('" + path + "'))\n" +
+        "for a in d['accounts']:\n" +
+        "  if a['name']=='" + name + "': a['removed']=True\n" +
+        "json.dump(d,open('" + path + "','w'),indent=2)\n" +
+        "\"")
+    println("  ⬡ 계정 제거: " + name + " (폐기 표시)")
+}
+
+fn show_status() -> void {
+    let accounts_json = bootstrap_accounts()
+    if len(accounts_json) == 0 {
+        return
+    }
+
+    println("")
+    println("  ⬡ Claude Code 계정 현황")
+    println("  ─────────────────────────────────────────")
+    println("  이름         세션    주간    상태")
+    println("  ─────────────────────────────────────────")
+
+    let active = exec("[ -f " + exec("echo " + STATE_FILE).trim() + " ] && /opt/homebrew/bin/python3.12 -c \"import json;print(json.load(open('" + exec("echo " + STATE_FILE).trim() + "'))['active'])\" 2>/dev/null || echo ''").trim()
+
+    let names = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'));[print(a['name']+'|'+str(a.get('removed',False))) for a in d['accounts']]\" 2>/dev/null").trim()
+    let lines = names.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let parts = lines[i].split("|")
+        if len(parts) >= 2 {
+            let name = parts[0]
+            let removed = parts[1]
+            if removed == "True" {
+                i = i + 1
+                // skip removed, but show with strikethrough
+                println("  " + name + "       -       -       [폐기됨]")
+                i = i  // continue
+            }
+            if removed != "True" {
+                let usage = get_account_usage(name)
+                let u_parts = usage.split("|")
+                let session = u_parts[0]
+                let week = "?"
+                if len(u_parts) > 1 { week = u_parts[1] }
+
+                let status = ""
+                if name == active { status = "● ACTIVE" }
+                // Check if exhausted
+                let w_check = exec("echo '" + week + "' | awk '{if($1+0>=100)print \"exhausted\";else if($1+0>=80)print \"warn\";else print \"ok\"}'").trim()
+                if w_check == "exhausted" { status = status + " ✗ EXHAUSTED" }
+                if w_check == "warn" { status = status + " ⚠" }
+
+                println("  " + name + "    " + session + "%    " + week + "%    " + status)
+            }
+        }
+        i = i + 1
+    }
+    println("  ─────────────────────────────────────────")
+    println("")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI ROUTER
+// ═══════════════════════════════════════════════════════════════════════
+
+fn print_help() -> void {
+    println("cl v" + VERSION + " — Claude Code multi-account launcher (airgenome)")
+    println("")
+    println("Commands:")
+    println("  cl              → 최적 계정으로 claude 실행")
+    println("  cl status       → 계정 현황 표시")
+    println("  cl pick <name>  → 지정 계정으로 실행")
+    println("  cl add <name> <dir> → 계정 추가")
+    println("  cl remove <name>    → 계정 폐기")
+    println("  cl help         → 도움말")
+    println("")
+    println("Rate limit 시 자동 전환. 오염 방지 내장.")
+    println("폐기: 이 파일 삭제 + ~/.zshrc에서 cl 제거")
+}
+
+consciousness CLRouter {
+    assert len(VERSION) > 0
+    assert len(RATE_PATTERNS) > 0
+
+    let argv = args()
+    let cmd = ""
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "" {
+        // Default: auto-pick best → launch
+        let accounts = bootstrap_accounts()
+        if len(accounts) > 0 {
+            let best = pick_best_account(accounts)
+            let bp = best.split("|")
+            if bp[0] != "none" {
+                launch_claude(bp[0])
+            }
+            if bp[0] == "none" {
+                println("  ✗ 사용 가능한 계정 없음")
+                show_status()
+            }
+        }
+    }
+    if cmd == "status" { show_status() }
+    if cmd == "pick" {
+        if len(argv) > 4 {
+            launch_claude(argv[4])
+        }
+        if len(argv) <= 4 {
+            println("usage: cl pick <name>")
+        }
+    }
+    if cmd == "add" {
+        if len(argv) > 5 {
+            add_account(argv[4], argv[5])
+        }
+        if len(argv) <= 5 {
+            println("usage: cl add <name> <config_dir>")
+        }
+    }
+    if cmd == "remove" {
+        if len(argv) > 4 {
+            remove_account(argv[4])
+        }
+        if len(argv) <= 4 {
+            println("usage: cl remove <name>")
+        }
+    }
+    if cmd == "help" { print_help() }
+}
