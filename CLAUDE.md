@@ -60,6 +60,11 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
   - keychain OAuth extraction, usage API, JSONL scan/compress, monitor daemon, JXA menubar
 - ✅ guard module (CPU/RAM/swap monitor) — prime directive compliant
   - status, limits, watch commands; throttle level assessment; progress bars
+- ✅ menubar monitor (run.sh + settings.js) — CPU/RAM/Swap bars, ceiling sliders, auto profile
+- ✅ hx package manager (hexa-lang/pkg/) — `hx install airgenome` one-liner
+- ✅ Settings panel — 5% snap sliders, module toggles (forge/guard default OFF), Start at login
+- ✅ Hardware profiles — 10 Mac presets, auto-detect chip/RAM/fan
+- ✅ Token bottleneck analysis — cache_read 99%, DFS benchmark framework
 - ⏳ L5c–L6e candidate layers (4 remaining, projected +0.173)
 - ⏳ Per-source genome accumulation over time
 - ⏳ Signature diff between sources (Safari vs Chrome)

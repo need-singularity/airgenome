@@ -9,7 +9,22 @@ var configPath = args.count > 4 ? args.objectAtIndex(4).js : '/tmp/airgenome-con
 var app = $.NSApplication.sharedApplication;
 app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 
-var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, forge: false, guard: false};
+var defaults = {cpu_ceil: 75, ram_ceil: 70, swap_ceil: 30, forge: false, guard: false, autostart: true};
+var plistPath = $.NSHomeDirectory().js + '/Library/LaunchAgents/com.airgenome.menubar.plist';
+
+function isAutoStartEnabled() {
+    return $.NSFileManager.defaultManager.fileExistsAtPath($(plistPath));
+}
+
+function setAutoStart(on) {
+    if (on) {
+        // copy plist template
+        var plist = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.airgenome.menubar</string><key>ProgramArguments</key><array><string>' + $.NSHomeDirectory().js + '/.hx/bin/airgenome</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><false/><key>EnvironmentVariables</key><dict><key>PATH</key><string>/usr/local/bin:/usr/bin:/bin:' + $.NSHomeDirectory().js + '/.cargo/bin:' + $.NSHomeDirectory().js + '/.hx/bin</string></dict><key>StandardOutPath</key><string>/tmp/airgenome.log</string><key>StandardErrorPath</key><string>/tmp/airgenome.err</string></dict></plist>';
+        $(plist).writeToFileAtomicallyEncodingError($(plistPath), true, $.NSUTF8StringEncoding, null);
+    } else {
+        $.NSFileManager.defaultManager.removeItemAtPathError($(plistPath), null);
+    }
+}
 
 function readConfig() {
     try {
@@ -29,7 +44,7 @@ function writeFullConfig(obj) {
 var cfg = readConfig();
 
 var win = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(
-    $.NSMakeRect(0, 0, 340, 470),
+    $.NSMakeRect(0, 0, 340, 500),
     $.NSWindowStyleMaskTitled | $.NSWindowStyleMaskClosable,
     $.NSBackingStoreBuffered, false
 );
@@ -105,11 +120,17 @@ function makeToggle(y, name, isOn) {
     return {label: lbl, button: btn, name: name};
 }
 
-var forgeToggle = makeToggle(78, 'token-forge (10-account manager)', cfg.forge);
-var guardToggle = makeToggle(48, 'resource-guard (CPU/RAM limiter)', cfg.guard);
+var forgeToggle = makeToggle(88, 'token-forge (10-account manager)', cfg.forge);
+var guardToggle = makeToggle(58, 'resource-guard (CPU/RAM limiter)', cfg.guard);
+
+var sep3 = $.NSBox.alloc.initWithFrame($.NSMakeRect(20, 48, 300, 1));
+sep3.boxType = $.NSBoxSeparator;
+cv.addSubview(sep3);
+
+var autostartToggle = makeToggle(20, 'Start at login', isAutoStartEnabled());
 
 // --- Reset button ---
-var resetBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(20, 12, 300, 28));
+var resetBtn = $.NSButton.alloc.initWithFrame($.NSMakeRect(20, -18, 300, 28));
 resetBtn.title = $('\u21BA Reset to Profile Defaults');
 resetBtn.bezelStyle = $.NSBezelStyleRounded;
 cv.addSubview(resetBtn);
@@ -227,7 +248,10 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
     ramRow.label.stringValue   = $(ramRow.name + ': ' + rc + '%');
     swapRow.label.stringValue  = $(swapRow.name + ': ' + sc + '%');
 
-    writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, forge: forgeOn, guard: guardOn});
+    var autoOn = autostartToggle.button.state === $.NSControlStateValueOn;
+    setAutoStart(autoOn);
+
+    writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, forge: forgeOn, guard: guardOn, autostart: autoOn});
 });
 
 app.run;
