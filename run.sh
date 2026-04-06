@@ -7,12 +7,13 @@ DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
 
 # --settings: open settings panel only
 if [ "${1:-}" = "--settings" ] || [ "${1:-}" = "-s" ]; then
-  CONFIG="${TMPDIR:-/tmp}/airgenome-config.json"
-  exec osascript -l JavaScript "$DIR/settings.js" "$CONFIG"
+  exec osascript -l JavaScript "$DIR/settings.js" "$HOME/.airgenome/config.json"
 fi
 CARGO="${CARGO:-$(command -v cargo || echo "$HOME/.cargo/bin/cargo")}"
+CONF_DIR="$HOME/.airgenome"
+mkdir -p "$CONF_DIR"
 STATE="${TMPDIR:-/tmp}/airgenome-state.json"
-CONFIG="${TMPDIR:-/tmp}/airgenome-config.json"
+CONFIG="$CONF_DIR/config.json"
 
 # 0. Single instance lock
 LOCKFILE="${TMPDIR:-/tmp}/airgenome.lock"

@@ -4,7 +4,7 @@ ObjC.import('Cocoa');
 ObjC.import('Foundation');
 
 var args = $.NSProcessInfo.processInfo.arguments;
-var configPath = args.count > 4 ? args.objectAtIndex(4).js : '/tmp/airgenome-config.json';
+var configPath = args.count > 4 ? args.objectAtIndex(4).js : $.NSHomeDirectory().js + '/.airgenome/config.json';
 
 var app = $.NSApplication.sharedApplication;
 app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
@@ -250,6 +250,23 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(0.3, true, function() {
 
     var autoOn = autostartToggle.button.state === $.NSControlStateValueOn;
     setAutoStart(autoOn);
+
+    // forge toggle → proxy on/off
+    var prevCfg = readConfig();
+    var prevForge = prevCfg.forge || false;
+    if (forgeOn && !prevForge) {
+        // start proxy
+        var t = $.NSTask.alloc.init;
+        t.executableURL = $.NSURL.fileURLWithPath($('/bin/launchctl'));
+        t.arguments = $(['load', $.NSHomeDirectory().js + '/Library/LaunchAgents/com.token-forge.proxy.plist']);
+        t.launchAndReturnError(null);
+    } else if (!forgeOn && prevForge) {
+        // stop proxy
+        var t2 = $.NSTask.alloc.init;
+        t2.executableURL = $.NSURL.fileURLWithPath($('/bin/launchctl'));
+        t2.arguments = $(['unload', $.NSHomeDirectory().js + '/Library/LaunchAgents/com.token-forge.proxy.plist']);
+        t2.launchAndReturnError(null);
+    }
 
     writeFullConfig({cpu_ceil: cc, ram_ceil: rc, swap_ceil: sc, forge: forgeOn, guard: guardOn, autostart: autoOn});
 });
