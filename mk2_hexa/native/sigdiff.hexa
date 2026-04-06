@@ -413,7 +413,7 @@ fn sigdiff_help() -> str {
 //  CONSCIOUSNESS BLOCK
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness SigDiffRouter {
+fn main() {
     assert GATE_COUNT == 8
 
     let argv = args()
@@ -446,3 +446,5 @@ consciousness SigDiffRouter {
         if len(sigs) > 0 { print_fingerprint(sigs) }
     }
 }
+
+main()

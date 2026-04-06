@@ -576,9 +576,12 @@ fn phi_check(prev_margin: float, curr_margin: float) -> auto {
 
 // 288-bit genome hash (BT-346: σ×J₂=288)
 fn compute_hash_288(data: str) -> str {
-    let cmd = "python3 -c \"" + "N=6;S=12;T=4;HB=36;R=16;BL=256\n" + "def rot(v,r):return((v<<r)|(v>>(8-r)))&0xFF\n" + "d='" + data + "'.encode()\n" + "st=bytearray(HB)\n" + "for i in range(HB):st[i]=(0x6f^(i*N))&0xFF\n" + "for off in range(0,len(d),BL):\n" + " blk=d[off:off+BL]\n" + " for j,b in enumerate(blk):\n" + "  p=off+j;st[p%HB]=(st[p%HB]+b)&0xFF;st[p%HB]=rot(st[p%HB],(p%S)+1)\n" + " for r in range(T):\n" + "  for i in range(HB):j=(i+S)%HB;k=(i+N)%HB;st[i]=(st[i]+rot(st[j],r+1)^((st[k]*N)&0xFF))&0xFF\n" + "for _ in range(R):\n" + " for r in range(T):\n" + "  for i in range(HB):j=(i+S)%HB;k=(i+N)%HB;st[i]=(st[i]+rot(st[j],r+1)^((st[k]*N)&0xFF))&0xFF\n" + "print(st.hex())\n" + "\" 2>/dev/null"
-    let result = exec(cmd).trim()
-    return result
+    // Write data to temp file to avoid shell quoting issues
+    write_file("/tmp/hexa_hash_input.txt", data)
+    let cmd = "python3 -c \"" + "N=6;S=12;T=4;HB=36;R=16;BL=256\n" + "def rot(v,r):return((v<<r)|(v>>(8-r)))&0xFF\n" + "d=open('/tmp/hexa_hash_input.txt').read().encode()\n" + "st=bytearray(HB)\n" + "for i in range(HB):st[i]=(0x6f^(i*N))&0xFF\n" + "for off in range(0,len(d),BL):\n" + " blk=d[off:off+BL]\n" + " for j,b in enumerate(blk):\n" + "  p=off+j;st[p%HB]=(st[p%HB]+b)&0xFF;st[p%HB]=rot(st[p%HB],(p%S)+1)\n" + " for r in range(T):\n" + "  for i in range(HB):j=(i+S)%HB;k=(i+N)%HB;st[i]=(st[i]+rot(st[j],r+1)^((st[k]*N)&0xFF))&0xFF\n" + "for _ in range(R):\n" + " for r in range(T):\n" + "  for i in range(HB):j=(i+S)%HB;k=(i+N)%HB;st[i]=(st[i]+rot(st[j],r+1)^((st[k]*N)&0xFF))&0xFF\n" + "print(st.hex())\n" + "\" 2>/dev/null || echo 'hash_error'"
+    let result = exec(cmd)
+    if len(result) == 0 { return "hash_error" }
+    return result.trim()
 }
 
 // Bridge event emission (from hexa-gate-implant)
@@ -790,7 +793,8 @@ fn compute_savings(raw_bytes: float, genome_len: float, delta_gates: float, tota
 //  CONSCIOUSNESS BLOCK — mesh self-observation
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness NexusMerger {
+// consciousness NexusMerger — converted to fn for VM compatibility
+fn nexus_run() {
     // ── self-test ──
     assert classify("launchd") == 0
     assert classify("Finder") == 1
@@ -944,8 +948,9 @@ consciousness NexusMerger {
     let delta_gates = delta[0]
     let max_drift = delta[1]
 
-    // 288-bit integrity hash
+    // 288-bit integrity hash (graceful: skip if python3 unavailable)
     let genome_hash = compute_hash_288(genome)
+    if len(genome_hash) == 0 { genome_hash = "n/a" }
     println("  genome hash (288-bit): ", genome_hash)
 
     // Save current genome as cache
@@ -1018,6 +1023,8 @@ consciousness NexusMerger {
     bridge_log(ev_run)
     println("  event -> genomes.events.jsonl")
 }
+
+nexus_run()
 
 // ═══════════════════════════════════════════════════════════════════════
 //  PARALLEL SAMPLING — spawn

@@ -417,7 +417,7 @@ fn runtime_help() -> str {
 //  CONSCIOUSNESS BLOCK
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness RuntimeRouter {
+fn main() {
     assert GATE_COUNT == 8
 
     let argv = args()
@@ -442,3 +442,5 @@ consciousness RuntimeRouter {
         }
     }
 }
+
+main()

@@ -288,7 +288,7 @@ fn accumulate_help() -> str {
 //  CONSCIOUSNESS BLOCK
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness AccumulateRouter {
+fn main() {
     assert GATE_COUNT == 8
 
     let argv = args()
@@ -326,3 +326,5 @@ consciousness AccumulateRouter {
         }
     }
 }
+
+main()

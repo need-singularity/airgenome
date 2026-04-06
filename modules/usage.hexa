@@ -104,17 +104,18 @@ fn fetch_one(name: str) -> str {
     let usage = call_usage_api(access, name)
     let u = usage.split("|")
     if len(u) >= 4 {
-        return name + "|" + u[0] + "|" + u[2] + "|"
+        // name|session_pct|session_resets|week_pct|week_resets
+        return name + "|" + u[0] + "|" + u[1] + "|" + u[2] + "|" + u[3]
     }
-    return name + "|||api_error"
+    return name + "||||api_error"
 }
 
 fn save_cache(results: str) -> void {
     let cache_path = exec("echo " + CACHE_FILE).trim()
     exec("mkdir -p ~/.airgenome")
-    // results = lines of "name|session|week|error"
+    // results = lines of "name|session_pct|session_resets|week_pct|week_resets"
     // Convert to JSON
-    let py_script = "import json,time,sys\nlines=sys.stdin.read().strip().split('\\n')\nd={}\nfor l in lines:\n  p=l.split('|')\n  if len(p)>=4:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'week_all_pct':float(p[2]) if p[2] else None,'error':p[3] if p[3] else None}\nd['_ts']=time.time()\njson.dump(d,open('" + cache_path + "','w'))\nprint('saved '+str(len(d)-1)+' accounts')"
+    let py_script = "import json,time,sys\nlines=sys.stdin.read().strip().split('\\n')\nd={}\nfor l in lines:\n  p=l.split('|')\n  if len(p)>=5:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':p[5] if len(p)>5 and p[5] else None}\n  elif len(p)>=4:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'week_all_pct':float(p[2]) if p[2] else None,'error':p[3] if p[3] else None}\nd['_ts']=time.time()\njson.dump(d,open('" + cache_path + "','w'))\nprint('saved '+str(len(d)-1)+' accounts')"
     let out = exec("echo '" + results + "' | /opt/homebrew/bin/python3.12 -c \"" + py_script + "\" 2>/dev/null").trim()
     println("  " + out)
 }

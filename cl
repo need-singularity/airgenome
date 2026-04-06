@@ -29,7 +29,7 @@ RATE_PATTERNS=(
 )
 
 # ─── Subcommands (pass through to hexa) ───
-if [[ "$1" == "status" || "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" ]]; then
+if [[ "$1" == "status" || "$1" == "u" || "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" ]]; then
     cd "$AIRGENOME"
     $HEXA run modules/cl.hexa "$@" 2>&1
     cd "$ORIG_DIR"

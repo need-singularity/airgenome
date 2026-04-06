@@ -274,6 +274,102 @@ fn show_status() -> void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  cl u — 상세 사용량 대시보드 (세션/주간 limit + 리셋 시간)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn get_full_usage(name: str) -> str {
+    // Returns: session_pct|session_resets|week_pct|week_resets
+    let cache_path = exec("echo " + USAGE_CACHE).trim()
+    let exists = exec("[ -f '" + cache_path + "' ] && echo 'yes' || echo 'no'").trim()
+    if exists == "no" { return "?|?|?|?" }
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + cache_path + "'));e=d.get('" + name + "',{});print(str(e.get('session_pct','?'))+'|'+str(e.get('session_resets','?'))+'|'+str(e.get('week_all_pct','?'))+'|'+str(e.get('week_resets','?')))\" 2>/dev/null || echo '?|?|?|?'").trim()
+    return result
+}
+
+fn format_reset_time(iso_str: str) -> str {
+    if iso_str == "?" { return "?" }
+    if iso_str == "None" { return "-" }
+    if len(iso_str) < 5 { return iso_str }
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"from datetime import datetime,timezone;import sys\ntry:\n  s='" + iso_str + "'\n  if 'T' in s:\n    dt=datetime.fromisoformat(s.replace('Z','+00:00'))\n    now=datetime.now(timezone.utc)\n    diff=dt-now\n    ts=int(diff.total_seconds())\n    if ts<0: print('now')\n    elif ts<3600: print(str(ts//60)+'m')\n    elif ts<86400: print(str(ts//3600)+'h '+str((ts%3600)//60)+'m')\n    else: print(str(ts//86400)+'d '+str((ts%86400)//3600)+'h')\n  else: print(s)\nexcept: print(s)\" 2>/dev/null").trim()
+    return result
+}
+
+fn pct_bar(pct_str: str, width: int) -> str {
+    let bar = exec("/opt/homebrew/bin/python3.12 -c \"p=min(100,max(0,int(float('" + pct_str + "') if '" + pct_str + "' not in ('?','None','') else 0)));w=" + to_string(width) + ";f=int(p/100*w);print('▓'*f+'░'*(w-f))\" 2>/dev/null || echo '░░░░░░░░░░░░░░'").trim()
+    return bar
+}
+
+fn show_usage_dashboard() -> void {
+    let accounts_json = bootstrap_accounts()
+    if len(accounts_json) == 0 { return }
+
+    // 갱신 (백그라운드)
+    exec("(cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null &)")
+
+    let active = exec("[ -f " + exec("echo " + STATE_FILE).trim() + " ] && /opt/homebrew/bin/python3.12 -c \"import json;print(json.load(open('" + exec("echo " + STATE_FILE).trim() + "'))['active'])\" 2>/dev/null || echo ''").trim()
+
+    println("")
+    println("┏━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━┓")
+    println("┃    ┃ Account    ┃ Session ┃                ┃  Reset ┃ Week    ┃                ┃  Reset ┃")
+    println("┡━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━┩")
+
+    let names = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'));[print(a['name']+'|'+str(a.get('removed',False))) for a in d['accounts']]\" 2>/dev/null").trim()
+    let lines = names.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let parts = lines[i].split("|")
+        if len(parts) >= 2 {
+            let name = parts[0]
+            let removed = parts[1]
+
+            let marker = "  "
+            if name == active { marker = "★ " }
+
+            if removed == "True" {
+                println("│ " + to_string(i + 1) + "  │ " + name + " ✗  │       - │ ░░░░░░░░░░░░░░ │      - │       - │ ░░░░░░░░░░░░░░ │      - │")
+            }
+            if removed != "True" {
+                let u = get_full_usage(name)
+                let up = u.split("|")
+                let s_pct = up[0]
+                let s_reset = "?"
+                let w_pct = "?"
+                let w_reset = "?"
+                if len(up) > 1 { s_reset = up[1] }
+                if len(up) > 2 { w_pct = up[2] }
+                if len(up) > 3 { w_reset = up[3] }
+
+                let s_bar = pct_bar(s_pct, 14)
+                let w_bar = pct_bar(w_pct, 14)
+                let s_time = format_reset_time(s_reset)
+                let w_time = format_reset_time(w_reset)
+
+                // Status icon
+                let icon = " "
+                let w_num = exec("echo '" + w_pct + "' | awk '{printf \"%.0f\", $1+0}'").trim()
+                if w_num == "100" { icon = "✗" }
+                let w_int = to_int(w_num)
+                if w_int >= 100 { icon = "✗" }
+                if w_int >= 80 { if w_int < 100 { icon = "③" } }
+                if name == active { icon = "★" }
+
+                let idx = to_string(i + 1)
+                if i == 9 { idx = "10" }
+
+                println("│ " + idx + "  │ " + name + " " + icon + "  │    " + s_pct + "% │ " + s_bar + " │ " + s_time + " │    " + w_pct + "% │ " + w_bar + " │ " + w_time + " │")
+            }
+
+            if i < len(lines) - 1 {
+                println("├────┼────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┤")
+            }
+        }
+        i = i + 1
+    }
+    println("└────┴────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┘")
+    println("")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  CLI ROUTER
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -282,7 +378,8 @@ fn print_help() -> void {
     println("")
     println("Commands:")
     println("  cl              → 최적 계정으로 claude 실행")
-    println("  cl status       → 계정 현황 표시")
+    println("  cl status       → 계정 현황 (간단)")
+    println("  cl u            → 사용량 대시보드 (세션/주간 limit + 리셋 시간)")
     println("  cl pick <name>  → 지정 계정으로 실행")
     println("  cl add <name> <dir> → 계정 추가")
     println("  cl remove <name>    → 계정 폐기")
@@ -319,6 +416,9 @@ fn main() {
     if cmd == "status" {
         exec("cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null")
         show_status()
+    }
+    if cmd == "u" {
+        show_usage_dashboard()
     }
     if cmd == "pick" {
         if len(argv) > 4 {
