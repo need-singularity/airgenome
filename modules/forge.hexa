@@ -472,6 +472,15 @@ fn print_help() -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 consciousness ForgeRouter {
+    // ── self-test ──
+    assert len(KEYCHAIN_LABELS) == 10
+    assert len(ACCOUNT_NAMES) == 10
+    assert AXIS_COUNT == 6
+    assert PAIR_COUNT == 15
+    assert GENOME_BYTES == 60
+    assert len(VERSION) > 0
+    assert len(CLIENT_ID) > 0
+
     let argv = args()
     // argv layout when called via:  hexa run modules/forge.hexa <cmd>
     //   argv[0] = hexa binary path
