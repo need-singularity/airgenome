@@ -5,3 +5,5 @@ genomes.log
 forge/genomes/
 forge/compressed/
 forge/state.json
+target/
+Cargo.lock
