@@ -98,7 +98,8 @@ fn format_reset_time(iso_str: str) -> str {
 
 fn list_accounts(file: str) -> str {
     // Returns lines of "name|config_dir|removed"
-    return exec("grep -oE '\"name\":\"[^\"]*\"|\"config_dir\":\"[^\"]*\"|\"removed\":[a-z]+' '" + file + "' 2>/dev/null | sed 's/\"//g;s/:/|/' | awk -F'|' '{if($1==\"name\")n=$2;if($1==\"config_dir\")d=$2;if($1==\"removed\"){if(n!=\"\")print n\"|\"d\"|\"$2;n=\"\"}}'").trim()
+    // removed 필드 없으면 false 기본값
+    return exec("grep -oE '\"name\":\\s*\"[^\"]*\"|\"config_dir\":\\s*\"[^\"]*\"|\"removed\":\\s*[a-z]+' '" + file + "' 2>/dev/null | sed 's/\"//g;s/: */|/' | awk -F'|' '{if($1==\"name\"){if(n!=\"\")print n\"|\"d\"|\"r;n=$2;d=\"\";r=\"false\"};if($1==\"config_dir\")d=$2;if($1==\"removed\")r=$2}END{if(n!=\"\")print n\"|\"d\"|\"r}'").trim()
 }
 
 fn get_config_dir_for(name: str) -> str {
@@ -119,17 +120,17 @@ fn get_config_dir_for(name: str) -> str {
 
 fn get_active_account() -> str {
     let state_path = exec("echo " + STATE_FILE).trim()
-    return exec("sed 's/\"//g;s/.*active://;s/[,}].*//' '" + state_path + "' 2>/dev/null").trim()
+    return exec("sed 's/\"//g;s/.*active *: *//;s/[,}].*//' '" + state_path + "' 2>/dev/null").trim()
 }
 
 fn cache_field(name: str, field: str) -> str {
     let cache_path = exec("echo " + USAGE_CACHE).trim()
-    return exec("sed 's/.*\"" + name + "\":{//;s/}.*//' '" + cache_path + "' 2>/dev/null | grep -o '\"" + field + "\":[^,}]*' | sed 's/[^:]*://;s/\"//g'").trim()
+    return exec("sed 's/.*\"" + name + "\" *: *{//;s/}.*//' '" + cache_path + "' 2>/dev/null | grep -o '\"" + field + "\" *: *[^,}]*' | sed 's/[^:]*: *//;s/\"//g;s/ //g'").trim()
 }
 
 fn load_cache_age() -> int {
     let cache_path = exec("echo " + USAGE_CACHE).trim()
-    let ts = exec("grep -o '\"_ts\":[0-9.]*' '" + cache_path + "' 2>/dev/null | sed 's/\"_ts\"://'").trim()
+    let ts = exec("grep -o '\"_ts\" *: *[0-9.]*' '" + cache_path + "' 2>/dev/null | sed 's/.*: *//;s/\\..*//'").trim()
     if len(ts) == 0 { return 9999 }
     let now = to_int(exec("date +%s").trim())
     let cache_ts = to_int(ts)
@@ -139,7 +140,7 @@ fn load_cache_age() -> int {
 fn get_full_usage(name: str) -> str {
     // Returns: session_pct|session_resets|week_all_pct|week_resets
     let cache_path = exec("echo " + USAGE_CACHE).trim()
-    let result = exec("sed 's/.*\"" + name + "\":{//;s/}.*//' '" + cache_path + "' 2>/dev/null | sed 's/\"//g' | awk -F, '{sp=\"?\";sr=\"?\";wp=\"?\";wr=\"?\";for(i=1;i<=NF;i++){k=$i;sub(/:.*/,\"\",k);v=$i;sub(/[^:]*:/,\"\",v);if(k==\"session_pct\")sp=v;if(k==\"session_resets\")sr=v;if(k==\"week_all_pct\")wp=v;if(k==\"week_resets\")wr=v};print sp\"|\"sr\"|\"wp\"|\"wr}'").trim()
+    let result = exec("sed 's/.*\"" + name + "\" *: *{//;s/}.*//' '" + cache_path + "' 2>/dev/null | sed 's/\"//g' | awk -F, '{sp=\"?\";sr=\"?\";wp=\"?\";wr=\"?\";for(i=1;i<=NF;i++){gsub(/^ +/,\"\",$i);k=$i;sub(/ *:.*/,\"\",k);v=$i;sub(/[^:]*: */,\"\",v);gsub(/ /,\"\",v);if(k==\"session_pct\")sp=v;if(k==\"session_resets\")sr=v;if(k==\"week_all_pct\")wp=v;if(k==\"week_resets\")wr=v};print sp\"|\"sr\"|\"wp\"|\"wr}'").trim()
     if len(result) == 0 { return "?|?|?|?" }
     return result
 }
@@ -261,7 +262,7 @@ fn pick_best_account(accounts_json: str) -> str {
 
 fn extract_uuid(config_dir: str) -> str {
     let json_path = config_dir + "/.claude.json"
-    return exec("grep -o '\"accountUuid\":\"[^\"]*\"' '" + json_path + "' 2>/dev/null | head -1 | sed 's/[^:]*://;s/\"//g'").trim()
+    return exec("grep -o '\"accountUuid\" *: *\"[^\"]*\"' '" + json_path + "' 2>/dev/null | head -1 | sed 's/.*: *//;s/\"//g'").trim()
 }
 
 fn backup_claude_json(config_dir: str) -> str {

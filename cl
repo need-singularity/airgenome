@@ -30,14 +30,14 @@ RATE_PATTERNS=(
 # ─── JSON helpers (pure awk/grep/sed) ───
 _json_get() {
     # Extract simple field from JSON file: _json_get file key
-    sed 's/"//g;s/.*'"$2"'://;s/[,}].*//' "$1" 2>/dev/null | tr -d ' '
+    sed 's/"//g;s/.*'"$2"' *: *//;s/[,}].*//' "$1" 2>/dev/null | tr -d ' '
 }
 
 _json_config_dir() {
     # Get config_dir for account name from accounts.json
     local name="$1"
-    grep -oE '"name":"[^"]*"|"config_dir":"[^"]*"' "$ACCOUNTS_FILE" 2>/dev/null | \
-      sed 's/"//g;s/:/|/' | \
+    grep -oE '"name":\s*"[^"]*"|"config_dir":\s*"[^"]*"' "$ACCOUNTS_FILE" 2>/dev/null | \
+      sed 's/"//g;s/: */|/' | \
       awk -F'|' -v n="$name" '{if($1=="name")cur=$2;if($1=="config_dir"&&cur==n){print $2;exit}}'
 }
 
@@ -117,8 +117,8 @@ check_rate_limit() {
 pick_next_account() {
     local current="$1"
     # List accounts: name|config_dir|removed, find lowest week usage
-    grep -oE '"name":"[^"]*"|"config_dir":"[^"]*"|"removed":[a-z]+' "$ACCOUNTS_FILE" 2>/dev/null | \
-      sed 's/"//g;s/:/|/' | \
+    grep -oE '"name":\s*"[^"]*"|"config_dir":\s*"[^"]*"|"removed":\s*[a-z]+' "$ACCOUNTS_FILE" 2>/dev/null | \
+      sed 's/"//g;s/: */|/' | \
       awk -F'|' '{if($1=="name")n=$2;if($1=="removed"){r=$2;if(n!="")print n"|"r;n=""}}' | \
       while read entry; do
         local n="${entry%%|*}"
