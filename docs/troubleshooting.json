@@ -81,12 +81,30 @@
       "fix": "plist를 XML 변환 → sed 치환 → 바이너리 복원 (총 9개 교체)",
       "commit": "N/A (로컬 iTerm 설정)"
     }
+    {
+      "id": "TS-009",
+      "date": "2026-04-06",
+      "title": "cl이 항상 airgenome 디렉토리로 진입",
+      "symptom": "cl 실행 → Claude Code가 ~/Dev/airgenome에서 시작 (호출 위치 무시)",
+      "root_cause": "cl 래퍼의 cd ~/Dev/airgenome이 hexa 실행 후에도 CWD를 복원하지 않음. exec claude가 airgenome에서 실행",
+      "fix": "ORIG_DIR=$(pwd) 저장 → hexa 실행 후 cd $ORIG_DIR 복원 → exec claude",
+      "commit": "f8f2a3e"
+    },
+    {
+      "id": "TS-010",
+      "date": "2026-04-06",
+      "title": "Claude Code 종료 후 쉘이 같이 종료",
+      "symptom": "Claude Code /exit → iTerm 탭 자체가 닫힘 (쉘 복귀 안 됨)",
+      "root_cause": "exec /bin/zsh -l -c 'claude' → claude 종료 시 zsh -c도 종료 → 프로세스 없어서 탭 닫힘",
+      "fix": "exec claude로 변경 (login shell 경유 제거, 호출자 쉘 환경 그대로 사용)",
+      "commit": "f8f2a3e"
+    }
   ],
   "convergence_pattern": {
-    "description": "8건의 트러블슈팅이 하나의 목표로 수렴: cl 단일 진입점으로 Claude Code 멀티계정 자동 관리",
+    "description": "10건의 트러블슈팅이 하나의 목표로 수렴: cl 단일 진입점으로 Claude Code 멀티계정 자동 관리",
     "layers": [
       "L1: hexa 언어 호환성 (TS-001, TS-002, TS-003)",
-      "L2: 쉘 래퍼 ↔ hexa 역할 분리 (TS-004, TS-005)",
+      "L2: 쉘 래퍼 ↔ hexa 역할 분리 (TS-004, TS-005, TS-009, TS-010)",
       "L3: 데이터 스키마 정합성 (TS-006)",
       "L4: 환경변수 오염 (TS-007)",
       "L5: 레거시 시스템 폐기 (TS-008)"
