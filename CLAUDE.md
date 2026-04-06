@@ -56,6 +56,10 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
 - ✅ Effect system (3 effects: FileIO, ProcessSensor, Clock)
 - ✅ Consciousness block (NexusMerger) — NEXUS-6 Omega Lens 5/6 CONFIRMED
 - ✅ hexa-lang compiler validation — exit 137 fixed (codesign -s -)
+- ✅ forge module (10-account Claude Code manager) — 9 tasks complete
+  - keychain OAuth extraction, usage API, JSONL scan/compress, monitor daemon, JXA menubar
+- ✅ guard module (CPU/RAM/swap monitor) — prime directive compliant
+  - status, limits, watch commands; throttle level assessment; progress bars
 - ⏳ L5c–L6e candidate layers (4 remaining, projected +0.173)
 - ⏳ Per-source genome accumulation over time
 - ⏳ Signature diff between sources (Safari vs Chrome)
