@@ -1,0 +1,76 @@
+// airgenome/src/core.hexa — lib.rs + resource_guard.rs → hexa-lang
+// Replaces Rust implementation with pure hexa
+
+// ═══════════════════════════════════════════════════════════════════════
+//  6-AXIS HEXAGON
+// ═══════════════════════════════════════════════════════════════════════
+
+let AXIS_COUNT = comptime { 6 }
+let PAIR_COUNT = comptime { 15 }
+let GENOME_BYTES = comptime { 60 }
+
+enum Axis { Cpu, Ram, Gpu, Npu, Power, Io }
+enum Severity { Ok, Warn, Critical }
+enum ThrottleLevel { Normal, Warn, Critical }
+
+struct Vitals {
+    cpu: float, ram: float, gpu: float,
+    npu: float, power: float, io: float
+}
+
+fn sample() -> Vitals {
+    let ncpu = to_int(exec("sysctl -n hw.ncpu 2>/dev/null || echo 8").trim())
+    let cpu_total = to_float(exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim())
+    let total_ram = to_float(exec("sysctl -n hw.memsize | awk '{print int($1/1048576)}'").trim())
+    let ram_mb = to_float(exec("vm_stat | awk '/Pages active/{gsub(/\\./,\"\",$3); print int($3*4096/1048576)}'").trim())
+    let swap_mb = to_float(exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.0f\",$3}'").trim())
+
+    return Vitals {
+        cpu: cpu_total / to_float(ncpu),
+        ram: ram_mb * 100.0 / total_ram,
+        gpu: 0.0, npu: 0.0,
+        power: swap_mb * 100.0 / total_ram,
+        io: 0.0
+    }
+}
+
+fn assess(v: Vitals, cpu_ceil: float, ram_ceil: float, swap_ceil: float) -> Severity {
+    if v.cpu > cpu_ceil { return Severity.Critical }
+    if v.ram > ram_ceil { return Severity.Critical }
+    if v.power > swap_ceil { return Severity.Critical }
+    if v.cpu > cpu_ceil * 0.8 { return Severity.Warn }
+    return Severity.Ok
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RESOURCE GUARD — adaptive throttle (no kill!)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn current_rss_mb() -> int {
+    return to_int(exec("ps -o rss= -p $$ 2>/dev/null || echo 0").trim()) / 1024
+}
+
+fn renice_top3() -> void {
+    exec("ps -Ao pid,%cpu= | sort -rnk2 | head -3 | awk '{print $1}' | while read PID; do renice 15 -p $PID 2>/dev/null; done")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SELF-TEST
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness AirgenomeCore {
+    assert AXIS_COUNT == 6
+    assert PAIR_COUNT == 15
+    assert GENOME_BYTES == 60
+
+    let v = sample()
+    println("⬡ airgenome core (hexa)")
+    println("  cpu: " + to_string(to_int(v.cpu)) + "%")
+    println("  ram: " + to_string(to_int(v.ram)) + "%")
+    println("  swap: " + to_string(to_int(v.power)) + "%")
+
+    let sev = assess(v, 75.0, 70.0, 30.0)
+    if sev == Severity.Ok { println("  ✅ OK") }
+    if sev == Severity.Warn { println("  ⚠ WARN") }
+    if sev == Severity.Critical { println("  🔴 CRITICAL") }
+}
