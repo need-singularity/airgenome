@@ -310,8 +310,10 @@ fn fetch_one_force(name: str) -> str {
 }
 
 fn refresh_one(name: str) -> void {
-    // 단일 계정 강제 갱신 (세션 종료 후 — 쿨다운 무시)
-    println("  ⬡ " + name + " 갱신...")
+    // 단일 계정 강제 갱신 (세션 종료 후 — ccmon 동일)
+    // 1. 쿨다운 해제 (계정 + 글로벌)
+    set_cooldown(name, false)
+    // 2. API 호출 (쿨다운 무시)
     let r = fetch_one_force(name)
     let status = "✓"
     if r.contains("api_error") { status = "✗ API에러" }
