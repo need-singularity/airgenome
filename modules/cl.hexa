@@ -299,19 +299,55 @@ fn pct_bar(pct_str: str, width: int) -> str {
     return bar
 }
 
+fn load_cache_age() -> int {
+    let cache_path = exec("echo " + USAGE_CACHE).trim()
+    let age = exec("/opt/homebrew/bin/python3.12 -c 'import json,time;d=json.load(open(\"" + cache_path + "\"));print(int(time.time()-d.get(\"_ts\",0)))' 2>/dev/null").trim()
+    if len(age) == 0 { return 9999 }
+    return to_int(age)
+}
+
+fn pad_right(s: str, width: int) -> str {
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"s='" + s + "';print(s+' '*(max(0," + to_string(width) + "-len(s))))\" 2>/dev/null").trim()
+    return result
+}
+
+fn pad_left(s: str, width: int) -> str {
+    let result = exec("/opt/homebrew/bin/python3.12 -c \"s='" + s + "';print(' '*(max(0," + to_string(width) + "-len(s)))+s)\" 2>/dev/null").trim()
+    return result
+}
+
+fn limit_tag(pct_str: str) -> str {
+    let w_int = to_int(exec("echo '" + pct_str + "' | awk '{printf \"%.0f\", $1+0}'").trim())
+    if w_int >= 100 { return "EXHAUSTED" }
+    if w_int >= 80 { return "HIGH" }
+    if w_int >= 50 { return "MID" }
+    return "OK"
+}
+
+fn limit_icon(pct_str: str) -> str {
+    let w_int = to_int(exec("echo '" + pct_str + "' | awk '{printf \"%.0f\", $1+0}'").trim())
+    if w_int >= 100 { return "✗" }
+    if w_int >= 80 { return "⚠" }
+    if w_int >= 50 { return "△" }
+    return "✓"
+}
+
 fn show_usage_dashboard() -> void {
     let accounts_json = bootstrap_accounts()
     if len(accounts_json) == 0 { return }
 
-    // 갱신 (백그라운드)
-    exec("(cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa run modules/usage.hexa auto 2>/dev/null &)")
+    // 캐시만 읽기 — 백그라운드 갱신이 이미 처리
+    let cache_age = load_cache_age()
+    let age_str = exec("/opt/homebrew/bin/python3.12 -c \"s=" + to_string(cache_age) + ";print(str(s//60)+'m '+str(s%60)+'s ago' if s<3600 else str(s//3600)+'h ago')\" 2>/dev/null").trim()
 
     let active = exec("[ -f " + exec("echo " + STATE_FILE).trim() + " ] && /opt/homebrew/bin/python3.12 -c \"import json;print(json.load(open('" + exec("echo " + STATE_FILE).trim() + "'))['active'])\" 2>/dev/null || echo ''").trim()
 
     println("")
-    println("┏━━━━┳━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━┓")
-    println("┃    ┃ Account    ┃ Session ┃                ┃  Reset ┃ Week    ┃                ┃  Reset ┃")
-    println("┡━━━━╇━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━┩")
+    println("  ⬡ Claude Code Usage Dashboard          (cached " + age_str + ")")
+    println("")
+    println("  ┌─────┬─────────────┬─────────┬────────────────┬────────┬─────────┬────────────────┬────────┬──────────┐")
+    println("  │  #  │  Account    │ Session │                │  Reset │  Week   │                │  Reset │  Limit   │")
+    println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
 
     let names = exec("/opt/homebrew/bin/python3.12 -c \"import json;d=json.load(open('" + exec("echo " + ACCOUNTS_FILE).trim() + "'));[print(a['name']+'|'+str(a.get('removed',False))) for a in d['accounts']]\" 2>/dev/null").trim()
     let lines = names.split("\n")
@@ -322,11 +358,10 @@ fn show_usage_dashboard() -> void {
             let name = parts[0]
             let removed = parts[1]
 
-            let marker = "  "
-            if name == active { marker = "★ " }
+            let idx = pad_left(to_string(i + 1), 2)
 
             if removed == "True" {
-                println("│ " + to_string(i + 1) + "  │ " + name + " ✗  │       - │ ░░░░░░░░░░░░░░ │      - │       - │ ░░░░░░░░░░░░░░ │      - │")
+                println("  │ " + idx + "  │ " + pad_right(name, 10) + " │     -   │ ░░░░░░░░░░░░░░ │      - │     -   │ ░░░░░░░░░░░░░░ │      - │ ✗ 폐기됨 │")
             }
             if removed != "True" {
                 let u = get_full_usage(name)
@@ -341,31 +376,34 @@ fn show_usage_dashboard() -> void {
 
                 let s_bar = pct_bar(s_pct, 14)
                 let w_bar = pct_bar(w_pct, 14)
-                let s_time = format_reset_time(s_reset)
-                let w_time = format_reset_time(w_reset)
+                let s_time = pad_left(format_reset_time(s_reset), 6)
+                let w_time = pad_left(format_reset_time(w_reset), 6)
 
-                // Status icon
                 let icon = " "
-                let w_num = exec("echo '" + w_pct + "' | awk '{printf \"%.0f\", $1+0}'").trim()
-                if w_num == "100" { icon = "✗" }
-                let w_int = to_int(w_num)
-                if w_int >= 100 { icon = "✗" }
-                if w_int >= 80 { if w_int < 100 { icon = "③" } }
                 if name == active { icon = "★" }
 
-                let idx = to_string(i + 1)
-                if i == 9 { idx = "10" }
+                // None → - 처리
+                if s_pct == "None" { s_pct = "-" }
+                if w_pct == "None" { w_pct = "-" }
+                let s_display = s_pct
+                if s_pct != "-" { s_display = s_pct + "%" }
+                let w_display = w_pct
+                if w_pct != "-" { w_display = w_pct + "%" }
+                let s_val = pad_left(s_display, 5)
+                let w_val = pad_left(w_display, 5)
 
-                println("│ " + idx + "  │ " + name + " " + icon + "  │    " + s_pct + "% │ " + s_bar + " │ " + s_time + " │    " + w_pct + "% │ " + w_bar + " │ " + w_time + " │")
+                let lim = limit_icon(w_pct) + " " + pad_right(limit_tag(w_pct), 8)
+
+                println("  │ " + idx + icon + " │ " + pad_right(name, 10) + " │  " + s_val + "  │ " + s_bar + " │ " + s_time + " │  " + w_val + "  │ " + w_bar + " │ " + w_time + " │ " + lim + "│")
             }
 
             if i < len(lines) - 1 {
-                println("├────┼────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┤")
+                println("  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┼──────────┤")
             }
         }
         i = i + 1
     }
-    println("└────┴────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┘")
+    println("  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┴──────────┘")
     println("")
 }
 
