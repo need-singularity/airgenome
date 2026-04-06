@@ -149,15 +149,15 @@ trap cleanup EXIT INT TERM
 
 cd "$AIRGENOME"
 OUTPUT=$($HEXA run modules/cl.hexa "$@" 2>&1)
-LAUNCH_DIR=$(echo "$OUTPUT" | grep '^LAUNCH:' | sed 's/^LAUNCH://')
+LAUNCH_DIR=$(echo "$OUTPUT" | grep -a '^LAUNCH:' | sed 's/^LAUNCH://')
 cd "$ORIG_DIR"
 
-echo "$OUTPUT" | grep -v '^LAUNCH:'
+echo "$OUTPUT" | grep -av '^LAUNCH:'
 
 if [ -z "$LAUNCH_DIR" ]; then
     echo ""
-    echo "[cl2] claude 실행 실패 — LAUNCH 마커 없음"
-    echo "[cl2] 아무 키나 누르면 종료..."
+    echo "[cl] claude 실행 실패 — LAUNCH 마커 없음"
+    echo "[cl] 아무 키나 누르면 종료..."
     read -r _
     exit 1
 fi
@@ -236,4 +236,4 @@ while true; do
 done
 
 echo ""
-echo "  ⬡ cl2 종료 (전환 ${SWITCH_COUNT}회)"
+echo "  ⬡ cl 종료 (전환 ${SWITCH_COUNT}회)"
