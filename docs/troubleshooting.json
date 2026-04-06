@@ -1,0 +1,96 @@
+{
+  "troubleshooting": [
+    {
+      "id": "TS-001",
+      "date": "2026-04-06",
+      "title": "cl 실행 시 무반응 (출력 없이 종료)",
+      "symptom": "cl 입력 → 아무 출력 없이 EXIT:0",
+      "root_cause": "cl.hexa의 consciousness 블록이 hexa에서 자동 실행되지 않음. hexa는 fn main() + main() 패턴만 실행",
+      "fix": "consciousness CLRouter {} → fn main() {} + main() 로 변경",
+      "commit": "9ee088f"
+    },
+    {
+      "id": "TS-002",
+      "date": "2026-04-06",
+      "title": "cl.hexa 구문 오류 (멀티라인 + 연결)",
+      "symptom": "error[Syntax]: unexpected token in expression: Newline (line 118)",
+      "root_cause": "hexa는 줄 끝 + 연결자로 다음 줄 이어쓰기 미지원",
+      "fix": "exec() 내 멀티라인 문자열 → 한 줄로 통합",
+      "commit": "3254fd6"
+    },
+    {
+      "id": "TS-003",
+      "date": "2026-04-06",
+      "title": "cl status에서 usage ?% 표시",
+      "symptom": "cl status → 모든 계정 ?%",
+      "root_cause": "hexa exec() 안에서 \\\" 이중 이스케이프 실패 → python JSON 파싱 오류",
+      "fix": "exec() 외부 따옴표를 double-quote → single-quote 래핑으로 변경",
+      "commit": "9ee088f"
+    },
+    {
+      "id": "TS-004",
+      "date": "2026-04-06",
+      "title": "cl 실행 시 hexa.toml not found",
+      "symptom": "Error: no hexa.toml found in current directory",
+      "root_cause": "cl 래퍼가 hexa run 사용 → CWD에 hexa.toml 필요. iTerm은 홈 디렉토리에서 시작",
+      "fix": "cl 래퍼에 cd ~/Dev/airgenome 추가",
+      "commit": "3254fd6"
+    },
+    {
+      "id": "TS-005",
+      "date": "2026-04-06",
+      "title": "cl로 Claude Code 진입 후 멈춤 (TUI 미표시)",
+      "symptom": "계정 선택 출력 후 화면 멈춤, Claude Code TUI 안 뜸",
+      "root_cause": "hexa exec()는 stdout을 캡처 → interactive TUI 앱 실행 불가. script -q도 동일",
+      "fix": "cl.hexa는 LAUNCH:config_dir 마커만 출력, shell 래퍼가 exec env CLAUDE_CONFIG_DIR claude 실행",
+      "commit": "486d776"
+    },
+    {
+      "id": "TS-006",
+      "date": "2026-04-06",
+      "title": "accounts.json 키 불일치 (dir vs config_dir)",
+      "symptom": "cl이 계정 config_dir을 찾지 못해 '계정 없음' 출력",
+      "root_cause": "accounts.json에 'dir' 키 → cl.hexa는 'config_dir' 키 기대",
+      "fix": "accounts.json의 dir → config_dir 일괄 변경",
+      "commit": "9ee088f"
+    },
+    {
+      "id": "TS-007",
+      "date": "2026-04-06",
+      "title": "Claude Code 새 세션 모델 오류 반복",
+      "symptom": "There's an issue with the selected model (claude-opus-4-6[1m]). 모든 새 세션에서 반복",
+      "root_cause": ".zshrc에 ANTHROPIC_BASE_URL=http://localhost:8080/v1 (token-forge proxy) 설정 → Claude Code가 /v1/v1/messages 이중 경로로 요청 → 404 Not Found",
+      "diagnosis_path": [
+        "동시 세션 충돌 의심 → 배제 (다른 계정도 동일)",
+        "모델 접근 권한 의심 → 배제 (/login 후에도 동일)",
+        "v2.1.92 버그 의심 → 배제 (v2.1.90 롤백해도 동일)",
+        "--print 모드 테스트 → 정상 작동 확인 (interactive만 실패)",
+        "--debug api 로그 → /v1/v1/messages 이중 경로 발견",
+        "GitHub issues 검색 → ANTHROPIC_BASE_URL에 /v1 포함 시 이중 경로 발생 확인",
+        ".zshrc에서 ANTHROPIC_BASE_URL=http://localhost:8080/v1 발견 → 주석 처리로 해결"
+      ],
+      "fix": ".zshrc에서 export ANTHROPIC_BASE_URL 주석 처리",
+      "commit": "N/A (zshrc 로컬 설정)"
+    },
+    {
+      "id": "TS-008",
+      "date": "2026-04-06",
+      "title": "ccmon → cl 전환 후 iTerm 프로필 미적용",
+      "symptom": "iTerm 단축키로 탭 열면 여전히 ccmon 실행",
+      "root_cause": "DynamicProfiles(5개) 교체 완료했으나 plist 본체에 4개 추가 프로필 존재",
+      "fix": "plist를 XML 변환 → sed 치환 → 바이너리 복원 (총 9개 교체)",
+      "commit": "N/A (로컬 iTerm 설정)"
+    }
+  ],
+  "convergence_pattern": {
+    "description": "8건의 트러블슈팅이 하나의 목표로 수렴: cl 단일 진입점으로 Claude Code 멀티계정 자동 관리",
+    "layers": [
+      "L1: hexa 언어 호환성 (TS-001, TS-002, TS-003)",
+      "L2: 쉘 래퍼 ↔ hexa 역할 분리 (TS-004, TS-005)",
+      "L3: 데이터 스키마 정합성 (TS-006)",
+      "L4: 환경변수 오염 (TS-007)",
+      "L5: 레거시 시스템 폐기 (TS-008)"
+    ],
+    "result": "ccmon(py+sh) 9파일 → cl(hexa+sh) 3파일로 수렴. 단일 명령어 cl로 계정 선택·usage 갱신·Claude Code 실행 통합"
+  }
+}
