@@ -90,18 +90,39 @@ cat > "$STATE" <<SJSON
 {"active":true,"cpu":0,"ram":0,"swap":0,"level":"ok","throttled":false,"cpu_ceil":$CPU_C,"ram_ceil":$RAM_C,"swap_ceil":$SWAP_C}
 SJSON
 
-# 6. Background sampler + safety net
+# 6. Background sampler + adaptive guard
+THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
 (
+  PREV_LEVEL="ok"
   while true; do
-    # CPU: use top for accurate system-wide % (user+sys), fallback to ps
-    CPU=$(top -l1 -n0 2>/dev/null | awk '/CPU usage/{gsub(/%/,""); printf "%d",$3+$5}' || echo 0)
+    # ── MEASURE (single top call) ──────────────────────────────
+    TOP_OUT=$(top -l1 -n0 2>/dev/null)
+
+    CPU=$(echo "$TOP_OUT" | awk '/CPU usage/{gsub(/%/,""); printf "%d",$3+$5}')
     [ "${CPU:-0}" -eq 0 ] && { CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}'); CPU=$((CPU_TOTAL / NCPU)); }
-    # RAM: active + wired + compressor (matches guard.hexa)
-    RAM_MB=$(vm_stat 2>/dev/null | awk '/Pages active/{a=$3}/Pages wired/{w=$4}/compressor/{c=$5}END{gsub(/\./,"",a);gsub(/\./,"",w);gsub(/\./,"",c);print int((a+w+c)*16384/1048576)}' || echo 0)
-    RAM=$((RAM_MB * 100 / TOTAL_RAM_MB))
+
+    # RAM: PhysMem used (what user actually sees)
+    RAM_USED_MB=$(echo "$TOP_OUT" | /opt/homebrew/bin/python3.12 -c "
+import sys,re
+l=sys.stdin.read()
+m=re.search(r'(\d+)([GM])\s+used',l)
+if m:
+  v=int(m.group(1))
+  if m.group(2)=='G': v*=1024
+  print(v)
+else: print(0)" 2>/dev/null || echo 0)
+    FREE_MB=$((TOTAL_RAM_MB - RAM_USED_MB))
+    [ "$FREE_MB" -lt 0 ] && FREE_MB=0
+    RAM=$((RAM_USED_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
+
+    # Swap
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
 
+    # Load average (1-min)
+    LOAD=$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,""); printf "%.0f",$1}')
+
+    # ── CONFIG ───────────────────────────────────────────────
     eval "$(/opt/homebrew/bin/python3.12 -c "
 import json
 try:
@@ -115,7 +136,7 @@ try:
 except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4')
 " 2>/dev/null)" || { CPU_CEIL=90; RAM_CEIL=80; SWAP_CEIL=50; GUARD_ON=0; BRIDGE_MAX=4; }
 
-    # --- Bridge limiter: kill excess hexa bridge processes ---
+    # ── BRIDGE LIMITER ───────────────────────────────────────
     if [ "$GUARD_ON" = "1" ] && [ "${BRIDGE_MAX:-0}" -gt 0 ]; then
       BRIDGE_PIDS=$(ps -eo pid=,lstart=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | sort -k2,5 | awk '{print $1}')
       BRIDGE_COUNT=$(echo "$BRIDGE_PIDS" | grep -c . 2>/dev/null || echo 0)
@@ -125,34 +146,54 @@ except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4'
           kill "$BPID" 2>/dev/null || true
         done
       fi
+      # RAM critical (< 512MB free): reduce bridges to 1
+      if [ "$FREE_MB" -lt 512 ] && [ "$BRIDGE_COUNT" -gt 1 ]; then
+        echo "$BRIDGE_PIDS" | head -$((BRIDGE_COUNT - 1)) | while read BPID; do
+          kill "$BPID" 2>/dev/null || true
+        done
+      fi
     fi
 
+    # ── LEVEL ASSESSMENT (multi-signal) ──────────────────────
     LEVEL="ok"
     THROTTLED="false"
-    CPU_OVER=0; RAM_OVER=0; SWAP_OVER=0
+    CPU_OVER=0; RAM_OVER=0; SWAP_OVER=0; RAM_CRIT=0
     [ "$CPU"  -gt "$CPU_CEIL"  ] 2>/dev/null && CPU_OVER=1
     [ "$RAM"  -gt "$RAM_CEIL"  ] 2>/dev/null && RAM_OVER=1
     [ "$SWAP" -gt "$SWAP_CEIL" ] 2>/dev/null && SWAP_OVER=1
+    [ "$FREE_MB" -lt 256 ] 2>/dev/null && RAM_CRIT=1
 
-    if [ "$CPU_OVER" = "1" ] || [ "$RAM_OVER" = "1" ] || [ "$SWAP_OVER" = "1" ]; then
+    # Emergency: RAM < 256MB free → immediate action regardless of ceiling
+    if [ "$RAM_CRIT" = "1" ]; then
+      LEVEL="critical"
+      THROTTLED="true"
+      if [ "$GUARD_ON" = "1" ]; then
+        purge 2>/dev/null || true
+        # background QoS on top 5 RAM consumers (non-system)
+        ps -eo pid=,rss=,comm= | sort -rnk2 | head -5 | while read TPID TRSS TNAME; do
+          [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
+          case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow) continue ;; esac
+          taskpolicy -b -p "$TPID" 2>/dev/null || true
+          echo "$TPID" >> "$THROTTLE_FILE"
+        done
+      fi
+
+    elif [ "$CPU_OVER" = "1" ] || [ "$RAM_OVER" = "1" ] || [ "$SWAP_OVER" = "1" ]; then
       LEVEL="danger"
       THROTTLED="true"
-      # enforce only if guard module is ON
       if [ "$GUARD_ON" = "1" ]; then
-        # --- CPU enforcement (no renice — macOS can't undo it without sudo) ---
+        # CPU enforcement: taskpolicy -b on top consumers
         if [ "$CPU_OVER" = "1" ]; then
-          # Tier 1: taskpolicy -b (background QoS) — reversible without sudo
           ps -Ao pid=,%cpu=,comm= | sort -rnk2 | head -8 | while read TPID TCPU TNAME; do
             [ "${TPID:-0}" -lt 200 ] 2>/dev/null && continue
-            [ "$TPID" = "$$" ] 2>/dev/null && continue
             TCPU_INT=${TCPU%.*}
             [ "${TCPU_INT:-0}" -lt 15 ] 2>/dev/null && continue
             case "$TNAME" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac
             taskpolicy -b -p "$TPID" 2>/dev/null || true
-            echo "$TPID" >> "${TMPDIR:-/tmp}/airgenome-throttled.pids"
+            echo "$TPID" >> "$THROTTLE_FILE"
           done
 
-          # Tier 2: duty-cycle SIGSTOP/SIGCONT if >30% over ceiling
+          # Duty-cycle if >30% over ceiling
           OVERSHOOT=$((CPU - CPU_CEIL))
           if [ "$OVERSHOOT" -gt $((CPU_CEIL * 30 / 100)) ]; then
             TOP_PID=$(ps -Ao pid=,%cpu= -r | head -1 | awk '{print $1}')
@@ -170,26 +211,39 @@ except: print('CPU_CEIL=90\nRAM_CEIL=80\nSWAP_CEIL=50\nGUARD_ON=0\nBRIDGE_MAX=4'
           fi
         fi
 
-        # --- RAM enforcement: purge if over ceiling ---
+        # RAM enforcement: purge
         if [ "$RAM_OVER" = "1" ]; then
-          # macOS memory_pressure + purge (non-destructive cache flush)
           purge 2>/dev/null || true
         fi
       fi
-    elif [ "$CPU" -gt $((CPU_CEIL * 90 / 100)) ] 2>/dev/null; then
+
+    elif [ "$CPU" -gt $((CPU_CEIL * 90 / 100)) ] 2>/dev/null || [ "$LOAD" -gt $((NCPU * 3)) ] 2>/dev/null; then
       LEVEL="warn"
+      # Warn: bridge에만 경량 taskpolicy (user 앱은 안 건드림)
+      if [ "$GUARD_ON" = "1" ]; then
+        ps -eo pid=,%cpu=,comm= | grep 'hexa' | sort -rnk2 | head -3 | while read TPID TCPU TNAME; do
+          TCPU_INT=${TCPU%.*}
+          [ "${TCPU_INT:-0}" -lt 20 ] 2>/dev/null && continue
+          taskpolicy -b -p "$TPID" 2>/dev/null || true
+          echo "$TPID" >> "$THROTTLE_FILE"
+        done
+      fi
+
     else
-      # OK level — restore previously throttled processes to default QoS
-      if [ -f "${TMPDIR:-/tmp}/airgenome-throttled.pids" ]; then
-        sort -u "${TMPDIR:-/tmp}/airgenome-throttled.pids" | while read RPID; do
+      # OK — restore all throttled processes
+      if [ -f "$THROTTLE_FILE" ]; then
+        sort -u "$THROTTLE_FILE" | while read RPID; do
           taskpolicy -d default -p "$RPID" 2>/dev/null || true
         done
-        rm -f "${TMPDIR:-/tmp}/airgenome-throttled.pids"
+        rm -f "$THROTTLE_FILE"
       fi
     fi
 
+    # Track level transitions for smarter decisions
+    PREV_LEVEL="$LEVEL"
+
     cat > "$STATE" <<EOF
-{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL}
+{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL}
 EOF
     sleep 3
   done
@@ -317,12 +371,17 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     swapItem.title = $(swapIcon + 'Swap ' + bar(j.swap, sc, bw)  + '  ' + j.swap + '/' + sc + '%');
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');
-    if (lv === 'danger') {
-        safetyItem.title = $('\u26A0 THROTTLE \u2014 renice active' + swapNote);
+    var freeMB = j.free_mb || 0;
+    var loadAvg = j.load || 0;
+    var ramNote = freeMB < 512 ? ' [' + freeMB + 'MB free]' : '';
+    if (lv === 'critical') {
+        safetyItem.title = $('\uD83D\uDD34 CRITICAL \u2014 RAM ' + freeMB + 'MB free' + swapNote);
+    } else if (lv === 'danger') {
+        safetyItem.title = $('\u26A0 THROTTLE active' + ramNote + swapNote);
     } else if (lv === 'warn') {
-        safetyItem.title = $('\u26A1 Approaching ceiling' + swapNote);
+        safetyItem.title = $('\u26A1 Approaching ceiling' + ramNote + swapNote);
     } else {
-        safetyItem.title = $('\u2705 Safe');
+        safetyItem.title = $('\u2705 Safe \u2014 ' + Math.round(freeMB/1024*10)/10 + 'G free');
     }
 });
 
