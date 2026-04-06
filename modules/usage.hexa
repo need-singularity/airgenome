@@ -191,7 +191,7 @@ fn fetch_one(name: str) -> str {
 fn save_cache(results: str) -> void {
     exec("mkdir -p " + HOME + "/.airgenome")
     // Merge: 에러/쿨다운 계정은 기존 캐시 유지
-    let py_script = "import json,time,sys,os\nlines=sys.stdin.read().strip().split('\\n')\nold={}\ntry:\n  old=json.load(open('" + CACHE_FILE + "'))\n  old.pop('_ts',None)\nexcept: pass\nd=dict(old)\nok=0;skip=0\nfor l in lines:\n  if 'api_error' in l or 'token_error' in l or 'no_keychain' in l or 'parse_error' in l or 'cooldown' in l:\n    skip+=1;continue\n  p=l.split('|')\n  if len(p)>=5:\n    n=p[0]\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':None}\n    ok+=1\nd['_ts']=time.time()\njson.dump(d,open('" + CACHE_FILE + "','w'))\nprint(f'saved {ok} / skip {skip} (kept old)')"
+    let py_script = "import json,time,sys,os\nlines=sys.stdin.read().strip().split('\\n')\nold={}\ntry:\n  old=json.load(open('" + CACHE_FILE + "'))\n  old.pop('_ts',None)\nexcept: pass\nd=dict(old)\nok=0;skip=0\nfor l in lines:\n  if 'cached' in l:\n    skip+=1;continue\n  if 'cooldown' in l:\n    skip+=1;continue\n  p=l.split('|')\n  n=p[0]\n  err=None\n  for tag in ['api_error','token_error','no_keychain','parse_error']:\n    if tag in l: err=tag\n  if err:\n    if n not in d or d[n].get('week_all_pct') is None:\n      d[n]={'session_pct':None,'session_resets':None,'week_all_pct':None,'week_resets':None,'error':err}\n    skip+=1;continue\n  if len(p)>=5:\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':None}\n    ok+=1\nd['_ts']=time.time()\njson.dump(d,open('" + CACHE_FILE + "','w'))\nprint(f'saved {ok} / skip {skip} (kept old)')"
     let out = exec("echo '" + results + "' | /opt/homebrew/bin/python3.12 -c \"" + py_script + "\" 2>/dev/null").trim()
     println("  " + out)
 }
@@ -207,6 +207,13 @@ fn load_cache_age() -> int {
 // ═══════════════════════════════════════════════════════════════════════
 //  REFRESH
 // ═══════════════════════════════════════════════════════════════════════
+
+fn has_valid_cache(name: str) -> bool {
+    // 캐시에 유효 데이터(week_all_pct != null)가 있는지 확인
+    let wp = exec("jq -r '.\"" + name + "\".week_all_pct // empty' '" + CACHE_FILE + "' 2>/dev/null || echo ''").trim()
+    if len(wp) > 0 { return true }
+    return false
+}
 
 fn refresh_all() -> void {
     println("  ⬡ Usage 갱신 중...")
@@ -237,12 +244,21 @@ fn refresh_all() -> void {
             continue
         }
 
+        // 캐시에 유효 데이터가 있으면 API 호출 생략 (ccmon: 에러 계정만 재조회)
+        if has_valid_cache(name) {
+            println("    " + name + " ✓ 캐시")
+            if i > 0 { results = results + "\n" }
+            results = results + name + "||||cached"
+            i = i + 1
+            continue
+        }
+
         let r = fetch_one(name)
 
         let status = "✓"
         if r.contains("api_error") {
             status = "✗ API에러"
-            hit_rate_limit = true  // 첫 에러 → 나머지 전부 스킵
+            hit_rate_limit = true
         }
         if r.contains("cooldown") { status = "⏭ 쿨다운" }
         if r.contains("token_error") { status = "✗ 토큰에러" }

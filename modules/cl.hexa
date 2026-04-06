@@ -21,8 +21,9 @@ let NOW_TS = to_int(exec("date -u +%s").trim())
 //  BULK CACHE — 1회 파싱으로 모든 계정 usage 로드
 // ═══════════════════════════════════════════════════════════════════════
 // Format: lines of "name|session_pct|session_resets|week_all_pct|week_resets"
-// BULK_CACHE: jq로 JSON 1회 파싱 (~9ms, python3 150ms 대비 17x)
-let BULK_CACHE = exec("[ -f '" + HOME + "/.airgenome/usage-cache.json' ] && { jq -r 'to_entries[]|select(.value|type==\"object\")|\"\\(.key)|\\(.value.session_pct//\"\")|\\(.value.session_resets//\"\")|\\(.value.week_all_pct//\"\")|\\(.value.week_resets//(.value.week_all_resets//\"\"))\"' '" + HOME + "/.airgenome/usage-cache.json' 2>/dev/null; grep -o '\"_ts\"[^,}]*' '" + HOME + "/.airgenome/usage-cache.json' | sed 's/\"_ts\" *: */_ts|/;s/\\..*//'; } || echo ''").trim()
+// BULK_CACHE: jq로 JSON 1회 파싱 (~9ms)
+// Format: name|session_pct|session_resets|week_all_pct|week_resets|error
+let BULK_CACHE = exec("[ -f '" + HOME + "/.airgenome/usage-cache.json' ] && { jq -r 'to_entries[]|select(.value|type==\"object\")|\"\\(.key)|\\(.value.session_pct//\"\")|\\(.value.session_resets//\"\")|\\(.value.week_all_pct//\"\")|\\(.value.week_resets//(.value.week_all_resets//\"\"))|\\(.value.error//\"\")\"' '" + HOME + "/.airgenome/usage-cache.json' 2>/dev/null; grep -o '\"_ts\"[^,}]*' '" + HOME + "/.airgenome/usage-cache.json' | sed 's/\"_ts\" *: */_ts|/;s/\\..*//'; } || echo ''").trim()
 
 // ═══════════════════════════════════════════════════════════════════════
 //  EFFECTS
@@ -201,7 +202,7 @@ fn load_cache_age() -> int {
 }
 
 fn get_full_usage(name: str) -> str {
-    // Returns: session_pct|session_resets|week_all_pct|week_resets from BULK_CACHE
+    // Returns: session_pct|session_resets|week_all_pct|week_resets|error from BULK_CACHE
     let bc_lines = BULK_CACHE.split("\n")
     let i = 0
     while i < len(bc_lines) {
@@ -212,6 +213,16 @@ fn get_full_usage(name: str) -> str {
                 let sr = p[2]
                 let wp = p[3]
                 let wr = p[4]
+                let err = ""
+                if len(p) >= 6 { err = p[5] }
+
+                // 에러 있으면 그대로 전달
+                if len(err) > 0 {
+                    if err != "null" {
+                        return "?|?|?|?|" + err
+                    }
+                }
+
                 // null/empty = 미사용 → 0% (로그인됨, 사용 기록 없음)
                 if sp == "" { sp = "0.0" }
                 if sp == "None" { sp = "0.0" }
@@ -221,12 +232,12 @@ fn get_full_usage(name: str) -> str {
                 if sr == "None" { sr = "-" }
                 if wr == "" { wr = "-" }
                 if wr == "None" { wr = "-" }
-                return sp + "|" + sr + "|" + wp + "|" + wr
+                return sp + "|" + sr + "|" + wp + "|" + wr + "|"
             }
         }
         i = i + 1
     }
-    return "?|?|?|?"
+    return "?|?|?|?|"
 }
 
 fn get_account_usage(name: str) -> str {
@@ -677,9 +688,24 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
                 let s_reset = "?"
                 let w_pct = "?"
                 let w_reset = "?"
+                let acct_err = ""
                 if len(up) > 1 { s_reset = up[1] }
                 if len(up) > 2 { w_pct = up[2] }
                 if len(up) > 3 { w_reset = up[3] }
+                if len(up) > 4 { acct_err = up[4] }
+
+                // 에러 계정: dim + 에러 표시
+                if len(acct_err) > 0 {
+                    let err_label = "API에러"
+                    if acct_err == "no_keychain" { err_label = "미로그인" }
+                    if acct_err == "token_error" { err_label = "토큰에러" }
+                    buf = buf + "  │ " + DIM + idx_display + "  │ " + pad_right(name, 10) + "  │  " + pad_left(err_label, 7) + " │ ×××××××××××××× │      - │  " + pad_left(err_label, 7) + " │ ×××××××××××××× │      - " + RESET + "│" + nl
+                    if i < len(lines) - 1 {
+                        buf = buf + "  ├─────┼─────────────┼─────────┼────────────────┼────────┼─────────┼────────────────┼────────┤" + nl
+                    }
+                    i = i + 1
+                    continue
+                }
 
                 let s_bar = pct_bar(s_pct, 14)
                 let w_bar = pct_bar(w_pct, 14)
