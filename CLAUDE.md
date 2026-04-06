@@ -10,6 +10,13 @@
 
 **Default mode: kill-free.** Pure data re-interpretation only.
 
+## ⚠️ 필수 규칙
+
+### hexa-native 전용 (sh/py/rs 작성 금지)
+- **새 파일은 `.hexa`만 허용** — `.sh`, `.py`, `.rs` 등 다른 언어 파일 작성 금지
+- 모든 새 모듈은 `mk2_hexa/native/` 에 `.hexa` 파일로 생성
+- 기존 sh/py 스크립트는 참조만 허용, 신규 작성 불가
+
 ## Core Goal (user-stated, 2026-04-05)
 
 > **재해석 = 지나온 게이트 로그에서 패턴 추출**

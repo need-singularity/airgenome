@@ -223,3 +223,70 @@ fn pipeline_run(genome_str: str, source_comm: str, prev_margin: float, curr_marg
 
     return [all_passed, mean_conf, verdicts]
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — self-tests + CLI
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness ImplantRouter {
+    // N=6 arithmetic self-tests (BT-344, BT-345, BT-346)
+    assert TAU + PHI_N == N
+    assert PERT_BREAKTHROUGH == 2401
+    assert SIGMA * J2 == HASH_BITS
+    assert HASH_BYTES == 36
+    assert TRIPLE_FACTOR == 3
+    println("  implant: 5 constant assertions passed")
+
+    // PHI self-test
+    let phi_r = phi_check(0.25, 0.25)
+    assert phi_r[0] == 1
+
+    // Source self-test
+    let src_r = source_confidence("Safari")
+    assert src_r[0] == 4
+
+    println("  implant: all self-tests passed")
+    println("")
+
+    let argv = args()
+    let cmd = "info"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "test" {
+        println("  ── implant test mode ──")
+        let h = compute_hash_288("airgenome-test-2026")
+        println("  hash(test):  ", h)
+        println("  hash length: ", len(h), " chars (288 bits)")
+
+        let inv = invariant_check(0.5, 100)
+        println("  invariant:   passed=", inv[0], " conf=", inv[1])
+
+        let pipe = pipeline_run("test-genome", "Safari", 0.20, 0.25, "")
+        println("  pipeline:    passed=", pipe[0], " conf=", pipe[1])
+        println("  verdicts:    ", pipe[2])
+    }
+
+    if cmd == "info" {
+        println("  implant v0.1.0 — hexa-gate-implant absorption")
+        println("")
+        println("  Absorbed concepts:")
+        println("    G1 SOURCE:   process confidence scoring (5 trust tiers)")
+        println("    G2 HASH:     288-bit genome integrity (BT-346)")
+        println("    G3 PHI:      consciousness preservation (theta=0.1, tol=1/288)")
+        println("    G4 INVARIANT: 5-lens perturbation stability (BT-345: 2401)")
+        println("    BRIDGE:      structured JSONL event logging")
+        println("    PIPELINE:    4-gate sequential validation")
+        println("    L7 LAYER:    perturbation breakthrough layer")
+        println("")
+        println("  Usage: implant <test|info>")
+    }
+
+    if cmd != "test" {
+        if cmd != "info" {
+            println("  unknown command: " + cmd)
+            println("  Usage: implant <test|info>")
+        }
+    }
+}
