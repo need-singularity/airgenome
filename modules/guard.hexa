@@ -123,8 +123,10 @@ fn guard_status() -> str {
     println("  " + level_icon(level) + " system: " + level)
     println("")
     println("  RAM:  " + used_ram + " / " + total_ram + " MB  (" + ram_pct + "%)  " + pct_bar(ram_pct, 20))
-    println("  CPU:  " + cpu_pct + "%  " + pct_bar(cpu_pct, 20))
-    println("  Swap: " + swap + " MB")
+    println("  CPU:  " + cpu_pct + "% (avg/core)  " + pct_bar(cpu_pct, 20))
+    let swap_int = to_int(swap)
+    let swap_icon = if swap_int >= 8192 { "🔴 " } else if swap_int >= 4096 { "🟡 " } else { "" }
+    println("  Swap: " + swap_icon + swap + " MB" + if swap_int >= 8192 { "  ← DANGER: ≥8G" } else if swap_int >= 4096 { "  ← WARNING: ≥4G" } else { "" })
     println("")
 
     // Claude processes breakdown
@@ -173,7 +175,9 @@ fn guard_watch() -> str {
         let ts = exec("date +%H:%M:%S").trim()
         let proc_count = exec("ps aux | grep '[c]laude' | wc -l").trim()
 
-        println("  [" + ts + "] " + level_icon(level) + " RAM=" + ram_pct + "% " + pct_bar(ram_pct, 10) + "  CPU=" + cpu_pct + "% " + pct_bar(cpu_pct, 10) + "  procs=" + proc_count)
+        let swap_mb = to_int(get_swap_used_mb())
+        let swap_tag = if swap_mb >= 8192 { " 🔴swap" } else if swap_mb >= 4096 { " 🟡swap" } else { "" }
+        println("  [" + ts + "] " + level_icon(level) + " RAM=" + ram_pct + "% " + pct_bar(ram_pct, 10) + "  CPU=" + cpu_pct + "% " + pct_bar(cpu_pct, 10) + "  procs=" + proc_count + swap_tag)
 
         // Write state for menubar
         let state_json = "{\"level\": \"" + level + "\", \"ram_pct\": " + ram_pct + ", \"cpu_pct\": " + cpu_pct + ", \"ts\": " + exec("date +%s").trim() + "}"
