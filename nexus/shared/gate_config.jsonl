@@ -3,4 +3,4 @@
 {"key":"remote_user","value":"aiden","desc":"Ubuntu SSH user"}
 {"key":"ssh_alias","value":"ubu","desc":"SSH config alias"}
 {"key":"remote_dir","value":"/tmp/airgenome","desc":"Ubuntu working directory"}
-{"key":"tailscale_host","value":"","desc":"Tailscale IP (외부 접속 시)"}
+{"key":"tailscale_host","value":"100.96.193.56","desc":"Tailscale IP (외부 접속 시)"}
