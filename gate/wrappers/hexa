@@ -1,0 +1,38 @@
+#!/bin/bash
+# airgenome gate — hexa → Ubuntu 오프로드 (with pre-sync)
+UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
+CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
+[ -f "$CFG" ] && {
+  _h=$(awk -F'"' '/"remote_host"/{print $8}' "$CFG"); _p=$(awk -F'"' '/"remote_port"/{print $8}' "$CFG")
+  _s=$(awk -F'"' '/"ssh_alias"/{print $8}' "$CFG"); _t=$(awk -F'"' '/"tailscale_host"/{print $8}' "$CFG")
+  [ -n "$_h" ] && UBU_HOST="$_h"; [ -n "$_p" ] && UBU_PORT="$_p"; [ -n "$_s" ] && UBU_SSH="$_s"; [ -n "$_t" ] && TS_HOST="$_t"
+}
+GH=""
+nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null && GH="$UBU_HOST"
+[ -z "$GH" ] && [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null && GH="$TS_HOST"
+
+HEXA_BIN="$HOME/Dev/hexa-lang/target/release/hexa"
+# 로컬 fallback
+[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] && exec "$HEXA_BIN" "$@"
+
+# pre-sync: nexus/shared 변경분만 동기화 (1초 미만)
+rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+
+# 파일 인자 → scp 후 원격 경로로 치환
+RARGS=()
+for a in "$@"; do
+  if [[ -f "$a" ]]; then
+    ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+    scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
+    RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
+  else
+    RARGS+=("$a")
+  fi
+done
+
+# rsync 완료 대기
+wait
+
+# Ubuntu hexa 경로
+REMOTE_HEXA="/tmp/hexa-build/hexa-lang/target/release/hexa"
+echo "cd $UBU_DIR && $REMOTE_HEXA ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'

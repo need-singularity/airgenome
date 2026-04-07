@@ -90,6 +90,11 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
   - setup 명령으로 신규 사용자 대화형 설정
   - Wi-Fi/Tailscale 자동 전환, Ubuntu 불가 시 로컬 fallback
   - 설정: nexus/shared/gate_config.jsonl (하드코딩 없음)
+- ✅ Gate wrapper + pre-sync (gate/wrappers/) — hexa/python3/cargo/rustc 자동 오프로드
+  - `gate install` 명령으로 wrapper 배포 + Ubuntu 심볼릭 링크 + 초기 rsync
+  - `gate sync` 명령으로 nexus/shared 수동 동기화
+  - 매 실행 전 `rsync --update`로 의존 파일 자동 동기화 (1초 미만)
+  - Ubuntu `~/Dev/nexus/shared` → `/tmp/airgenome/nexus/shared` 심볼릭 링크
 
 ## Non-goals (explicit)
 

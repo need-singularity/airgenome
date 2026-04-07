@@ -286,6 +286,8 @@ fn gate_help() -> str {
     println("")
     println("Commands:")
     println("  setup         — 대화형 초기 설정 (신규 사용자)")
+    println("  install       — wrapper 배포 + Ubuntu 심볼릭 링크 + 초기 rsync")
+    println("  sync          — nexus/shared → Ubuntu 수동 동기화")
     println("  exec <cmd>    — Ubuntu에서 실행 (fallback: 로컬)")
     println("  ping          — gate 연결 확인")
     println("  status        — Ubuntu 자원 상태")
@@ -304,6 +306,98 @@ fn gate_help() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  INSTALL — wrapper 배포 + symlink + Ubuntu 심볼릭 링크
+// ═══════════════════════════════════════════════════════════════════════
+
+fn gate_install() -> str {
+    let home = env("HOME")
+    let repo = home + "/Dev/airgenome"
+    let src_dir = repo + "/gate/wrappers"
+    let dst_dir = home + "/.hx/bin"
+
+    // 1. ~/.hx/bin 디렉토리 생성
+    exec("mkdir -p " + dst_dir)
+    println("  [install] wrapper 디렉토리: " + dst_dir)
+
+    // 2. wrapper 파일 복사 + 실행 권한
+    let wrappers = ["hexa", "python3", "cargo", "rustc", "sh-run"]
+    let i = 0
+    while i < len(wrappers) {
+        let name = wrappers[i]
+        let src = src_dir + "/" + name
+        let dst = dst_dir + "/" + name
+        if file_exists(src) {
+            exec("cp " + src + " " + dst + " && chmod +x " + dst)
+            println("  [install] " + name + " → " + dst)
+        }
+        if file_exists(src) == false {
+            println("  [install] SKIP " + name + " (not found: " + src + ")")
+        }
+        i = i + 1
+    }
+
+    // 3. PATH 확인
+    let path_ok = exec("echo $PATH | grep -q '.hx/bin' && echo yes || echo no").trim()
+    if path_ok == "no" {
+        println("")
+        println("  [PATH] ~/.zshrc에 추가 필요:")
+        println("    export PATH=\"$HOME/.hx/bin:$PATH\"")
+    }
+    if path_ok == "yes" {
+        println("  [PATH] ~/.hx/bin 이미 PATH에 있음")
+    }
+
+    // 4. Ubuntu 심볼릭 링크 (nexus/shared → /tmp/airgenome/nexus/shared)
+    if len(SSH_ALIAS) > 0 {
+        println("")
+        println("  [Ubuntu] nexus/shared 심볼릭 링크 설정 중...")
+        let link_cmd = "mkdir -p ~/Dev/nexus && ln -sfn /tmp/airgenome/nexus/shared ~/Dev/nexus/shared"
+        let link_ok = exec("ssh -o ConnectTimeout=3 " + SSH_ALIAS + " '" + link_cmd + "' 2>&1 && echo ok").trim()
+        if link_ok.contains("ok") {
+            println("  [Ubuntu] ~/Dev/nexus/shared → /tmp/airgenome/nexus/shared")
+        }
+        if link_ok.contains("ok") == false {
+            println("  [Ubuntu] 연결 불가 — 수동 실행:")
+            println("    ssh " + SSH_ALIAS + " '" + link_cmd + "'")
+        }
+    }
+
+    // 5. 초기 rsync
+    if len(SSH_ALIAS) > 0 {
+        println("")
+        println("  [sync] nexus/shared 초기 동기화 중...")
+        let sync = exec("rsync -aq " + home + "/Dev/nexus/shared/ " + SSH_ALIAS + ":/tmp/airgenome/nexus/shared/ 2>&1 && echo ok")
+        if to_string(sync).contains("ok") {
+            println("  [sync] 완료")
+        }
+        if to_string(sync).contains("ok") == false {
+            println("  [sync] 실패 — 수동: rsync -aq ~/Dev/nexus/shared/ " + SSH_ALIAS + ":/tmp/airgenome/nexus/shared/")
+        }
+    }
+
+    println("")
+    println("  설치 완료! 이제 hexa/python3/cargo/rustc가 자동으로 Ubuntu gate를 탑니다.")
+    println("  Ubuntu 접근 불가 시 로컬 자동 전환.")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYNC — nexus/shared 수동 동기화
+// ═══════════════════════════════════════════════════════════════════════
+
+fn gate_sync() -> str {
+    if len(SSH_ALIAS) == 0 {
+        println("  [sync] 설정 없음. 'gate setup' 먼저.")
+        return "fail"
+    }
+    println("  [sync] nexus/shared → Ubuntu 동기화 중...")
+    let home = env("HOME")
+    let result = exec("rsync -av --delete " + home + "/Dev/nexus/shared/ " + SSH_ALIAS + ":/tmp/airgenome/nexus/shared/ 2>&1")
+    println(result)
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -314,6 +408,8 @@ fn main() {
 
     if cmd == "help" { gate_help() }
     if cmd == "setup" { setup() }
+    if cmd == "install" { gate_install() }
+    if cmd == "sync" { gate_sync() }
     if cmd == "ping" { gate_ping() }
     if cmd == "status" { gate_status() }
     if cmd == "zshrc" { show_zshrc() }
@@ -333,6 +429,8 @@ fn main() {
 
     let known = cmd == "help"
     if cmd == "setup" { known = true }
+    if cmd == "install" { known = true }
+    if cmd == "sync" { known = true }
     if cmd == "exec" { known = true }
     if cmd == "ping" { known = true }
     if cmd == "status" { known = true }

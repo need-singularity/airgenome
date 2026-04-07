@@ -156,13 +156,38 @@ cl pick           # 계정 수동 선택
 
 모든 프로세스 KILL 없이 성능/자원 개선. 효율은 데이터 재해석에서 온다.
 
+## Ubuntu Gate Offload
+
+MacBook의 무거운 명령(hexa, python3, cargo, rustc)을 Ubuntu에서 자동 실행.
+
+```bash
+# 초기 설정
+hexa run mk2_hexa/native/gate.hexa setup    # 대화형 Ubuntu 연결 설정
+hexa run mk2_hexa/native/gate.hexa install  # wrapper 배포 + rsync
+
+# 이후 자동 — hexa/python3/cargo/rustc가 gate를 탐
+hexa run some_script.hexa    # → Ubuntu에서 실행 (offline → 로컬 fallback)
+python3 heavy_script.py      # → Ubuntu에서 실행
+cargo build --release        # → Ubuntu에서 실행
+```
+
+- **pre-sync** — 매 실행 전 `nexus/shared/` 변경분 자동 동기화
+- **fallback** — Ubuntu 접근 불가 시 로컬 자동 전환
+- **설정** — `nexus/shared/gate_config.jsonl` (하드코딩 없음)
+- **wrapper** — `gate/wrappers/` (hexa, python3, cargo, rustc, sh-run)
+
 ## Architecture
 
 ```
+gate/
+└── wrappers/               — Ubuntu offload wrapper (hexa, python3, cargo, rustc)
+
 mk2_hexa/native/
 ├── runtime.hexa        — live ps → 8-gate classify → 6-axis → genome log
 ├── accumulate.hexa     — per-gate genome 시계열 축적 → signatures.json
-└── sigdiff.hexa        — cross-source signature distance matrix
+├── sigdiff.hexa        — cross-source signature distance matrix
+├── gate.hexa           — Ubuntu gate 클라이언트 (setup/install/sync/exec/ping)
+└── gate_daemon.hexa    — Ubuntu gate 데몬 (socat TCP)
 
 modules/
 ├── cl.hexa             — multi-account CLI (race condition, usage cache)
