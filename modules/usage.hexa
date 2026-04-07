@@ -13,6 +13,10 @@ let TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 let CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 let HOME = exec("echo $HOME").trim()
+
+// 프록시 설정 — ~/Dev/secret/proxy.json에서 동적 로드 (키 차후 교체 예정)
+let PROXY_CFG_FILE = HOME + "/Dev/secret/proxy.json"
+let PROXY_ARG = exec("if [ -f '" + PROXY_CFG_FILE + "' ]; then jq -r '\" --proxy http://\" + .user + \":\" + .pass + \"@\" + .host + \":\" + (.port|tostring)' '" + PROXY_CFG_FILE + "'; else echo ''; fi 2>/dev/null").trim()
 let CACHE_FILE = HOME + "/.airgenome/usage-cache.json"
 let COOLDOWN_FILE = HOME + "/.airgenome/refresh-cooldown.json"
 
@@ -113,7 +117,7 @@ fn is_token_expired(expires_at_str: str) -> bool {
 
 fn refresh_token(refresh_tok: str, account_name: str) -> str {
     let payload = "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"" + refresh_tok + "\",\"client_id\":\"" + CLIENT_ID + "\"}"
-    let result = exec("curl -s --max-time 10 '" + TOKEN_URL + "' -H 'Content-Type: application/json' -d '" + payload + "' 2>/dev/null").trim()
+    let result = exec("curl -s -k --max-time 15" + PROXY_ARG + " '" + TOKEN_URL + "' -H 'Content-Type: application/json' -d '" + payload + "' 2>/dev/null; true").trim()
     if len(result) == 0 { return "" }
     let new_access = exec("echo '" + result + "' | jq -r '.access_token // empty' 2>/dev/null").trim()
     if len(new_access) == 0 { return "" }
@@ -140,7 +144,7 @@ fn save_keychain_token(label: str, access_token: str, expires_at_ms: str) -> voi
 
 fn call_usage_api(access_token: str, account_name: str) -> str {
     // Returns: session_pct|session_resets|week_pct|week_resets or "api_error"
-    let result = exec("curl -s --max-time 10 '" + API_URL + "' -H 'Authorization: Bearer " + access_token + "' -H 'anthropic-beta: oauth-2025-04-20' 2>/dev/null").trim()
+    let result = exec("curl -s -k --max-time 15" + PROXY_ARG + " '" + API_URL + "' -H 'Authorization: Bearer " + access_token + "' -H 'anthropic-beta: oauth-2025-04-20' 2>/dev/null; true").trim()
     if len(result) == 0 { return "api_error" }
     // API 에러 감지
     let err = exec("echo '" + result + "' | jq -r '.error.type // empty' 2>/dev/null").trim()
