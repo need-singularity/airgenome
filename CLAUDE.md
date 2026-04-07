@@ -115,3 +115,6 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
 
 All three converge to the same closed form: `2/3 − 1/(n(n−1))` with n=6.
 The hexagon is the correct structure.
+
+## 할일 (todo)
+- "todo", "할일" → `hexa-bin-actual $HOME/Dev/nexus/mk2_hexa/native/todo.hexa airgenome` 실행 후 **결과를 마크다운 텍스트로 직접 출력** (렌더링되는 표로)
