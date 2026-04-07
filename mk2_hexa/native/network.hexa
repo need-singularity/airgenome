@@ -1,0 +1,397 @@
+// airgenome/mk2_hexa/native/network.hexa — per-process network sampling + Net axis
+//
+// Adds the 7th axis (Net) to the hexagon genome:
+//   CPU, RAM, GPU, NPU, Power, IO, Net
+//
+// Uses nettop for per-process bytes in/out, classifies into 8 gates,
+// and logs network genome alongside resource genome.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/network.hexa [command]
+// Commands: sample, top, gate, hogs, history, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let NET_LOG = "forge/network.jsonl"
+let GATE_COUNT = 8
+
+// Dynamic gate config
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+// Classify process name → gate index (same as runtime.hexa)
+fn classify_net(name: str) -> int {
+    if name.contains("Safari") { return 4 }
+    if name.contains("WebKit") { return 4 }
+    if name.contains("Google Chrome") { return 3 }
+    if name.contains("chrome") { return 3 }
+    if name.contains("Telegram") { return 2 }
+    if name.contains("Finder") { return 1 }
+    if name.contains("claude") { return 5 }
+    if name.contains("iTerm") { return 6 }
+    if name.contains("Terminal") { return 6 }
+    if name.contains("Alacritty") { return 6 }
+    if name.contains("Warp") { return 6 }
+    if name.contains("rustc") { return 7 }
+    if name.contains("cargo") { return 7 }
+    if name.contains("python") { return 7 }
+    if name.contains("Python") { return 7 }
+    if name.contains("node") { return 7 }
+    if name.contains("npm") { return 7 }
+    if name.contains("Xcode") { return 7 }
+    if name.contains("Code Helper") { return 7 }
+    if name.contains("mcp") { return 7 }
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SAMPLE: nettop per-process network usage
+// ═══════════════════════════════════════════════════════════════════════
+
+// Sample network using nettop (1-second snapshot)
+// Returns: [bytes_in[8], bytes_out[8], total_in, total_out, process_list]
+fn sample_network() -> auto {
+    let bytes_in  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let bytes_out = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let total_in = 0.0
+    let total_out = 0.0
+
+    // nettop -P -L1 -k rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W
+    // Simpler: use nettop -P -L1 -J bytes_in,bytes_out
+    let raw = exec("nettop -P -L1 -k time,interface,state,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_win,tc_class,tc_mgt,cc_algo,P,C,R,W -t wifi -t wired 2>/dev/null | tail -n +2")
+    let lines = raw.split("\n")
+
+    let procs = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 5 {
+            // Format: process.PID, bytes_in, bytes_out
+            let fields = line.split(",")
+            if len(fields) >= 3 {
+                let proc_field = fields[0].trim()
+                let b_in = to_float(fields[1].trim())
+                let b_out = to_float(fields[2].trim())
+
+                if b_in > 0.0 {
+                    let g = classify_net(proc_field)
+                    bytes_in[g] = bytes_in[g] + b_in
+                    bytes_out[g] = bytes_out[g] + b_out
+                    total_in = total_in + b_in
+                    total_out = total_out + b_out
+
+                    if b_in > 1024.0 {  // Only track >1KB
+                        procs = procs + [[proc_field, b_in, b_out, g]]
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    return [bytes_in, bytes_out, total_in, total_out, procs]
+}
+
+// Fallback: use netstat if nettop fails
+fn sample_network_fallback() -> auto {
+    let bytes_in  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let bytes_out = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    // Per-process lsof approach: get PIDs with network connections
+    let lsof_out = exec("lsof -i -n -P 2>/dev/null | awk 'NR>1{print $1,$2}' | sort -u").trim()
+    let lines = lsof_out.split("\n")
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = line.split(" ")
+            if len(parts) >= 2 {
+                let name = parts[0]
+                let pid = parts[1]
+                let g = classify_net(name)
+                // Estimate: use RSS as proxy for network activity weight
+                let rss_str = exec("ps -p " + pid + " -o rss= 2>/dev/null").trim()
+                let rss = to_float(rss_str) * 1024.0  // rough bytes estimate
+                bytes_in[g] = bytes_in[g] + rss * 0.001  // very rough
+            }
+        }
+        i = i + 1
+    }
+
+    return [bytes_in, bytes_out, 0.0, 0.0, []]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn print_sample() -> str {
+    let net = sample_network()
+    let bytes_in = net[0]
+    let bytes_out = net[1]
+    let total_in = net[2]
+    let total_out = net[3]
+    let ts = exec("date '+%Y-%m-%d %H:%M:%S'").trim()
+
+    println("")
+    println("  network sample — " + ts)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    if total_in < 1.0 {
+        println("  no network data (nettop may require sudo)")
+        println("  trying fallback...")
+        let fb = sample_network_fallback()
+        bytes_in = fb[0]
+        bytes_out = fb[1]
+    }
+
+    println("  gate          in          out         share")
+    println("  ────────────  ──────────  ──────────  ──────")
+
+    if total_in < 1.0 { total_in = 1.0 }
+    let g = 0
+    while g < 8 {
+        if bytes_in[g] > 0.0 {
+            let in_kb = bytes_in[g] / 1024.0
+            let out_kb = bytes_out[g] / 1024.0
+            let share = bytes_in[g] * 100.0 / total_in
+            let unit_in = "KB"
+            let val_in = in_kb
+            if in_kb > 1024.0 { unit_in = "MB"; val_in = in_kb / 1024.0 }
+            let unit_out = "KB"
+            let val_out = out_kb
+            if out_kb > 1024.0 { unit_out = "MB"; val_out = out_kb / 1024.0 }
+
+            let bar_len = to_int(share / 5.0)
+            if bar_len < 0 { bar_len = 0 }
+            if bar_len > 15 { bar_len = 15 }
+            let bar = ""
+            let bi = 0
+            while bi < bar_len { bar = bar + "▓"; bi = bi + 1 }
+            while bi < 15 { bar = bar + "░"; bi = bi + 1 }
+
+            println("  " + gate_name(g) + "\t" + to_string(to_int(val_in)) + unit_in + "\t" + to_string(to_int(val_out)) + unit_out + "\t" + bar + " " + to_string(to_int(share)) + "%")
+        }
+        g = g + 1
+    }
+
+    let total_in_mb = total_in / 1048576.0
+    let total_out_mb = total_out / 1048576.0
+    println("")
+    println("  total: in=" + to_string(to_int(total_in_mb)) + "MB  out=" + to_string(to_int(total_out_mb)) + "MB")
+    println("")
+
+    // Log
+    let log_ts = exec("date +%s").trim()
+    let log_line = "{\"ts\":" + log_ts
+    g = 0
+    while g < 8 {
+        log_line = log_line + ",\"" + gate_name(g) + "_in\":" + to_string(to_int(bytes_in[g]))
+        log_line = log_line + ",\"" + gate_name(g) + "_out\":" + to_string(to_int(bytes_out[g]))
+        g = g + 1
+    }
+    log_line = log_line + ",\"total_in\":" + to_string(to_int(total_in)) + ",\"total_out\":" + to_string(to_int(total_out)) + "}"
+    append_file(NET_LOG, log_line + "\n")
+
+    return "ok"
+}
+
+// Top network consumers (process level)
+fn print_top() -> str {
+    let net = sample_network()
+    let procs = net[4]
+
+    println("")
+    println("  network top consumers")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    if len(procs) == 0 {
+        println("  no active network processes detected")
+        println("")
+        return "ok"
+    }
+
+    // Sort by bytes_in (already in list)
+    println("  process                  in        out       gate")
+    println("  ───────────────────────  ────────  ────────  ────────")
+
+    let i = 0
+    let shown = 0
+    while i < len(procs) {
+        if shown < 15 {
+            let p = procs[i]
+            let name = p[0]
+            if len(name) > 25 { name = name[0:25] }
+            let in_kb = p[1] / 1024.0
+            let out_kb = p[2] / 1024.0
+            let g = p[3]
+            println("  " + name + "\t" + to_string(to_int(in_kb)) + "KB\t" + to_string(to_int(out_kb)) + "KB\t" + gate_name(g))
+            shown = shown + 1
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Per-gate network breakdown
+fn print_gate(gate_id: int) -> str {
+    let net = sample_network()
+    let bytes_in = net[0]
+    let bytes_out = net[1]
+    let procs = net[4]
+
+    println("")
+    println("  network detail: " + gate_name(gate_id) + " (gate " + to_string(gate_id) + ")")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  total in:  " + to_string(to_int(bytes_in[gate_id] / 1024.0)) + " KB")
+    println("  total out: " + to_string(to_int(bytes_out[gate_id] / 1024.0)) + " KB")
+    println("")
+
+    // Show processes in this gate
+    println("  processes:")
+    let i = 0
+    while i < len(procs) {
+        if procs[i][3] == gate_id {
+            let name = procs[i][0]
+            let in_kb = procs[i][1] / 1024.0
+            println("    " + name + "  " + to_string(to_int(in_kb)) + "KB")
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Network hogs — candidates for QoS
+fn print_hogs() -> str {
+    let net = sample_network()
+    let bytes_in = net[0]
+    let total_in = net[2]
+
+    println("")
+    println("  network hogs — bandwidth-disproportionate gates")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    if total_in < 1.0 {
+        println("  no network data")
+        println("")
+        return "ok"
+    }
+
+    let g = 0
+    let hog_count = 0
+    while g < 8 {
+        let share = bytes_in[g] * 100.0 / total_in
+        if share > 40.0 {
+            println("  " + gate_name(g) + ": " + to_string(to_int(share)) + "% of total bandwidth — HOG")
+            hog_count = hog_count + 1
+        }
+        if share > 25.0 {
+            if share <= 40.0 {
+                println("  " + gate_name(g) + ": " + to_string(to_int(share)) + "% of total bandwidth — HIGH")
+            }
+        }
+        g = g + 1
+    }
+
+    if hog_count == 0 {
+        println("  no bandwidth hogs detected — balanced")
+    }
+    println("")
+    return "ok"
+}
+
+// Network history
+fn print_history() -> str {
+    if file_exists(NET_LOG) == false {
+        println("  no network log yet")
+        return "ok"
+    }
+    let tail = exec("tail -10 " + NET_LOG).trim()
+    let lines = tail.split("\n")
+
+    println("")
+    println("  network history (last " + to_string(len(lines)) + " samples)")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            let ts_fmt = exec("date -r " + to_string(parsed["ts"]) + " '+%H:%M:%S' 2>/dev/null").trim()
+            let total_in_mb = to_float(to_string(parsed["total_in"])) / 1048576.0
+            let total_out_mb = to_float(to_string(parsed["total_out"])) / 1048576.0
+            println("  [" + ts_fmt + "] in=" + to_string(to_int(total_in_mb)) + "MB  out=" + to_string(to_int(total_out_mb)) + "MB")
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+fn network_help() -> str {
+    println("network v" + VERSION + " — per-process network sampling (7th axis)")
+    println("")
+    println("Commands:")
+    println("  sample   — snapshot per-gate network usage")
+    println("  top      — top network consumers (process level)")
+    println("  gate <N> — detail for gate N")
+    println("  hogs     — find bandwidth hogs")
+    println("  history  — recent network log")
+    println("  help     — this message")
+    println("")
+    println("Genome axes: CPU, RAM, GPU, NPU, Power, IO, Net")
+    println("Gates: 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools")
+    return "ok"
+}
+
+fn main() {
+    assert GATE_COUNT == 8
+    let argv = args()
+    let cmd = "sample"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"    { network_help() }
+    if cmd == "sample"  { print_sample() }
+    if cmd == "top"     { print_top() }
+    if cmd == "hogs"    { print_hogs() }
+    if cmd == "history" { print_history() }
+    if cmd == "gate" {
+        let gid = 0
+        if len(argv) > 4 { gid = to_int(argv[4]) }
+        print_gate(gid)
+    }
+}
+
+main()

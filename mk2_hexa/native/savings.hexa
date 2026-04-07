@@ -1,0 +1,219 @@
+// airgenome/mk2_hexa/native/savings.hexa — cumulative savings tracker
+//
+// Logs estimated QoS savings every sample cycle and generates
+// daily/weekly reports showing total resources conserved.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/savings.hexa [command]
+// Commands: log, today, week, all, reset, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let SAVINGS_LOG = "forge/savings.jsonl"
+let GATE_COUNT = 8
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SAMPLE: snapshot current potential savings
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sample_savings() -> auto {
+    let ncpu = to_int(exec("sysctl -n hw.ncpu 2>/dev/null").trim())
+    if ncpu < 1 { ncpu = 8 }
+
+    // System totals
+    let sys_cpu_str = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.1f\",s}'").trim()
+    let sys_ram_str = exec("ps -A -o rss= | awk '{s+=$1}END{printf \"%.0f\",s/1024}'").trim()
+    let sys_cpu = to_float(sys_cpu_str)
+    let sys_ram = to_float(sys_ram_str)
+    if sys_cpu < 1.0 { sys_cpu = 1.0 }
+    if sys_ram < 1.0 { sys_ram = 1.0 }
+
+    // CPU hogs (>30%) → renice saves ~30%
+    let cpu_save_str = exec("ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 { c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=$2*0.30} END{printf \"%.1f\",s}'").trim()
+    let cpu_save = to_float(cpu_save_str)
+
+    // RAM hogs (>1GB) → taskpolicy saves ~20%
+    let ram_save_str = exec("ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 { c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
+    let ram_save = to_float(ram_save_str)
+
+    // Claude idle sessions → taskpolicy saves ~20% RAM
+    let claude_idle_str = exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
+    let claude_save = to_float(claude_idle_str)
+
+    // WebKit inactive tabs (CPU<0.5%, >200MB) → taskpolicy saves ~20%
+    let webkit_idle_str = exec("ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
+    let webkit_save = to_float(webkit_idle_str)
+
+    // Network: bytes sent by hog processes (placeholder — network.hexa will refine)
+    let net_save = 0.0
+
+    let total_ram_save = ram_save + claude_save + webkit_save
+    let cpu_pct = cpu_save * 100.0 / sys_cpu
+    let ram_pct = total_ram_save * 100.0 / sys_ram
+
+    return [cpu_save, total_ram_save, cpu_pct, ram_pct, claude_save, webkit_save, net_save, sys_cpu, sys_ram]
+}
+
+// Log a single savings snapshot
+fn log_savings() -> str {
+    let s = sample_savings()
+    let ts = exec("date +%s").trim()
+    let date = exec("date +%Y-%m-%d").trim()
+    let hour = exec("date +%H").trim()
+
+    let line = "{\"ts\":" + ts + ",\"date\":\"" + date + "\",\"hour\":" + hour
+    line = line + ",\"cpu_save\":" + to_string(s[0])
+    line = line + ",\"ram_save\":" + to_string(s[1])
+    line = line + ",\"cpu_pct\":" + to_string(s[2])
+    line = line + ",\"ram_pct\":" + to_string(s[3])
+    line = line + ",\"claude_mb\":" + to_string(s[4])
+    line = line + ",\"webkit_mb\":" + to_string(s[5])
+    line = line + ",\"sys_cpu\":" + to_string(s[7])
+    line = line + ",\"sys_ram\":" + to_string(s[8])
+    line = line + "}"
+
+    append_file(SAVINGS_LOG, line + "\n")
+
+    println("  [" + date + " " + hour + "h] CPU -" + to_string(to_int(s[2])) + "%  RAM -" + to_string(to_int(s[3])) + "%  (claude -" + to_string(to_int(s[4])) + "MB, webkit -" + to_string(to_int(s[5])) + "MB)")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  REPORTS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn report(filter_date: str, label: str) -> str {
+    if file_exists(SAVINGS_LOG) == false {
+        println("  no savings data yet — run 'savings log' first")
+        return "ok"
+    }
+
+    let content = read_file(SAVINGS_LOG)
+    let lines = content.split("\n")
+
+    let total_cpu = 0.0
+    let total_ram = 0.0
+    let total_claude = 0.0
+    let total_webkit = 0.0
+    let max_cpu = 0.0
+    let max_ram = 0.0
+    let count = 0
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            let date = parsed["date"]
+            let include = 0
+            if len(filter_date) == 0 { include = 1 }  // all
+            if len(filter_date) == 10 { if date == filter_date { include = 1 } }  // specific date
+            if len(filter_date) == 7 {  // week: check if date starts with filter prefix
+                if date[0:7] == filter_date { include = 1 }
+            }
+
+            if include == 1 {
+                let cpu_p = to_float(to_string(parsed["cpu_pct"]))
+                let ram_p = to_float(to_string(parsed["ram_pct"]))
+                total_cpu = total_cpu + cpu_p
+                total_ram = total_ram + ram_p
+                total_claude = total_claude + to_float(to_string(parsed["claude_mb"]))
+                total_webkit = total_webkit + to_float(to_string(parsed["webkit_mb"]))
+                if cpu_p > max_cpu { max_cpu = cpu_p }
+                if ram_p > max_ram { max_ram = ram_p }
+                count = count + 1
+            }
+        }
+        i = i + 1
+    }
+
+    if count == 0 {
+        println("  no data for " + label)
+        return "ok"
+    }
+
+    let avg_cpu = total_cpu / to_float(count)
+    let avg_ram = total_ram / to_float(count)
+
+    println("")
+    println("  savings report — " + label)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  samples:       " + to_string(count))
+    println("  avg CPU saved: -" + to_string(to_int(avg_cpu)) + "%")
+    println("  avg RAM saved: -" + to_string(to_int(avg_ram)) + "%")
+    println("  peak CPU save: -" + to_string(to_int(max_cpu)) + "%")
+    println("  peak RAM save: -" + to_string(to_int(max_ram)) + "%")
+    println("")
+    println("  breakdown:")
+    println("    Claude idle sessions: -" + to_string(to_int(total_claude / to_float(count))) + " MB avg")
+    println("    WebKit inactive tabs: -" + to_string(to_int(total_webkit / to_float(count))) + " MB avg")
+    println("    Generic hog renice:   included in CPU%")
+    println("")
+
+    // Grade
+    let combined = (avg_cpu + avg_ram) / 2.0
+    let grade = "F"
+    if combined >= 1.0  { grade = "D" }
+    if combined >= 5.0  { grade = "C" }
+    if combined >= 10.0 { grade = "B" }
+    if combined >= 20.0 { grade = "A" }
+    if combined >= 30.0 { grade = "S" }
+    println("  efficiency grade: " + grade + " (avg " + to_string(to_int(combined)) + "% savings)")
+    println("")
+    return "ok"
+}
+
+fn report_today() -> str {
+    let today = exec("date +%Y-%m-%d").trim()
+    return report(today, "today (" + today + ")")
+}
+
+fn report_week() -> str {
+    let prefix = exec("date +%Y-%m").trim()
+    return report(prefix, "this month (" + prefix + ")")
+}
+
+fn report_all() -> str {
+    return report("", "all time")
+}
+
+fn reset_log() -> str {
+    if file_exists(SAVINGS_LOG) {
+        let backup = SAVINGS_LOG + ".bak"
+        exec("cp " + SAVINGS_LOG + " " + backup)
+        write_file(SAVINGS_LOG, "")
+        println("  savings log reset (backup: " + backup + ")")
+    }
+    return "ok"
+}
+
+fn savings_help() -> str {
+    println("savings v" + VERSION + " — cumulative savings tracker")
+    println("")
+    println("Commands:")
+    println("  log     — snapshot current savings (append to log)")
+    println("  today   — today's report")
+    println("  week    — this month's report")
+    println("  all     — all-time report")
+    println("  reset   — reset log (with backup)")
+    println("  help    — this message")
+    println("")
+    println("Run 'savings log' periodically (via runtime loop or cron) to build history.")
+    return "ok"
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "log"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"  { savings_help() }
+    if cmd == "log"   { log_savings() }
+    if cmd == "today" { report_today() }
+    if cmd == "week"  { report_week() }
+    if cmd == "all"   { report_all() }
+    if cmd == "reset" { reset_log() }
+}
+
+main()

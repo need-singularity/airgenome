@@ -224,8 +224,41 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
 
     PREV_LEVEL="$LEVEL"
 
+    # ── SAVINGS: QoS 절감률 계산 ────────────────────────────────
+    # renice 대상: CPU >30% (시스템 제외) → 예상 30% 절감
+    # taskpolicy 대상: RSS >2048MB (시스템 제외) → 예상 20% 절감
+    SAVE_CPU=0; SAVE_RAM=0
+    SYS_CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}')
+    SYS_RAM_TOTAL_MB=$(ps -A -o rss= | awk '{s+=$1}END{printf "%.0f",s/1024}')
+    : "${SYS_CPU_TOTAL:=1}" "${SYS_RAM_TOTAL_MB:=1}"
+    [ "$SYS_CPU_TOTAL" -lt 1 ] 2>/dev/null && SYS_CPU_TOTAL=1
+    [ "$SYS_RAM_TOTAL_MB" -lt 1 ] 2>/dev/null && SYS_RAM_TOTAL_MB=1
+
+    # CPU hogs: sum(cpu * 0.30) for processes >30% CPU, PID>100, not system
+    HOG_CPU_SAVE=$(ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 {
+      c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next;
+      s+=$2*0.30} END{printf "%.0f",s}')
+    : "${HOG_CPU_SAVE:=0}"
+    # RAM hogs: sum(rss/1024 * 0.20) for processes >1GB RSS
+    HOG_RAM_SAVE=$(ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 {
+      c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next;
+      s+=($2/1024)*0.20} END{printf "%.0f",s}')
+    : "${HOG_RAM_SAVE:=0}"
+    # Claude idle sessions: CPU<1% → taskpolicy saves 20% RAM
+    CLAUDE_SAVE=$(ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf "%.0f",s}')
+    : "${CLAUDE_SAVE:=0}"
+    # WebKit inactive tabs: CPU<0.5%, >200MB → taskpolicy saves 20%
+    WEBKIT_SAVE=$(ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf "%.0f",s}')
+    : "${WEBKIT_SAVE:=0}"
+
+    HOG_RAM_SAVE=$((HOG_RAM_SAVE + CLAUDE_SAVE + WEBKIT_SAVE))
+    SAVE_CPU=$((HOG_CPU_SAVE * 100 / SYS_CPU_TOTAL))
+    SAVE_RAM=$((HOG_RAM_SAVE * 100 / SYS_RAM_TOTAL_MB))
+    [ "$SAVE_CPU" -gt 99 ] 2>/dev/null && SAVE_CPU=99
+    [ "$SAVE_RAM" -gt 99 ] 2>/dev/null && SAVE_RAM=99
+
     cat > "$STATE" <<EOF
-{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL}
+{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM}
 EOF
     sleep 5
   done
@@ -276,6 +309,10 @@ menu.addItem(ramItem);
 var swapItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Swap ...'), null, $(''));
 swapItem.enabled = false;
 menu.addItem(swapItem);
+
+var saveItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Save ...'), null, $(''));
+saveItem.enabled = false;
+menu.addItem(saveItem);
 
 menu.addItem($.NSMenuItem.separatorItem);
 
@@ -344,13 +381,23 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var swapHigh = j.swap >= sc;
     var swapMid  = j.swap >= (sc * 80 / 100);
     var swapTag = swapHigh ? ' \u26D4sw' : (swapMid ? ' \u26A0sw' : '');
-    statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag);
+    var saveCpuBar = j.save_cpu || 0;
+    var saveRamBar = j.save_ram || 0;
+    var saveTotalBar = Math.min(Math.round((saveCpuBar + saveRamBar) / 2), 99);
+    var saveTag = saveTotalBar > 0 ? ' \u2193' + saveTotalBar + '%' : '';
+    statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag + saveTag);
 
     var bw = 16;
     cpuItem.title  = $('CPU  ' + bar(j.cpu, cc, bw)  + '  ' + j.cpu  + '/' + cc + '%');
     ramItem.title  = $('RAM  ' + bar(j.ram, rc, bw)   + '  ' + j.ram  + '/' + rc + '%');
     var swapIcon = swapHigh ? '\u26D4 ' : (swapMid ? '\u26A0 ' : '');
     swapItem.title = $(swapIcon + 'Swap ' + bar(j.swap, sc, bw)  + '  ' + j.swap + '/' + sc + '%');
+
+    var saveCpu = j.save_cpu || 0;
+    var saveRam = j.save_ram || 0;
+    var saveTotal = Math.min(Math.round((saveCpu + saveRam) / 2), 99);
+    var saveIcon = saveTotal > 0 ? '\u2193' : '\u2500';
+    saveItem.title = $(saveIcon + ' Save  CPU -' + saveCpu + '%  RAM -' + saveRam + '%  (\u2248' + saveTotal + '% \uC808\uAC10)');
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');
     var freeMB = j.free_mb || 0;

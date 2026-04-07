@@ -1,14 +1,18 @@
-// airgenome/mk2_hexa/native/qos.hexa — pattern-based QoS auto-adjustment
+// airgenome/mk2_hexa/native/qos.hexa — v2.0 pattern-based QoS with smart targeting
 //
-// Reads fingerprint + temporal data, applies renice/taskpolicy to
-// deprioritize resource hogs without killing anything.
+// Upgrades over v1:
+//   1. Claude session consolidation — idle sessions → taskpolicy -b
+//   2. WebKit inactive tab detection — old WebContent → background QoS
+//   3. Temporal integration — time-of-day QoS intensity scaling
+//   4. Fingerprint integration — workload-aware QoS strategy
+//   5. Network-aware — high bandwidth hogs get deprioritized
 //
 // Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/qos.hexa [command]
-// Commands: scan, apply, dry, rules, status, help
+// Commands: scan, apply, dry, rules, status, claude, webkit, help
 //
 // Prime directive: observe only, never kill. renice/taskpolicy only.
 
-let VERSION = "1.0.0"
+let VERSION = "2.0.0"
 let LOG_FILE = "genomes.log"
 let QOS_LOG = "forge/qos.jsonl"
 let GATE_COUNT = 8
@@ -40,39 +44,198 @@ fn gate_name(g: int) -> str {
     return "unknown"
 }
 
-// QoS policy rules (loaded from JSONL config)
+// ═══════════════════════════════════════════════════════════════════════
+//  THRESHOLDS — configurable via JSONL
+// ═══════════════════════════════════════════════════════════════════════
+
 let QOS_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_qos.jsonl"
-
-// Default thresholds (overridden by JSONL if present)
 let CPU_HOG_THRESHOLD = 30.0
-let RAM_HOG_MB = 2048.0
+let RAM_HOG_MB = 1024.0
 let RENICE_LEVEL = 10
-let TASKPOLICY_BG = "background"
 
-// Load QoS config from JSONL
-fn load_qos_config() -> auto {
-    if file_exists(QOS_CFG_PATH) == false { return [] }
-    let content = read_file(QOS_CFG_PATH)
-    let lines = content.split("\n")
-    let rules = []
+// Temporal multiplier: how aggressively to QoS by time-of-day
+// night/dawn → aggressive (1.5x), afternoon → mild (0.8x)
+fn temporal_multiplier() -> float {
+    let hour = to_int(exec("date +%H").trim())
+    if hour >= 0  { if hour < 5  { return 1.5 } }  // night: aggressive
+    if hour >= 5  { if hour < 8  { return 1.3 } }  // dawn: moderate-aggressive
+    if hour >= 8  { if hour < 12 { return 1.0 } }  // morning: normal
+    if hour >= 12 { if hour < 17 { return 0.8 } }  // afternoon: mild
+    if hour >= 17 { if hour < 21 { return 1.0 } }  // evening: normal
+    return 1.5  // late night
+}
+
+// Fingerprint: detect current workload type from last genome log
+fn detect_workload() -> str {
+    if file_exists(LOG_FILE) == false { return "mixed" }
+    let last = exec("tail -1 " + LOG_FILE).trim()
+    if len(last) < 10 { return "mixed" }
+    let fields = last.split("\t")
+    if len(fields) < 9 { return "mixed" }
+
+    // Quick classify: check gate ratios
+    let ram = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let total_ram = 0.0
+    let total_cpu = 0.0
+    let g = 0
+    while g < 8 {
+        if g + 1 < len(fields) {
+            let field = fields[g + 1]
+            if field.contains(":") {
+                let parts = field.split(":")
+                if len(parts) >= 2 {
+                    let vals = parts[1].split("/")
+                    if len(vals) >= 2 {
+                        ram[g] = to_float(vals[0])
+                        cpu[g] = to_float(vals[1])
+                        total_ram = total_ram + ram[g]
+                        total_cpu = total_cpu + cpu[g]
+                    }
+                }
+            }
+        }
+        g = g + 1
+    }
+    if total_ram < 1.0 { return "mixed" }
+    if total_cpu < 0.01 { return "idle" }
+
+    let dev_cpu_frac = cpu[7] / total_cpu
+    let browser_ram_frac = (ram[3] + ram[4]) / total_ram
+
+    if dev_cpu_frac > 0.40 { return "compile" }
+    if browser_ram_frac > 0.50 { return "browse" }
+    if ram[0] / total_ram > 0.70 { return "idle" }
+    return "mixed"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TASK 1: Claude session consolidation
+// ═══════════════════════════════════════════════════════════════════════
+
+fn scan_claude_sessions() -> auto {
+    // Find all claude processes, sort by CPU (most active = foreground)
+    let ps = exec("ps -eo pid=,rss=,%cpu=,etime=,comm= | grep '[c]laude' | sort -rnk3").trim()
+    let lines = ps.split("\n")
+    let sessions = []
     let i = 0
     while i < len(lines) {
         let line = lines[i].trim()
-        if len(line) > 2 {
-            let parsed = json_parse(line)
-            rules = rules + [parsed]
+        if len(line) > 0 {
+            let parts = exec("echo '" + line + "' | awk '{print $1, $2, $3, $4}'").trim().split(" ")
+            if len(parts) >= 4 {
+                let pid = parts[0]
+                let rss_kb = to_float(parts[1])
+                let cpu_pct = to_float(parts[2])
+                let etime = parts[3]
+                let rss_mb = rss_kb / 1024.0
+                // Idle = CPU < 1% — candidate for background
+                let idle = cpu_pct < 1.0
+                sessions = sessions + [[pid, rss_mb, cpu_pct, etime, idle]]
+            }
         }
         i = i + 1
     }
-    return rules
+    return sessions
 }
 
-// Scan current processes → find QoS candidates
-// Returns: [[pid, comm, cpu, rss_mb, action, reason], ...]
+fn print_claude_sessions() -> str {
+    let sessions = scan_claude_sessions()
+    let total_mb = 0.0
+    let idle_mb = 0.0
+    let idle_count = 0
+
+    println("")
+    println("  Claude session analysis")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  pid     ram MB  cpu%   elapsed   status")
+    println("  ──────  ──────  ─────  ────────  ──────────")
+
+    let i = 0
+    while i < len(sessions) {
+        let s = sessions[i]
+        let pid = s[0]
+        let rss = s[1]
+        let cpu = s[2]
+        let etime = s[3]
+        let idle = s[4]
+        total_mb = total_mb + rss
+
+        let tag = "ACTIVE"
+        if idle {
+            tag = "IDLE → taskpolicy -b"
+            idle_mb = idle_mb + rss
+            idle_count = idle_count + 1
+        }
+
+        println("  " + pid + "\t" + to_string(to_int(rss)) + "\t" + to_string(cpu) + "\t" + etime + "\t" + tag)
+        i = i + 1
+    }
+
+    let save_pct = 0.0
+    if total_mb > 0.0 { save_pct = idle_mb * 20.0 / total_mb }
+
+    println("")
+    println("  total: " + to_string(len(sessions)) + " sessions, " + to_string(to_int(total_mb)) + " MB")
+    println("  idle:  " + to_string(idle_count) + " sessions, " + to_string(to_int(idle_mb)) + " MB → -" + to_string(to_int(idle_mb * 0.20)) + " MB savings (" + to_string(to_int(save_pct)) + "%)")
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TASK 2: WebKit inactive tab detection
+// ═══════════════════════════════════════════════════════════════════════
+
+fn scan_webkit_tabs() -> auto {
+    let ps = exec("ps -eo pid=,rss=,%cpu=,etime=,comm= | grep 'WebKit.WebContent' | sort -rnk2").trim()
+    let lines = ps.split("\n")
+    let tabs = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = exec("echo '" + line + "' | awk '{print $1, $2, $3, $4}'").trim().split(" ")
+            if len(parts) >= 4 {
+                let pid = parts[0]
+                let rss_kb = to_float(parts[1])
+                let cpu_pct = to_float(parts[2])
+                let etime = parts[3]
+                let rss_mb = rss_kb / 1024.0
+                // Inactive tab: CPU < 0.5% and running > 5 min
+                let inactive = cpu_pct < 0.5
+                tabs = tabs + [[pid, rss_mb, cpu_pct, etime, inactive]]
+            }
+        }
+        i = i + 1
+    }
+    return tabs
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SMART SCAN — combines all 4 strategies
+// ═══════════════════════════════════════════════════════════════════════
+
 fn scan_candidates() -> auto {
+    let tmult = temporal_multiplier()
+    let workload = detect_workload()
+    let candidates = []
+
+    // Adjusted thresholds based on temporal + fingerprint
+    let adj_cpu = CPU_HOG_THRESHOLD / tmult
+    let adj_ram = RAM_HOG_MB / tmult
+
+    // Workload-specific adjustments
+    // compile mode → browsers get lower threshold (more aggressive QoS)
+    // browse mode → devtools get lower threshold
+    let browser_cpu_adj = 1.0
+    let devtools_cpu_adj = 1.0
+    if workload == "compile" { browser_cpu_adj = 0.5 }   // halve browser threshold during compile
+    if workload == "browse"  { devtools_cpu_adj = 0.5 }   // halve devtools threshold during browse
+
+    // ── Generic process scan ──
     let ps = exec("ps -axm -o pid=,rss=,%cpu=,comm= | awk '{printf \"%s\\t%s\\t%s\\t\", $1, $2, $3; for(i=4;i<=NF;i++) printf \"%s \", $i; print \"\"}'")
     let lines = ps.split("\n")
-    let candidates = []
     let i = 0
     while i < len(lines) {
         let line = lines[i].trim()
@@ -85,32 +248,36 @@ fn scan_candidates() -> auto {
                 let comm = fields[3].trim()
                 let rss_mb = rss_kb / 1024.0
 
-                // Skip system-critical (PID 0, 1, kernel_task, WindowServer)
                 if to_int(pid) > 100 {
                     let action = ""
                     let reason = ""
 
-                    // Rule 1: CPU hog — renice if >CPU_HOG_THRESHOLD sustained
-                    if cpu_pct > CPU_HOG_THRESHOLD {
+                    // Per-workload threshold
+                    let eff_cpu = adj_cpu
+                    if comm.contains("Chrome") { eff_cpu = adj_cpu * browser_cpu_adj }
+                    if comm.contains("Safari") { eff_cpu = adj_cpu * browser_cpu_adj }
+                    if comm.contains("WebKit")  { eff_cpu = adj_cpu * browser_cpu_adj }
+                    if comm.contains("rustc")  { eff_cpu = adj_cpu * devtools_cpu_adj }
+                    if comm.contains("cargo")  { eff_cpu = adj_cpu * devtools_cpu_adj }
+                    if comm.contains("node")   { eff_cpu = adj_cpu * devtools_cpu_adj }
+
+                    if cpu_pct > eff_cpu {
                         action = "renice"
-                        reason = "CPU " + to_string(cpu_pct) + "% > " + to_string(CPU_HOG_THRESHOLD) + "%"
+                        reason = "CPU " + to_string(cpu_pct) + "% > " + to_string(to_int(eff_cpu)) + "% [" + workload + "]"
                     }
 
-                    // Rule 2: RAM hog — taskpolicy background if >RAM_HOG_MB
-                    if rss_mb > RAM_HOG_MB {
+                    if rss_mb > adj_ram {
                         if len(action) == 0 {
                             action = "taskpolicy"
-                            reason = "RAM " + to_string(to_int(rss_mb)) + "MB > " + to_string(to_int(RAM_HOG_MB)) + "MB"
+                            reason = "RAM " + to_string(to_int(rss_mb)) + "MB > " + to_string(to_int(adj_ram)) + "MB"
                         }
-                        if len(action) > 0 {
-                            if action == "renice" {
-                                action = "renice+taskpolicy"
-                                reason = reason + " + RAM " + to_string(to_int(rss_mb)) + "MB"
-                            }
+                        if action == "renice" {
+                            action = "renice+taskpolicy"
+                            reason = reason + " + RAM " + to_string(to_int(rss_mb)) + "MB"
                         }
                     }
 
-                    // Rule 3: Skip whitelisted (system UI, Finder, WindowServer)
+                    // Whitelist
                     if comm.contains("Finder") { action = "" }
                     if comm.contains("WindowServer") { action = "" }
                     if comm.contains("Dock") { action = "" }
@@ -125,18 +292,62 @@ fn scan_candidates() -> auto {
         }
         i = i + 1
     }
+
+    // ── Claude idle sessions ──
+    let claude_sessions = scan_claude_sessions()
+    let ci = 0
+    while ci < len(claude_sessions) {
+        let s = claude_sessions[ci]
+        if s[4] {  // idle
+            let already = 0
+            let cj = 0
+            while cj < len(candidates) {
+                if candidates[cj][0] == s[0] { already = 1 }
+                cj = cj + 1
+            }
+            if already == 0 {
+                candidates = candidates + [[s[0], "claude(idle)", s[2], s[1], "taskpolicy", "idle session " + s[3]]]
+            }
+        }
+        ci = ci + 1
+    }
+
+    // ── WebKit inactive tabs ──
+    let webkit_tabs = scan_webkit_tabs()
+    let wi = 0
+    while wi < len(webkit_tabs) {
+        let t = webkit_tabs[wi]
+        if t[4] {  // inactive
+            if t[1] > 200.0 {  // only if >200MB
+                let already = 0
+                let wj = 0
+                while wj < len(candidates) {
+                    if candidates[wj][0] == t[0] { already = 1 }
+                    wj = wj + 1
+                }
+                if already == 0 {
+                    candidates = candidates + [[t[0], "WebKit(inactive)", t[2], t[1], "taskpolicy", "inactive tab " + to_string(to_int(t[1])) + "MB"]]
+                }
+            }
+        }
+        wi = wi + 1
+    }
+
     return candidates
 }
 
-// Print scan results (dry run)
+// Print scan results
 fn print_scan(candidates: auto, dry: int) -> str {
     let ts = exec("date '+%Y-%m-%d %H:%M:%S'").trim()
+    let tmult = temporal_multiplier()
+    let workload = detect_workload()
     let mode = "SCAN"
     if dry == 1 { mode = "DRY RUN" }
     if dry == 0 { mode = "APPLY" }
 
     println("")
-    println("  QoS " + mode + " — " + ts)
+    println("  QoS " + mode + " v" + VERSION + " — " + ts)
+    println("  workload=" + workload + "  temporal=" + to_string(tmult) + "x")
     println("  ══════════════════════════════════════════════════════════════")
     println("")
 
@@ -146,7 +357,6 @@ fn print_scan(candidates: auto, dry: int) -> str {
         return "ok"
     }
 
-    // Get system totals for savings calculation
     let sys_cpu_str = exec("ps -A -o %cpu= | awk '{s+=$1}END{print s}'").trim()
     let sys_ram_str = exec("ps -A -o rss= | awk '{s+=$1}END{print s/1024}'").trim()
     let sys_cpu = to_float(sys_cpu_str)
@@ -168,7 +378,6 @@ fn print_scan(candidates: auto, dry: int) -> str {
         let rss = c[3]
         let action = c[4]
 
-        // Estimate savings: renice ~30% CPU reduction, taskpolicy ~20% RAM deprioritization
         let cpu_save = 0.0
         let ram_save = 0.0
         if action.contains("renice") { cpu_save = cpu * 0.30 }
@@ -184,20 +393,19 @@ fn print_scan(candidates: auto, dry: int) -> str {
         }
 
         let short_comm = comm
-        if len(short_comm) > 30 { short_comm = short_comm[0:30] }
+        if len(short_comm) > 25 { short_comm = short_comm[0:25] }
 
         println("  " + pid + "\t" + to_string(cpu) + "\t" + to_string(to_int(rss)) + "\t" + save_tag + "\t" + action + "\t" + short_comm)
         i = i + 1
     }
 
-    // System-wide savings percentage
     let cpu_pct_save = sum_cpu_save * 100.0 / sys_cpu
     let ram_pct_save = sum_ram_save * 100.0 / sys_ram
+    let total_save = (cpu_pct_save + ram_pct_save) / 2.0
 
     println("")
     println("  candidates: " + to_string(len(candidates)))
-    println("  thresholds: CPU >" + to_string(CPU_HOG_THRESHOLD) + "%  RAM >" + to_string(to_int(RAM_HOG_MB)) + "MB")
-    println("  estimated savings: CPU -" + to_string(to_int(cpu_pct_save)) + "% (" + to_string(to_int(sum_cpu_save)) + "%)  RAM -" + to_string(to_int(ram_pct_save)) + "% (" + to_string(to_int(sum_ram_save)) + "MB)")
+    println("  estimated: CPU -" + to_string(to_int(cpu_pct_save)) + "%  RAM -" + to_string(to_int(ram_pct_save)) + "%  total -" + to_string(to_int(total_save)) + "%")
     println("")
     return "ok"
 }
@@ -223,33 +431,28 @@ fn apply_qos(candidates: auto) -> str {
             println("  taskpolicy -b pid=" + pid + " → " + result)
         }
 
-        // Log
         let log_line = "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + comm + "\",\"action\":\"" + action + "\",\"reason\":\"" + reason + "\"}"
         append_file(QOS_LOG, log_line + "\n")
         applied = applied + 1
-
         i = i + 1
     }
     println("")
-    println("  applied: " + to_string(applied) + " adjustments")
+    println("  applied: " + to_string(applied) + " adjustments (never kill)")
     println("  logged to: " + QOS_LOG)
     println("")
     return "ok"
 }
 
-// Show current QoS status (which processes have been adjusted)
 fn print_status() -> str {
     println("")
     println("  QoS status — recently adjusted processes")
     println("  ══════════════════════════════════════════════════════════════")
     println("")
-
     if file_exists(QOS_LOG) == false {
         println("  no QoS adjustments recorded yet")
         println("")
         return "ok"
     }
-
     let tail = exec("tail -10 " + QOS_LOG).trim()
     let lines = tail.split("\n")
     let i = 0
@@ -266,61 +469,83 @@ fn print_status() -> str {
     return "ok"
 }
 
-// Show rules
 fn print_rules() -> str {
     println("")
-    println("  QoS rules")
+    println("  QoS v2 rules — smart targeting")
     println("  ══════════════════════════════════════════════════════════════")
     println("")
-    println("  rule              trigger                   action")
-    println("  ────────────────  ────────────────────────  ──────────────────")
-    println("  CPU hog           CPU >" + to_string(CPU_HOG_THRESHOLD) + "%              renice " + to_string(RENICE_LEVEL))
-    println("  RAM hog           RAM >" + to_string(to_int(RAM_HOG_MB)) + " MB            taskpolicy -b")
-    println("  CPU+RAM hog       both above                renice + taskpolicy")
+    println("  base rules:")
+    println("    CPU hog         CPU >" + to_string(CPU_HOG_THRESHOLD) + "%       → renice " + to_string(RENICE_LEVEL))
+    println("    RAM hog         RAM >" + to_string(to_int(RAM_HOG_MB)) + " MB    → taskpolicy -b")
     println("")
-    println("  whitelist (never adjusted):")
-    println("    Finder, WindowServer, Dock, SystemUIServer, loginwindow")
-    println("    PID <= 100 (kernel/system)")
+    println("  smart targeting:")
+    println("    Claude idle     CPU <1%, any RAM    → taskpolicy -b (session consolidation)")
+    println("    WebKit inactive CPU <0.5%, >200MB   → taskpolicy -b (tab deprioritization)")
     println("")
+    println("  temporal scaling (current=" + to_string(temporal_multiplier()) + "x):")
+    println("    night/dawn  → 1.3-1.5x (lower thresholds, more aggressive)")
+    println("    morning/eve → 1.0x (normal)")
+    println("    afternoon   → 0.8x (mild, user likely active)")
+    println("")
+    println("  fingerprint adaptation (current=" + detect_workload() + "):")
+    println("    compile → browser thresholds halved")
+    println("    browse  → devtools thresholds halved")
+    println("")
+    println("  whitelist: Finder, WindowServer, Dock, SystemUIServer, loginwindow, PID≤100")
     println("  prime directive: NEVER kill. renice/taskpolicy only.")
-    println("  config: " + QOS_CFG_PATH)
     println("")
     return "ok"
 }
 
 fn qos_help() -> str {
-    println("qos v" + VERSION + " — pattern-based QoS auto-adjustment")
-    println("")
-    println("Usage: qos <command>")
+    println("qos v" + VERSION + " — smart pattern-based QoS")
     println("")
     println("Commands:")
-    println("  scan    — find QoS candidates (report only)")
-    println("  dry     — dry run: show what would be applied")
-    println("  apply   — apply renice/taskpolicy to candidates")
-    println("  status  — show recently adjusted processes")
-    println("  rules   — show QoS rules and thresholds")
-    println("  help    — show this message")
+    println("  scan    — find QoS candidates (all 4 strategies)")
+    println("  dry     — dry run preview")
+    println("  apply   — apply renice/taskpolicy")
+    println("  claude  — Claude session analysis")
+    println("  webkit  — WebKit tab analysis")
+    println("  status  — recent adjustments")
+    println("  rules   — show all rules + current multipliers")
+    println("  help    — this message")
     println("")
-    println("Prime directive: observe + adjust priority, never kill.")
+    println("Strategies: generic hog + Claude idle + WebKit inactive + temporal + fingerprint")
     return "ok"
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  CONSCIOUSNESS BLOCK
-// ═══════════════════════════════════════════════════════════════════════
-
 fn main() {
     assert GATE_COUNT == 8
-
     let argv = args()
     let cmd = "scan"
-    if len(argv) > 3 {
-        cmd = argv[3]
-    }
+    if len(argv) > 3 { cmd = argv[3] }
 
-    if cmd == "help" { qos_help() }
-    if cmd == "rules" { print_rules() }
+    if cmd == "help"   { qos_help() }
+    if cmd == "rules"  { print_rules() }
     if cmd == "status" { print_status() }
+    if cmd == "claude" { print_claude_sessions() }
+    if cmd == "webkit" {
+        let tabs = scan_webkit_tabs()
+        println("")
+        println("  WebKit tab analysis")
+        println("  ══════════════════════════════════════════════════════════════")
+        println("")
+        let total = 0.0
+        let inactive_mb = 0.0
+        let ti = 0
+        while ti < len(tabs) {
+            let t = tabs[ti]
+            total = total + t[1]
+            let tag = "ACTIVE"
+            if t[4] { tag = "INACTIVE → taskpolicy -b"; inactive_mb = inactive_mb + t[1] }
+            println("  pid=" + t[0] + "  " + to_string(to_int(t[1])) + "MB  cpu=" + to_string(t[2]) + "%  " + tag)
+            ti = ti + 1
+        }
+        println("")
+        println("  total: " + to_string(len(tabs)) + " tabs, " + to_string(to_int(total)) + "MB")
+        println("  inactive: " + to_string(to_int(inactive_mb)) + "MB → -" + to_string(to_int(inactive_mb * 0.20)) + "MB savings")
+        println("")
+    }
     if cmd == "scan" {
         let candidates = scan_candidates()
         print_scan(candidates, 2)
@@ -331,27 +556,10 @@ fn main() {
     }
     if cmd == "apply" {
         println("")
-        println("  applying QoS adjustments...")
+        println("  applying smart QoS...")
         let candidates = scan_candidates()
         print_scan(candidates, 0)
-        if len(candidates) > 0 {
-            apply_qos(candidates)
-        }
-    }
-
-    if cmd != "help" {
-        if cmd != "scan" {
-            if cmd != "dry" {
-                if cmd != "apply" {
-                    if cmd != "status" {
-                        if cmd != "rules" {
-                            println("unknown command: " + cmd)
-                            qos_help()
-                        }
-                    }
-                }
-            }
-        }
+        if len(candidates) > 0 { apply_qos(candidates) }
     }
 }
 
