@@ -424,9 +424,13 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     saveItem.title = $(saveIcon + ' Save  CPU -' + saveCpu + '%  RAM -' + saveRam + '%  (\u2248' + saveTotal + '% \uC808\uAC10)');
 
     if (j.gate === 'online') {
-        gateItem.title = $('\uD83D\uDFE2 Gate \u2014 Ubuntu online');
+        var uLoad = j.ubu_load || '0';
+        var uRamPct = j.ubu_ram_pct || 0;
+        var uRamAvail = j.ubu_ram_avail || 0;
+        var uRamAvailG = Math.round(uRamAvail / 1024 * 10) / 10;
+        gateItem.title = $('\u25CF Gate  load=' + uLoad + '  RAM ' + uRamPct + '%  (' + uRamAvailG + 'G free)');
     } else {
-        gateItem.title = $('\uD83D\uDD34 Gate \u2014 Ubuntu offline (local mode)');
+        gateItem.title = $('\u25CB Gate \u2014 offline (local mode)');
     }
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');
