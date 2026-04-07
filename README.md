@@ -32,7 +32,7 @@ One command → macOS menu bar with live CPU/RAM/Swap monitoring.
 
 - **All** — master slider (CPU/RAM/Swap 동시 조절)
 - **CPU / RAM / Swap Ceiling** — 5% snap sliders
-- **Modules** — token-forge, resource-guard toggles (default OFF)
+- **Modules** — token-forge toggle (default OFF)
 - **Start at login** — LaunchAgent 자동실행
 - **Reset to Profile Defaults** — 사양별 추천값 복원
 
@@ -47,45 +47,30 @@ One command → macOS menu bar with live CPU/RAM/Swap monitoring.
 | Pro M3 36GB | 85% | 80% | 35% | 팬 있음 |
 | Pro M4 48GB | 90% | 85% | 40% | 넉넉 |
 
-## token-forge (Compression Proxy)
+## token-forge (10-account Manager)
 
-Claude Code API 토큰 압축 프록시. Settings에서 token-forge ON 시 자동 작동.
+Claude Code 10계정 관리자. keychain OAuth 추출, usage API, 백그라운드 라운드 로빈 갱신.
 
-```
-ANTHROPIC_BASE_URL=http://localhost:8080/v1 claude
-```
+```bash
+# Usage 확인
+cl -u
 
-### Benchmark Results
-
-| 전략 | 절약 | 유사도 | PASS율 |
-|------|------|--------|--------|
-| Naive compression | 30% | 53% | 2/5 |
-| Hybrid (recent 3 verbatim) | 36% | 70% | 3/5 |
-| **Safe Hybrid (v2, adaptive)** | **18%** | **81%** | **7/7 ★** |
-| Proxy (tool_result truncation) | **58%** | 100% | - |
-
-### Cost Savings
-
-```
-10 accounts × $200/mo = $1,800/mo
-
-┌──────────────────────────┬────────┬───────────┐
-│ Layer                    │ Saving │ Monthly   │
-├──────────────────────────┼────────┼───────────┤
-│ Proxy (truncation)       │   58%  │   $1,044  │
-│ Safe Hybrid (compression)│   18%  │     $136  │
-│ Cache optimization       │  1.6%  │      $29  │
-├──────────────────────────┼────────┼───────────┤
-│ Total                    │  ~62%  │  ~$1,116  │
-│ Remaining cost           │        │    $684   │
-└──────────────────────────┴────────┴───────────┘
+# 계정별 사용량 테이블
+cl
 ```
 
-### Cache Analysis (11,596 sessions)
+### Features
 
-- Cache hit rate: **97.7%** (already high)
-- Top cache busters: session start, system-reminder injection, repeated file reads
-- Optimization potential: → **99.3%** (+$5.77/session)
+- **Keychain OAuth extraction** — macOS keychain에서 토큰 자동 추출
+- **Usage API** — 계정별 사용량 실시간 조회
+- **Background round-robin refresh** — 10분 간격 1계정씩 순차 갱신
+- **JSONL scan/compress** — 세션 로그 압축
+- **JXA menubar** — 네이티브 macOS 메뉴바 통합
+
+## resource-guard (Auto Monitor)
+
+CPU/RAM/Swap 자동 모니터. 토글 없이 무조건 자동 작동.
+순수 awk/shell 기반 — python 의존성 없음.
 
 ## The Hexagon
 
@@ -106,11 +91,18 @@ ANTHROPIC_BASE_URL=http://localhost:8080/v1 claude
 
 ## What it does
 
-1. **Sample** — `ps -axm` captures all process activity
+1. **Sample** — `ps -axm` captures all process activity (pure awk/shell)
 2. **Classify** — each process into one of 5 gates (macos/finder/telegram/chrome/safari)
 3. **Project** — 6-axis hexagon per gate (cpu, ram, gpu, npu, power, io)
 4. **Analyze** — cross-gate MI proxy, breakthrough margin vs 2/3 singularity
-5. **Log** — TSV genome appended to `genomes.log`
+5. **Accumulate** — per-source genome history (`accumulate.hexa`)
+6. **Diff** — signature comparison between sources (`sigdiff.hexa`)
+7. **Log** — TSV genome appended to `genomes.log`
+
+## Runtime Loop
+
+`mk2_hexa/native/runtime.hexa` — live ps sampling → gate projection → genome log.
+연속 실행으로 per-source 6-axis signature를 축적하고 temporal pattern을 추출.
 
 ## Breakthrough Layers
 
@@ -121,7 +113,8 @@ ANTHROPIC_BASE_URL=http://localhost:8080/v1 claude
 | L3 | cross-axis MI (ram × cpu) | +0.142 |
 | L4 | triadic I(A;B;C) | +0.145 |
 | L5a | lagged cross-axis | +0.250 |
-| L5c-L6e | velocity, acceleration, transfer entropy | planned |
+| L5c | velocity derivatives | +0.310 |
+| L6e | acceleration + transfer entropy | **+0.438** |
 
 ## Prime Directive
 
@@ -130,6 +123,15 @@ ANTHROPIC_BASE_URL=http://localhost:8080/v1 claude
 **Forbidden**: process killing, memory purge, compressor tuning.
 
 Efficiency gains come from smarter data movement, not controlling processes.
+
+## Architecture
+
+```
+mk2_hexa/native/
+├── runtime.hexa      — live sampling → gate projection → genome log
+├── accumulate.hexa   — per-source genome history accumulation
+└── sigdiff.hexa      — cross-source signature diff
+```
 
 ## Authority
 
