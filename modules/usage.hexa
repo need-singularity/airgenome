@@ -1,5 +1,28 @@
 // airgenome/modules/usage.hexa — Claude Code usage API
 //
+// ═══════════════════════════════════════════════════════════════════
+// 절대규칙 (2026-04-07 수렴진화 트러블슈팅에서 확립)
+//
+// 1. 키체인 해시 이중화: slash hash + noslash hash 모두 검색
+//    Claude Code v2.1.90은 trailing-slash 경로로 해시 계산
+//    → LABELS_SLASH / LABELS_NOSLASH 양쪽 유지 필수
+//
+// 2. get_label은 토큰 유효성 기준 선택: 존재 여부가 아닌 expiresAt 체크
+//    slash/noslash 양쪽 entry 공존 가능, 유효 토큰은 한쪽에만 존재
+//
+// 3. jq 파싱에서 // empty 사용 금지: null 필드가 join에서 탈락
+//    → // "" 또는 // 0 | tostring 사용하여 필드 수 보장
+//
+// 4. 프록시 사용 금지: API rate limit은 계정(Bearer) 기반
+//    IP 변경 무의미, Bright Data POST 차단, 오히려 rate limit 악화
+//
+// 5. 키체인 토큰 강제 갱신: claude -p "ok" --max-turns 1
+//    Claude Code는 세션 유효 시 키체인 업데이트 생략함
+//    → cl 스크립트에서 세션 종료 후 CLI 짧은 실행으로 강제 갱신
+//
+// 6. keychain acct 필드: 'ghost' (원본 유지, 'Claude Code' 아님)
+// ═══════════════════════════════════════════════════════════════════
+//
 // ccmon rate-limit 회피 로직 이식:
 //   1. 글로벌 쿨다운 (IP 기반) — rate limit 1회 → 5분 고정, 전 계정 스킵
 //   2. 계정별 지수 백오프 — 20분 base → 실패마다 2배 → 최대 1시간
@@ -14,9 +37,9 @@ let CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 let HOME = exec("echo $HOME").trim()
 
-// 프록시 설정 — ~/Dev/secret/proxy.json에서 동적 로드 (키 차후 교체 예정)
-let PROXY_CFG_FILE = HOME + "/Dev/secret/proxy.json"
-let PROXY_ARG = exec("if [ -f '" + PROXY_CFG_FILE + "' ]; then jq -r '\" --proxy http://\" + .user + \":\" + .pass + \"@\" + .host + \":\" + (.port|tostring)' '" + PROXY_CFG_FILE + "'; else echo ''; fi 2>/dev/null").trim()
+// 프록시 비활성화 — Bright Data residential proxy가 rate limit을 악화시킴
+// (POST 차단 + API rate limit은 계정 기반이라 IP 변경 무의미)
+let PROXY_ARG = ""
 let CACHE_FILE = HOME + "/.airgenome/usage-cache.json"
 let COOLDOWN_FILE = HOME + "/.airgenome/refresh-cooldown.json"
 
@@ -25,16 +48,32 @@ let GLOBAL_COOLDOWN_SECS = 300   // 5분 고정 (IP 기반)
 let COOLDOWN_BASE = 1200         // 20분 base
 let COOLDOWN_MAX = 3600          // 1시간 max
 
-// keychain label map
-let LABELS = ["claude1|Claude Code-credentials-2b949392", "claude2|Claude Code-credentials-26492e81", "claude3|Claude Code-credentials-200a5e32", "claude4|Claude Code-credentials-2adfc64a", "claude5|Claude Code-credentials-7f9319ca", "claude6|Claude Code-credentials-71a31b2a", "claude7|Claude Code-credentials-02580ebb", "claude8|Claude Code-credentials-156d23f8", "claude9|Claude Code-credentials-90c36814", "claude10|Claude Code-credentials-90defae3"]
+// keychain label map — slash hash (primary) | no-slash hash (fallback)
+// Claude Code v2.1.90+ uses trailing-slash path hash for keychain
+let LABELS_SLASH = ["claude1|Claude Code-credentials-1b06e1b8", "claude2|Claude Code-credentials-2e3f073a", "claude3|Claude Code-credentials-4e4b1c77", "claude4|Claude Code-credentials-72bcee46", "claude5|Claude Code-credentials-6a82022a", "claude6|Claude Code-credentials-e0d8d7e7", "claude7|Claude Code-credentials-503c23ac", "claude8|Claude Code-credentials-43ae0b6f", "claude9|Claude Code-credentials-610796e1", "claude10|Claude Code-credentials-17c57bbc"]
+let LABELS_NOSLASH = ["claude1|Claude Code-credentials-2b949392", "claude2|Claude Code-credentials-26492e81", "claude3|Claude Code-credentials-200a5e32", "claude4|Claude Code-credentials-2adfc64a", "claude5|Claude Code-credentials-7f9319ca", "claude6|Claude Code-credentials-71a31b2a", "claude7|Claude Code-credentials-02580ebb", "claude8|Claude Code-credentials-156d23f8", "claude9|Claude Code-credentials-90c36814", "claude10|Claude Code-credentials-90defae3"]
 
 let NOW_TS = to_int(exec("date +%s").trim())
 
 fn get_label(name: str) -> str {
+    // 유효 토큰을 가진 label 선택: slash → noslash → (어느 쪽이든 존재하는 것)
     let i = 0
-    while i < len(LABELS) {
-        let parts = LABELS[i].split("|")
-        if parts[0] == name { return parts[1] }
+    while i < len(LABELS_SLASH) {
+        let ps = LABELS_SLASH[i].split("|")
+        if ps[0] == name {
+            let pn = LABELS_NOSLASH[i].split("|")
+            let slash_label = ps[1]
+            let noslash_label = pn[1]
+            // 각각 토큰 만료 체크
+            let slash_exp = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + slash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
+            if slash_exp == "y" { return slash_label }
+            let noslash_exp = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + noslash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
+            if noslash_exp == "y" { return noslash_label }
+            // 둘 다 만료 — 어느 쪽이든 존재하는 것 반환 (refresh 시도용)
+            let kc_s = exec("security find-generic-password -l '" + slash_label + "' -w 2>/dev/null || echo ''").trim()
+            if len(kc_s) > 0 { return slash_label }
+            return noslash_label
+        }
         i = i + 1
     }
     return ""
@@ -43,8 +82,8 @@ fn get_label(name: str) -> str {
 fn get_all_names() -> str {
     let result = ""
     let i = 0
-    while i < len(LABELS) {
-        let parts = LABELS[i].split("|")
+    while i < len(LABELS_SLASH) {
+        let parts = LABELS_SLASH[i].split("|")
         if i > 0 { result = result + "\n" }
         result = result + parts[0]
         i = i + 1
@@ -101,7 +140,7 @@ fn set_cooldown(name: str, failed: bool) -> void {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn read_keychain(label: str) -> str {
-    return exec("security find-generic-password -l '" + label + "' -w 2>/dev/null").trim()
+    return exec("security find-generic-password -l '" + label + "' -w 2>/dev/null || echo ''").trim()
 }
 
 fn extract_token_info(keychain_json: str) -> str {
@@ -138,8 +177,10 @@ fn save_keychain_token(label: str, access_token: str, expires_at_ms: str) -> voi
     if len(kc) == 0 { return }
     let updated = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});o[\"accessToken\"]=\"" + access_token + "\";o[\"expiresAt\"]=" + expires_at_ms + ";d[\"claudeAiOauth\"]=o;print(json.dumps(d))' <<< '" + kc + "' 2>/dev/null").trim()
     if len(updated) == 0 { return }
-    // security delete + add (macOS keychain update)
-    exec("security delete-generic-password -l '" + label + "' 2>/dev/null; security add-generic-password -l '" + label + "' -a 'Claude Code' -s '" + label + "' -w '" + updated + "' 2>/dev/null")
+    // security delete + add (macOS keychain update) — acct must match original ('ghost')
+    let acct = exec("security find-generic-password -l '" + label + "' 2>/dev/null | grep '\"acct\"' | sed 's/.*<blob>=\"//;s/\"//'").trim()
+    if len(acct) == 0 { acct = "ghost" }
+    exec("security delete-generic-password -l '" + label + "' 2>/dev/null; security add-generic-password -l '" + label + "' -a '" + acct + "' -s '" + label + "' -w '" + updated + "' 2>/dev/null")
 }
 
 fn call_usage_api(access_token: str, account_name: str) -> str {
@@ -150,7 +191,7 @@ fn call_usage_api(access_token: str, account_name: str) -> str {
     let err = exec("echo '" + result + "' | jq -r '.error.type // empty' 2>/dev/null").trim()
     if len(err) > 0 { return "api_error" }
     // 파싱
-    let parsed = exec("echo '" + result + "' | jq -r '[(.five_hour.utilization // empty),(.five_hour.resets_at // empty),(.seven_day.utilization // empty),(.seven_day.resets_at // empty)] | join(\"|\")' 2>/dev/null").trim()
+    let parsed = exec("echo '" + result + "' | jq -r '[(.five_hour.utilization // 0 | tostring),(.five_hour.resets_at // \"\"),(.seven_day.utilization // 0 | tostring),(.seven_day.resets_at // \"\")] | join(\"|\")' 2>/dev/null").trim()
     if len(parsed) == 0 { return "api_error" }
     return parsed
 }

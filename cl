@@ -3,6 +3,18 @@
 # - rate limit → auto-switch (same terminal)
 # - /login → direct CLAUDE_CONFIG_DIR auth (no symlink dance)
 # - 순수 awk/grep/sed — python3 제거
+#
+# ═══════════════════════════════════════════════════════════════
+# 절대규칙 (2026-04-07 수렴진화)
+#
+# 1. zsh 배열은 1-based: ${arr[$i]} (0-based 금지)
+# 2. 세션 종료 후 usage 갱신 전 반드시:
+#    claude -p "ok" --max-turns 1  → 키체인 토큰 강제 갱신
+#    (Claude Code는 세션 유효 시 키체인 업데이트 생략함)
+# 3. accounts.json config_dir에 trailing slash 금지
+# 4. usage.hexa 호출: $HEXA $AIRGENOME/modules/usage.hexa -- one NAME
+# 5. 쿨다운 초기화: echo '{}' > ~/.airgenome/refresh-cooldown.json
+# ═══════════════════════════════════════════════════════════════
 
 [ -f ~/.zprofile ] && source ~/.zprofile
 [ -f ~/.zshrc ] && source ~/.zshrc
@@ -180,39 +192,25 @@ while true; do
 
     export CLAUDE_CONFIG_DIR="$CURRENT_DIR"
 
-    # 세션 시작 5초 후 백그라운드 usage 갱신 (CLI가 토큰 자동 갱신한 뒤)
-    (sleep 5 && cd "$AIRGENOME" && echo '{}' > ~/.airgenome/refresh-cooldown.json && $HEXA run modules/usage.hexa one "$CURRENT_NAME" >/dev/null 2>&1) &
-    _BG_REFRESH_PID=$!
-
     ~/.local/bin/claude
     EXIT_CODE=$?
 
-    # 백그라운드 갱신이 아직 돌고 있으면 정리
-    kill $_BG_REFRESH_PID 2>/dev/null; wait $_BG_REFRESH_PID 2>/dev/null
-
-    # 세션 종료 후 해당 계정 usage 즉시 갱신 (ccmon 동일 — 동기+재시도)
-    # Claude Code가 토큰을 자체 갱신했으므로 쿨다운 해제 후 API 호출
-    # 재시도 간격: 15초, 30초 (ccmon: 30초, 60초 — rate limit 해소 충분 대기)
+    # 세션 종료 후 해당 계정 usage 즉시 갱신
+    # 1) 키체인 토큰 갱신: claude -p 로 짧은 실행 → 키체인에 새 토큰 저장
+    # 2) usage API 호출
     echo ""
     echo "  ⬡ $CURRENT_NAME usage 갱신 중..."
-    _refresh_ok=false
-    _delays=(15 30)
-    for _attempt in 1 2 3; do
-        _result=$(cd "$AIRGENOME" && $HEXA run modules/usage.hexa one "$CURRENT_NAME" 2>&1)
-        if echo "$_result" | grep -q '✓'; then
-            echo "$_result" | tail -2
-            _refresh_ok=true
-            break
-        fi
-        if [ "$_attempt" -lt 3 ]; then
-            _wait=${_delays[$_attempt]}
-            echo "    retry ${_attempt}/3 (${_wait}초 후)..."
-            sleep $_wait
-        fi
-    done
-    if [ "$_refresh_ok" = false ]; then
-        echo "    ✗ 갱신 실패 — 60초 후 백그라운드 재시도"
-        (sleep 60 && cd "$AIRGENOME" && $HEXA run modules/usage.hexa one "$CURRENT_NAME" >/dev/null 2>&1 &)
+    echo '{}' > ~/.airgenome/refresh-cooldown.json
+
+    # Step 1: 키체인 토큰이 만료됐으면 CLI로 강제 갱신
+    CLAUDE_CONFIG_DIR="$CURRENT_DIR" ~/.local/bin/claude -p "ok" --max-turns 1 >/dev/null 2>&1
+
+    # Step 2: usage API 호출
+    _result=$(cd "$AIRGENOME" && $HEXA $AIRGENOME/modules/usage.hexa -- one "$CURRENT_NAME" 2>&1)
+    if echo "$_result" | grep -q '✓'; then
+        echo "$_result" | tail -2
+    else
+        echo "    ✗ 갱신 실패"
     fi
 
     LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
