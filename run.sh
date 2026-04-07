@@ -104,19 +104,23 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
     TOP_OUT=$(top -l1 -n0 2>/dev/null)
 
     CPU=$(echo "$TOP_OUT" | awk '/CPU usage/{gsub(/%/,""); printf "%d",$3+$5}')
-    [ "${CPU:-0}" -eq 0 ] && { CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}'); CPU=$((CPU_TOTAL / NCPU)); }
+    : "${CPU:=0}"; CPU=$((CPU + 0))
+    [ "$CPU" -eq 0 ] && { CPU_TOTAL=$(ps -A -o %cpu= | awk '{s+=$1}END{printf "%.0f",s}'); CPU=$((CPU_TOTAL / NCPU)); }
 
-    # RAM: PhysMem "XG used" — $2 is always the used value
-    RAM_USED_MB=$(echo "$TOP_OUT" | awk '/PhysMem/{v=$2;u=substr(v,length(v));n=substr(v,1,length(v)-1)+0;if(u=="G")n*=1024;printf "%d",n}')
-    [ "${RAM_USED_MB:-0}" -eq 0 ] && RAM_USED_MB=0
+    # RAM: PhysMem "XG used" or "XXXXM used" — handle both units
+    RAM_USED_MB=$(echo "$TOP_OUT" | awk '/PhysMem/{v=$2;u=substr(v,length(v));n=substr(v,1,length(v)-1)+0;if(u=="G")n*=1024;else if(u!="M")n=0;printf "%d",n}')
+    : "${RAM_USED_MB:=0}"; RAM_USED_MB=$((RAM_USED_MB + 0))
     FREE_MB=$((TOTAL_RAM_MB - RAM_USED_MB))
     [ "$FREE_MB" -lt 0 ] && FREE_MB=0
     RAM=$((RAM_USED_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
+    [ "$RAM" -gt 100 ] && RAM=100
 
     # Swap + Load — single sysctl call
     SWAP_MB=$(sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,"",$3); printf "%.0f",$3}')
+    : "${SWAP_MB:=0}"; SWAP_MB=$((SWAP_MB + 0))
     SWAP=$((SWAP_MB * 100 / (TOTAL_RAM_MB > 0 ? TOTAL_RAM_MB : 1)))
     LOAD=$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,""); printf "%.0f",$1}')
+    : "${LOAD:=0}"; LOAD=$((LOAD + 0))
 
     # ── CONFIG (pure shell, no python) ───────────────────────
     if [ -f "$CONFIG" ]; then
@@ -134,7 +138,8 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
     # ── BRIDGE LIMITER ───────────────────────────────────────
     if [ "$GUARD_ON" = "1" ] && [ "${BRIDGE_MAX:-0}" -gt 0 ]; then
       BRIDGE_PIDS=$(ps -eo pid=,lstart=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | sort -k2,5 | awk '{print $1}')
-      BRIDGE_COUNT=$(echo "$BRIDGE_PIDS" | grep -c . 2>/dev/null || echo 0)
+      BRIDGE_COUNT=$(echo "$BRIDGE_PIDS" | grep -c . 2>/dev/null || true)
+      : "${BRIDGE_COUNT:=0}"; BRIDGE_COUNT=$((BRIDGE_COUNT + 0))
       if [ "$BRIDGE_COUNT" -gt "$BRIDGE_MAX" ]; then
         KILL_N=$((BRIDGE_COUNT - BRIDGE_MAX))
         echo "$BRIDGE_PIDS" | head -"$KILL_N" | while read BPID; do
