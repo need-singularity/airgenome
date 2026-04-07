@@ -179,8 +179,16 @@ while true; do
     echo "  ─────────────────────────────────────"
 
     export CLAUDE_CONFIG_DIR="$CURRENT_DIR"
+
+    # 세션 시작 5초 후 백그라운드 usage 갱신 (CLI가 토큰 자동 갱신한 뒤)
+    (sleep 5 && cd "$AIRGENOME" && echo '{}' > ~/.airgenome/refresh-cooldown.json && $HEXA run modules/usage.hexa one "$CURRENT_NAME" >/dev/null 2>&1) &
+    _BG_REFRESH_PID=$!
+
     ~/.local/bin/claude
     EXIT_CODE=$?
+
+    # 백그라운드 갱신이 아직 돌고 있으면 정리
+    kill $_BG_REFRESH_PID 2>/dev/null; wait $_BG_REFRESH_PID 2>/dev/null
 
     # 세션 종료 후 해당 계정 usage 즉시 갱신 (ccmon 동일 — 동기+재시도)
     # Claude Code가 토큰을 자체 갱신했으므로 쿨다운 해제 후 API 호출
@@ -197,8 +205,9 @@ while true; do
             break
         fi
         if [ "$_attempt" -lt 3 ]; then
-            echo "    retry ${_attempt}/3 (${_delays[$_attempt-1]}초 후)..."
-            sleep ${_delays[$_attempt-1]}
+            _wait=${_delays[$_attempt]}
+            echo "    retry ${_attempt}/3 (${_wait}초 후)..."
+            sleep $_wait
         fi
     done
     if [ "$_refresh_ok" = false ]; then
