@@ -115,7 +115,27 @@ fn refresh_token(refresh_tok: str, account_name: str) -> str {
     let payload = "{\"grant_type\":\"refresh_token\",\"refresh_token\":\"" + refresh_tok + "\",\"client_id\":\"" + CLIENT_ID + "\"}"
     let result = exec("curl -s --max-time 10 '" + TOKEN_URL + "' -H 'Content-Type: application/json' -d '" + payload + "' 2>/dev/null").trim()
     if len(result) == 0 { return "" }
-    return exec("echo '" + result + "' | jq -r '.access_token // empty' 2>/dev/null").trim()
+    let new_access = exec("echo '" + result + "' | jq -r '.access_token // empty' 2>/dev/null").trim()
+    if len(new_access) == 0 { return "" }
+
+    // ccmon 동일: 갱신 성공 시 키체인에 새 토큰 저장
+    let expires_in = exec("echo '" + result + "' | jq -r '.expires_in // 3600' 2>/dev/null").trim()
+    let new_expires_ms = to_string((NOW_TS + to_int(expires_in)) * 1000)
+    let label = get_label(account_name)
+    if len(label) > 0 {
+        save_keychain_token(label, new_access, new_expires_ms)
+    }
+    return new_access
+}
+
+fn save_keychain_token(label: str, access_token: str, expires_at_ms: str) -> void {
+    // 키체인에서 기존 데이터 읽기 → accessToken + expiresAt만 교체 → 다시 저장
+    let kc = read_keychain(label)
+    if len(kc) == 0 { return }
+    let updated = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});o[\"accessToken\"]=\"" + access_token + "\";o[\"expiresAt\"]=" + expires_at_ms + ";d[\"claudeAiOauth\"]=o;print(json.dumps(d))' <<< '" + kc + "' 2>/dev/null").trim()
+    if len(updated) == 0 { return }
+    // security delete + add (macOS keychain update)
+    exec("security delete-generic-password -l '" + label + "' 2>/dev/null; security add-generic-password -l '" + label + "' -a 'Claude Code' -s '" + label + "' -w '" + updated + "' 2>/dev/null")
 }
 
 fn call_usage_api(access_token: str, account_name: str) -> str {
