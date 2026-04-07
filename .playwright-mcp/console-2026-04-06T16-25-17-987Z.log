@@ -1,0 +1,10 @@
+[      99ms] [ERROR] TypeError: Failed to fetch
+    at i (https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:3:109994)
+    at Zu (https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:2:72280)
+    at u (https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:3:54117)
+    at Array.map (<anonymous>)
+    at r (https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:3:54551)
+    at https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:3:54659 @ https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:2
+[     322ms] [INFO] [O11Y] [DatadogRUM] Initialized {service: claude-ai, env: production, version: 97cedc7bf4} @ https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:1
+[    1425ms] [WARNING] [Intercom] The App ID in your code snippet has not been set. Set it to your App ID found in settings to complete installation: https://app.intercom.com/a/apps/_/settings/web @ https://js.intercomcdn.com/frame-modern.40aacdf2.js:0
+[   40426ms] [WARNING] [Intercom] The App ID in your code snippet has not been set. Set it to your App ID found in settings to complete installation: https://app.intercom.com/a/apps/_/settings/web @ https://js.intercomcdn.com/frame-modern.40aacdf2.js:0

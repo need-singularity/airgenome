@@ -8,7 +8,7 @@
 // spawn, struct, enum, match, assert, comptime block.
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CONSTANTS (inherited from nexus6 hexa-lang BT series)
+//  CONSTANTS (inherited from nexus hexa-lang BT series)
 // ═══════════════════════════════════════════════════════════════════════
 
 let TAU_PHI = comptime { 6 }                      // BT-344: τ + φ = n = 6

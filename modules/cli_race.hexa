@@ -1,0 +1,190 @@
+// airgenome/modules/cli_race.hexa — CLI 세션 경쟁 방지
+//
+// 문제: 다수 Claude Code CLI가 동시 실행 → IP rate limit 공유 → churning
+// 해법: 활성 세션 추적 + 동시 실행 제한 + stale PID 정리
+//
+// 파일: ~/.airgenome/cli-sessions.json
+//   {"sessions":[{"pid":123,"account":"claude1","ts":1712500000}]}
+
+let HOME = exec("echo $HOME").trim()
+let SESSION_FILE = HOME + "/.airgenome/cli-sessions.json"
+let MAX_CONCURRENT = 2
+
+// ═══════════════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ensure_file() -> void {
+    exec("mkdir -p " + HOME + "/.airgenome")
+    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    if exists == "n" {
+        write_file(SESSION_FILE, "{\"sessions\":[]}")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STALE PID 정리 — 죽은 프로세스 제거
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cleanup_stale() -> void {
+    ensure_file()
+    let pids = exec("jq -r '.sessions[]?.pid // empty' '" + SESSION_FILE + "' 2>/dev/null").trim()
+    if len(pids) == 0 { return }
+
+    let lines = pids.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let pid = lines[i]
+        if len(pid) > 0 {
+            let alive = exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim()
+            if alive == "n" {
+                exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  활성 세션 수 조회
+// ═══════════════════════════════════════════════════════════════════════
+
+fn active_count() -> int {
+    cleanup_stale()
+    let count = exec("jq '.sessions | length' '" + SESSION_FILE + "' 2>/dev/null || echo 0").trim()
+    return to_int(count)
+}
+
+fn active_list() -> str {
+    cleanup_stale()
+    return exec("jq -r '.sessions[] | \"\\(.account) (pid=\\(.pid))\"' '" + SESSION_FILE + "' 2>/dev/null").trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  세션 등록/해제
+// ═══════════════════════════════════════════════════════════════════════
+
+fn register_session(account: str, pid: str) -> void {
+    ensure_file()
+    let ts = exec("date +%s").trim()
+    exec("jq '.sessions += [{\"pid\":" + pid + ",\"account\":\"" + account + "\",\"ts\":" + ts + "}]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+}
+
+fn unregister_session(pid: str) -> void {
+    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    if exists == "n" { return }
+    exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  진입 가능 여부 판단
+// ═══════════════════════════════════════════════════════════════════════
+
+fn can_launch() -> bool {
+    let count = active_count()
+    let max = MAX_CONCURRENT
+    return count < max
+}
+
+fn wait_or_proceed(account: str) -> str {
+    let count = active_count()
+    let max = MAX_CONCURRENT
+    let result = "go"
+    if count >= max {
+        result = "wait|" + active_list()
+    }
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI — 직접 실행 시
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let argc = len(argv)
+    // 모든 위치에서 커맨드 찾기
+    let cmd = ""
+    let cmd_idx = 0
+    let ci = 0
+    while ci < argc {
+        let a = argv[ci]
+        if a == "status" { cmd = "status" }
+        if a == "check" { cmd = "check" }
+        if a == "register" { cmd = "register" }
+        if a == "unregister" { cmd = "unregister" }
+        if a == "cleanup" { cmd = "cleanup" }
+        if a == cmd { cmd_idx = ci }
+        ci = ci + 1
+    }
+    // cmd 다음 인자
+    let arg1 = ""
+    let arg2 = ""
+    let a1i = cmd_idx + 1
+    let a2i = cmd_idx + 2
+    if a1i > 0 {
+        if a1i < argc { arg1 = argv[a1i] }
+    }
+    if a2i > 0 {
+        if a2i < argc { arg2 = argv[a2i] }
+    }
+
+    if cmd == "status" {
+        let count = active_count()
+        let max = MAX_CONCURRENT
+        println("  ⬡ 활성 CLI 세션: " + to_string(count) + "/" + to_string(max))
+        let list = active_list()
+        if len(list) > 0 {
+            println(list)
+        }
+        if count >= max {
+            println("  ⚠ 동시 실행 한도 도달 — 새 세션 대기 필요")
+        }
+    }
+
+    if cmd == "check" {
+        let ok = can_launch()
+        if ok { println("go") }
+        if ok == false {
+            println("wait")
+            println(active_list())
+        }
+    }
+
+    if cmd == "register" {
+        if len(arg1) > 0 {
+            let rpid = arg2
+            if len(rpid) == 0 { rpid = exec("echo $$").trim() }
+            register_session(arg1, rpid)
+            println("  ✓ 세션 등록: " + arg1 + " (pid=" + rpid + ")")
+        }
+    }
+
+    if cmd == "unregister" {
+        if len(arg1) > 0 {
+            unregister_session(arg1)
+            println("  ✓ 세션 해제: pid=" + arg1)
+        }
+    }
+
+    if cmd == "cleanup" {
+        cleanup_stale()
+        let count = active_count()
+        println("  ✓ stale 정리 완료, 활성: " + to_string(count))
+    }
+
+    if cmd == "" {
+        let max = MAX_CONCURRENT
+        println("cli_race — CLI 세션 경쟁 방지")
+        println("")
+        println("  hexa cli_race.hexa status      현재 활성 세션")
+        println("  hexa cli_race.hexa check        진입 가능 여부 (go/wait)")
+        println("  hexa cli_race.hexa register <account> [pid]")
+        println("  hexa cli_race.hexa unregister <pid>")
+        println("  hexa cli_race.hexa cleanup      stale PID 정리")
+        println("")
+        println("  MAX_CONCURRENT = " + to_string(max))
+    }
+}
+
+main()

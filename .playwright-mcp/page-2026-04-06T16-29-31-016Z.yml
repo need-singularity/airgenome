@@ -1,0 +1,12 @@
+- generic [active] [ref=e1]:
+  - region "Notifications (F8)":
+    - list
+  - generic [ref=e3]:
+    - heading "Authentication Code" [level=3] [ref=e4]
+    - generic [ref=e5]:
+      - paragraph [ref=e6]: "Paste this into Claude Code:"
+      - generic [ref=e7]:
+        - generic [ref=e8] [cursor=pointer]: bmgTXNdNJ0xLxyfFKTh5kYhwMqWTkVBhnzgAFzxJYfFjPJTb#3ZYhVqyan2umnmcx_Gm_8K5-UksE68CuGmDsfN-rUhE
+        - button "Copy Code" [ref=e10] [cursor=pointer]:
+          - img [ref=e11]
+          - text: Copy Code

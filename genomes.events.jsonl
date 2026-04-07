@@ -1,0 +1,3 @@
+{"ts":1775488209,"type":"breakthrough","source":"nexus","passed":true,"confidence":0,"detail":"margin=1.523052443882713"}
+{"ts":1775488209,"type":"blocked","source":"airgenome","passed":false,"confidence":0,"detail":"gate=3 phi degradation: 1.6603334092331372 -> 1.523052443882713"}
+{"ts":1775488209,"type":"pipeline_ran","source":"airgenome","passed":false,"confidence":0}

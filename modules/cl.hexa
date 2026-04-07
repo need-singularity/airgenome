@@ -1,7 +1,7 @@
 // airgenome/modules/cl.hexa — Claude Code multi-account launcher
 // python3-free: 순수 hexa + awk/grep/sed
 
-let VERSION = "0.2.0"
+let VERSION = "0.3.0"
 let ACCOUNTS_FILE = "~/.airgenome/accounts.json"
 let STATE_FILE = "~/.airgenome/cl-state.json"
 let USAGE_CACHE = "~/.airgenome/usage-cache.json"
@@ -16,6 +16,55 @@ let R_ACCOUNTS = HOME + "/.airgenome/accounts.json"
 let R_STATE = HOME + "/.airgenome/cl-state.json"
 let R_USAGE_CACHE = HOME + "/.airgenome/usage-cache.json"
 let NOW_TS = to_int(exec("date -u +%s").trim())
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI 경쟁 방지 — cli_race.hexa 연동
+// ═══════════════════════════════════════════════════════════════════════
+let SESSION_FILE = HOME + "/.airgenome/cli-sessions.json"
+let MAX_CONCURRENT = 2
+
+fn race_ensure() -> void {
+    exec("mkdir -p " + HOME + "/.airgenome")
+    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    if exists == "n" {
+        write_file(SESSION_FILE, "{\"sessions\":[]}")
+    }
+}
+
+fn race_cleanup() -> void {
+    race_ensure()
+    let pids = exec("jq -r '.sessions[]?.pid // empty' '" + SESSION_FILE + "' 2>/dev/null").trim()
+    if len(pids) == 0 { return }
+    let lines = pids.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let pid = lines[i]
+        if len(pid) > 0 {
+            let alive = exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim()
+            if alive == "n" {
+                exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn race_active_count() -> int {
+    race_cleanup()
+    let count = exec("jq '.sessions | length' '" + SESSION_FILE + "' 2>/dev/null || echo 0").trim()
+    return to_int(count)
+}
+
+fn race_active_list() -> str {
+    return exec("jq -r '.sessions[] | \"  → \\(.account) (pid=\\(.pid))\"' '" + SESSION_FILE + "' 2>/dev/null").trim()
+}
+
+fn race_register(account: str) -> void {
+    race_ensure()
+    let pid = exec("echo $$").trim()
+    let ts = exec("date +%s").trim()
+    exec("jq '.sessions += [{\"pid\":" + pid + ",\"account\":\"" + account + "\",\"ts\":" + ts + "}]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 //  BULK CACHE — 1회 파싱으로 모든 계정 usage 로드
@@ -488,6 +537,26 @@ fn resolve_launch(account_name: str) -> str {
         return ""
     }
 
+    // ── 경쟁 방지 체크 ──
+    let active = race_active_count()
+    let max_c = MAX_CONCURRENT
+    if active >= max_c {
+        println("")
+        println("  ⚠ CLI 세션 동시 실행 한도 (" + to_string(max_c) + ") 도달")
+        println(race_active_list())
+        println("")
+        println("  기존 세션 종료 후 재시도하거나, 대기합니다.")
+        println("  ⏳ 30초 대기 중...")
+        exec("sleep 30")
+        race_cleanup()
+        let retry = race_active_count()
+        if retry >= max_c {
+            println("  ✗ 여전히 " + to_string(retry) + "개 활성 — 실행 취소")
+            return ""
+        }
+        println("  ✓ 슬롯 확보됨")
+    }
+
     let usage = get_account_usage(account_name)
     let usage_parts = usage.split("|")
     let session_pct = usage_parts[0]
@@ -496,12 +565,16 @@ fn resolve_launch(account_name: str) -> str {
         week_pct = usage_parts[1]
     }
 
+    println("")
     println("  ⬡ " + account_name + "  session=" + session_pct + "%  week=" + week_pct + "%")
     println("    " + config_dir)
 
     backup_claude_json(config_dir)
 
     exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + account_name + "\"}' > " + R_STATE)
+
+    // 세션 등록
+    race_register(account_name)
 
     println("LAUNCH:" + config_dir)
     return config_dir
@@ -775,6 +848,20 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
         i = i + 1
     }
     buf = buf + "  └─────┴─────────────┴─────────┴────────────────┴────────┴─────────┴────────────────┴────────┘" + nl
+
+    // 활성 세션 표시
+    let race_count = race_active_count()
+    let max_c = MAX_CONCURRENT
+    if race_count > 0 {
+        buf = buf + nl
+        let race_color = C_GREEN
+        if race_count >= max_c { race_color = ESC + "[1;31m" }
+        buf = buf + "  " + race_color + "⬡ 활성 CLI: " + to_string(race_count) + "/" + to_string(max_c) + RESET
+        if race_count >= max_c { buf = buf + "  " + ESC + "[31m" + "← 대기 필요" + RESET }
+        buf = buf + nl
+        let race_list = race_active_list()
+        if len(race_list) > 0 { buf = buf + race_list + nl }
+    }
 
     if show_select {
         buf = buf + nl

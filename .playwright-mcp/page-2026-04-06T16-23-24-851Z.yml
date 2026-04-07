@@ -1,0 +1,28 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e5]:
+      - img [ref=e7]
+      - generic [ref=e11]:
+        - heading "로그인" [level=2] [ref=e12]
+        - heading "연결을 인증하려면 Claude.ai 계정으로 계속하세요." [level=3] [ref=e13]
+        - generic [ref=e16]:
+          - button "Google 로고 Google로 계속하기" [ref=e17] [cursor=pointer]:
+            - img "Google 로고" [ref=e18]
+            - text: Google로 계속하기
+          - paragraph [ref=e19]: 또는
+          - generic [ref=e20]:
+            - textbox "이메일" [ref=e21]:
+              - /placeholder: 이메일을 입력하세요
+              - text: mk55992@proton.me
+            - generic [ref=e22]:
+              - button "이메일로 계속하기" [disabled]:
+                - generic:
+                  - generic:
+                    - status:
+                      - generic: 로딩 중...
+                - text: 이메일로 계속하기
+              - button [disabled]: SSO로 계속하기
+    - region "알림 (F8)":
+      - list
+  - iframe [ref=e25]:
+    

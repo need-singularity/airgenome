@@ -1,4 +1,4 @@
-// airgenome — API compatible with nexus6
+// airgenome — API compatible with nexus
 
 pub mod resource_guard;
 

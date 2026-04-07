@@ -1,0 +1,9 @@
+[     385ms] [INFO] [O11Y] [DatadogRUM] Initialized {service: claude-ai, env: production, version: 97cedc7bf4} @ https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/index-CkTZiI-0.js:1
+[   11240ms] [ERROR] Failed to load resource: the server responded with a status of 405 () @ https://claude.ai/cai/oauth/token:0
+[   26532ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://platform.claude.com/api/oauth/token:0
+[   26925ms] [ERROR] Access to fetch at 'https://platform.claude.com/oauth/token' from origin 'https://claude.ai' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://claude.ai/new:0
+[   26926ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://platform.claude.com/oauth/token:0
+[   27143ms] [ERROR] Access to fetch at 'https://console.anthropic.com/v1/oauth/token' from origin 'https://claude.ai' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://claude.ai/new:0
+[   27143ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://console.anthropic.com/v1/oauth/token:0
+[   27349ms] [ERROR] Access to fetch at 'https://api.anthropic.com/v1/oauth/token' from origin 'https://claude.ai' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://claude.ai/new:0
+[   27349ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://api.anthropic.com/v1/oauth/token:0

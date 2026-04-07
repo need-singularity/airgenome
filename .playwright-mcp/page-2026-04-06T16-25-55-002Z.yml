@@ -1,0 +1,43 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e5]:
+      - generic [ref=e7]:
+        - img [ref=e9]
+        - heading "Claude Code님이 귀하의 Claude chat account에 연결을 요청했습니다" [level=1] [ref=e13]
+        - generic [ref=e14]:
+          - generic [ref=e15]: "귀하의 계정은 다음 용도로 사용됩니다:"
+          - generic [ref=e16]:
+            - generic [ref=e17]:
+              - img [ref=e18]
+              - generic [ref=e20]: 귀하의 Anthropic 프로필 정보에 접근
+            - generic [ref=e21]:
+              - img [ref=e22]
+              - generic [ref=e24]: Claude 구독 사용량에 기여
+            - generic [ref=e25]:
+              - img [ref=e26]
+              - generic [ref=e28]: Claude Code 세션 액세스
+            - generic [ref=e29]:
+              - img [ref=e30]
+              - generic [ref=e32]: 커넥터 사용 및 관리
+            - generic [ref=e33]:
+              - img [ref=e34]
+              - generic [ref=e36]: 사용자를 대신하여 파일을 업로드합니다
+            - generic [ref=e37]:
+              - img [ref=e38]
+              - generic [ref=e40]: 개인정보 보호 설정이 코딩 세션에 적용됩니다
+        - generic [ref=e41]:
+          - button "승인" [disabled]:
+            - generic:
+              - generic:
+                - status:
+                  - generic: 로딩 중...
+            - text: 승인
+          - button "거절" [ref=e42] [cursor=pointer]
+      - generic [ref=e43]:
+        - generic [ref=e44]: mk55992@proton.me로 로그인됨
+        - link "계정 전환" [ref=e45] [cursor=pointer]:
+          - /url: /logout?returnTo=%2Foauth%2Fauthorize%3Fcode%3Dtrue%26client_id%3D9d1c250a-e61b-44d9-88ed-5944d1962f5e%26response_type%3Dcode%26redirect_uri%3Dhttps%253A%252F%252Fplatform.claude.com%252Foauth%252Fcode%252Fcallback%26scope%3Dorg%253Acreate_api_key%2Buser%253Aprofile%2Buser%253Ainference%2Buser%253Asessions%253Aclaude_code%2Buser%253Amcp_servers%2Buser%253Afile_upload%26code_challenge%3DXbhaGrGXHv62JJjjxuNEhgzSxesy2GTIfs8mUSbvxkM%26code_challenge_method%3DS256%26state%3Dwj_mZrhEnQa8EW2XmU_mEYcygiC7CB9lUkIStiE2rJ8
+    - region "알림 (F8)":
+      - list
+  - iframe [ref=e46]:
+    

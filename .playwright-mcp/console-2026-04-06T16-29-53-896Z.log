@@ -1,0 +1,8 @@
+[     247ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://claude.ai/api/oauth/token:0
+[   34866ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://claude.ai/api/oauth/token:0
+[   46508ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://claude.ai/oauth/token:0
+[   46563ms] [ERROR] Failed to load resource: the server responded with a status of 405 () @ https://claude.ai/cai/oauth/token:0
+[   47345ms] [ERROR] Access to fetch at 'https://console.anthropic.com/v1/oauth/token' from origin 'https://claude.ai' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource. @ https://claude.ai/api/oauth/token:0
+[   47346ms] [ERROR] Failed to load resource: net::ERR_FAILED @ https://console.anthropic.com/v1/oauth/token:0
+[   47360ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://auth.anthropic.com/oauth/token:0
+[   62826ms] [ERROR] Failed to load resource: the server responded with a status of 405 () @ https://claude.ai/cai/oauth/token:0

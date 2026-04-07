@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-nexus6 breakthrough scan established:
+nexus breakthrough scan established:
 - Rule-only mesh attains efficiency **0.636** (95.4% of 2/3 ceiling)
 - Learning adds only +0.8%p — complexity not justified
 - Remaining gap: **1/30 = 0.0333** = `1/(n(n-1))` where n=6
@@ -245,7 +245,7 @@ When adjusted efficiency enters the `(2/3 - 0.01, 2/3 + 0.01)` band AND all 15 p
 
 ## What this does NOT do
 
-- **No learning/ML** — stays rule-based per nexus6 conclusion
+- **No learning/ML** — stays rule-based per nexus conclusion
 - **No process killing** — ghost scan is report-only
 - **No threshold auto-tuning** — MI gap reports suggestions, user decides
 - **No new dependencies** — pure Rust, existing crate only
