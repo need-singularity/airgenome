@@ -6,10 +6,28 @@
 // Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/offload.hexa [command]
 // Commands: status, exec, bench, genome-remote, sync, help
 
-let VERSION = "1.0.0"
-let REMOTE = "ubu"
+let VERSION = "1.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let LOG_FILE = "offload.log"
-let REMOTE_DIR = "/tmp/airgenome"
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let REMOTE = load_cfg("ssh_alias", "ubu")
+let REMOTE_DIR = load_cfg("remote_dir", "/tmp/airgenome")
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SSH helpers

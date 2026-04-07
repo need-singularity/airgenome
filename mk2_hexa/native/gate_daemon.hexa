@@ -41,9 +41,46 @@ fn write_handler() -> str {
     return "ok"
 }
 
+fn check_hexa_version() -> str {
+    let hexa_bin = "/tmp/hexa-build/hexa-lang/target/release/hexa"
+    let hexa_repo = "/tmp/hexa-build/hexa-lang"
+
+    // hexa 바이너리 존재 확인
+    let exists = exec("test -f " + hexa_bin + " && echo yes || echo no").trim()
+    if exists == "no" {
+        println("  [hexa] not found — building from scratch...")
+        exec("mkdir -p /tmp/hexa-build")
+        exec("source " + CARGO_BIN + "/../env && git clone https://github.com/need-singularity/hexa-lang.git " + hexa_repo + " 2>/dev/null")
+        exec("nohup bash -c 'source " + CARGO_BIN + "/../env && cd " + hexa_repo + " && cargo build --release' >> " + LOG_FILE + " 2>&1 &")
+        println("  [hexa] build started in background")
+        return "building"
+    }
+
+    // 로컬 커밋 vs 리모트 커밋 비교
+    let local_commit = exec("cd " + hexa_repo + " && git rev-parse HEAD 2>/dev/null").trim()
+    let remote_commit = exec("cd " + hexa_repo + " && git fetch origin main 2>/dev/null && git rev-parse origin/main 2>/dev/null").trim()
+
+    if len(local_commit) > 6 {
+        if len(remote_commit) > 6 {
+            if local_commit != remote_commit {
+                println("  [hexa] ⚠ outdated: " + local_commit.split("")[0] + "..." + " → " + remote_commit.split("")[0] + "...")
+                println("  [hexa] auto-updating in background...")
+                exec("nohup bash -c 'source " + CARGO_BIN + "/../env && cd " + hexa_repo + " && git pull && cargo build --release' >> " + LOG_FILE + " 2>&1 &")
+                return "updating"
+            }
+        }
+    }
+
+    println("  [hexa] up to date (" + local_commit + ")")
+    return "ok"
+}
+
 fn start(port: str) -> str {
     exec("mkdir -p " + DIR)
     write_handler()
+
+    // hexa 버전 체크 + 자동 빌드
+    let hexa_status = check_hexa_version()
 
     // 기존 데몬 정리
     exec("pkill -f 'socat.*" + port + "' 2>/dev/null")
@@ -59,6 +96,7 @@ fn start(port: str) -> str {
     println("  ══════════════════════════════════════════════════════════════")
     println("  port: " + port)
     println("  pid: " + pid)
+    println("  hexa: " + hexa_status)
     println("  handler: " + HANDLER)
     println("  log: " + LOG_FILE)
     println("  status: " + get_status())

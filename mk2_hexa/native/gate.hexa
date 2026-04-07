@@ -1,36 +1,247 @@
-// airgenome/mk2_hexa/native/gate.hexa — MacBook 측 게이트 클라이언트
+// airgenome/mk2_hexa/native/gate.hexa — MacBook ↔ Ubuntu 게이트 클라이언트
 //
 // Ubuntu gate_daemon에 명령 전송 → 결과 수신
 // Ubuntu 접근 불가 시 로컬 실행 자동 전환 (fallback)
+// 설정은 nexus/shared/gate_config.jsonl에서 동적 로드
 //
 // Usage: hexa run gate.hexa <command>
-// Commands: exec, ping, status, help
-//
-// 또는 zshrc alias로: cargo → gate exec cargo
+// Commands: setup, exec, ping, status, zshrc, help
 
-let VERSION = "1.0.0"
-let UBU_HOST = "192.168.50.119"
-let UBU_PORT = "9900"
+let VERSION = "2.0.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG — gate_config.jsonl에서 동적 로드
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_config(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let UBU_HOST = load_config("remote_host", "")
+let UBU_PORT = load_config("remote_port", "9900")
+let UBU_USER = load_config("remote_user", "")
+let SSH_ALIAS = load_config("ssh_alias", "")
+let TS_HOST = load_config("tailscale_host", "")
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SETUP — 신규 사용자용 대화형 설정
+// ═══════════════════════════════════════════════════════════════════════
+
+fn setup() -> str {
+    println("")
+    println("  airgenome gate setup v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  Ubuntu 원격 자원 오프로드를 설정합니다.")
+    println("  MacBook에서 무거운 명령(cargo, python, hexa)을 Ubuntu에서 실행하고")
+    println("  결과만 받아옵니다. Ubuntu 접근 불가 시 로컬 자동 전환.")
+    println("")
+
+    // Step 1: Ubuntu IP
+    println("  [1/5] Ubuntu IP 주소")
+    println("    Ubuntu 터미널에서 'hostname -I' 실행 후 첫 번째 IP 입력")
+    println("    (현재: " + UBU_HOST + ")")
+    let new_host = input("    IP> ").trim()
+    if len(new_host) == 0 { new_host = UBU_HOST }
+
+    // Step 2: SSH user
+    println("")
+    println("  [2/5] Ubuntu SSH 사용자명")
+    println("    (현재: " + UBU_USER + ")")
+    let new_user = input("    user> ").trim()
+    if len(new_user) == 0 { new_user = UBU_USER }
+
+    // Step 3: Port
+    println("")
+    println("  [3/5] Gate 포트 (기본 9900)")
+    println("    (현재: " + UBU_PORT + ")")
+    let new_port = input("    port> ").trim()
+    if len(new_port) == 0 { new_port = UBU_PORT }
+
+    // Step 4: SSH alias
+    println("")
+    println("  [4/5] SSH alias (기본 ubu)")
+    let new_alias = input("    alias> ").trim()
+    if len(new_alias) == 0 { new_alias = "ubu" }
+
+    // Step 5: Tailscale IP (선택)
+    println("")
+    println("  [5/5] Tailscale IP (외부 접속용, 없으면 Enter)")
+    let new_ts = input("    tailscale> ").trim()
+
+    // 설정 저장
+    let config = ""
+    config = config + "{\"key\":\"remote_host\",\"value\":\"" + new_host + "\",\"desc\":\"Ubuntu IP (Wi-Fi)\"}\n"
+    config = config + "{\"key\":\"remote_port\",\"value\":\"" + new_port + "\",\"desc\":\"gate daemon TCP port\"}\n"
+    config = config + "{\"key\":\"remote_user\",\"value\":\"" + new_user + "\",\"desc\":\"Ubuntu SSH user\"}\n"
+    config = config + "{\"key\":\"ssh_alias\",\"value\":\"" + new_alias + "\",\"desc\":\"SSH config alias\"}\n"
+    config = config + "{\"key\":\"remote_dir\",\"value\":\"/tmp/airgenome\",\"desc\":\"Ubuntu working directory\"}\n"
+    config = config + "{\"key\":\"tailscale_host\",\"value\":\"" + new_ts + "\",\"desc\":\"Tailscale IP (외부 접속 시)\"}\n"
+    write_file(CONFIG_PATH, config)
+    println("")
+    println("  config saved: " + CONFIG_PATH)
+
+    // SSH 키 복사
+    println("")
+    println("  [SSH] 키 설정 중...")
+    let ssh_test = exec("ssh -o ConnectTimeout=3 " + new_user + "@" + new_host + " echo ok 2>&1").trim()
+    if ssh_test == "ok" {
+        println("  SSH 이미 설정됨")
+    }
+    if ssh_test != "ok" {
+        println("  SSH 키 복사가 필요합니다.")
+        println("  다음 명령을 실행하세요:")
+        println("")
+        println("    ssh-copy-id " + new_user + "@" + new_host)
+        println("")
+    }
+
+    // SSH config 추가
+    let ssh_config = env("HOME") + "/.ssh/config"
+    let has_alias = exec("grep -q 'Host " + new_alias + "' " + ssh_config + " 2>/dev/null && echo yes || echo no").trim()
+    if has_alias == "no" {
+        println("  [SSH config] alias '" + new_alias + "' 추가 중...")
+        let entry = "\nHost " + new_alias + "\n"
+        entry = entry + "    HostName " + new_host + "\n"
+        entry = entry + "    User " + new_user + "\n"
+        entry = entry + "    ControlMaster auto\n"
+        entry = entry + "    ControlPath ~/.ssh/ctl-%r@%h:%p\n"
+        entry = entry + "    ControlPersist 10m\n"
+        entry = entry + "    Compression no\n"
+        append_file(ssh_config, entry)
+        println("  추가 완료: ssh " + new_alias)
+    }
+    if has_alias == "yes" {
+        println("  SSH alias '" + new_alias + "' 이미 있음")
+    }
+
+    // Ubuntu에 필수 도구 설치 안내
+    println("")
+    println("  [Ubuntu 준비]")
+    println("  다음 명령을 Ubuntu에서 실행하세요:")
+    println("")
+    println("    sudo apt install -y openssh-server socat build-essential git curl")
+    println("    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")
+    println("")
+
+    // hexa 빌드 안내
+    println("  [hexa 빌드] Ubuntu에서:")
+    println("")
+    println("    source ~/.cargo/env")
+    println("    git clone https://github.com/need-singularity/hexa-lang.git /tmp/hexa-build/hexa-lang")
+    println("    cd /tmp/hexa-build/hexa-lang && cargo build --release")
+    println("")
+
+    // 데몬 시작 안내
+    println("  [gate 데몬 시작] Ubuntu에서:")
+    println("")
+    println("    /tmp/hexa-build/hexa-lang/target/release/hexa run gate_daemon.hexa start " + new_port)
+    println("")
+
+    // zshrc 안내
+    println("  [MacBook zshrc] 아래를 ~/.zshrc에 추가:")
+    println("")
+    print_zshrc_block(new_host, new_port)
+    println("")
+    println("  설정 완료! 'gate ping'으로 연결 확인하세요.")
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ZSHRC — alias 블록 출력
+// ═══════════════════════════════════════════════════════════════════════
+
+fn print_zshrc_block(host: str, port: str) -> str {
+    println("    # airgenome gate — Ubuntu 자동 오프로드")
+    println("    UBU_HOST=\"" + host + "\"")
+    println("    UBU_PORT=\"" + port + "\"")
+    println("    _ubu_gate() {")
+    println("      if nc -z -w 1 \"$UBU_HOST\" \"$UBU_PORT\" 2>/dev/null; then")
+    println("        echo \"$*\" | nc -w 600 \"$UBU_HOST\" \"$UBU_PORT\" 2>/dev/null | sed '/^---END---$/d'")
+    println("      else")
+    println("        eval \"$@\"")
+    println("      fi")
+    println("    }")
+    println("    ucargo()  { _ubu_gate \"source ~/.cargo/env && cargo $*\"; }")
+    println("    urustc()  { _ubu_gate \"source ~/.cargo/env && rustc $*\"; }")
+    println("    upython() { _ubu_gate \"python3 $*\"; }")
+    println("    uexec()   { _ubu_gate \"$*\"; }")
+    println("    uping()   { echo PING | nc -w 2 \"$UBU_HOST\" \"$UBU_PORT\" 2>/dev/null || echo offline; }")
+    println("    ustatus() { echo STATUS | nc -w 2 \"$UBU_HOST\" \"$UBU_PORT\" 2>/dev/null || echo offline; }")
+    return "ok"
+}
+
+fn show_zshrc() -> str {
+    println("")
+    println("  ~/.zshrc에 아래 블록을 추가하세요:")
+    println("")
+    print_zshrc_block(UBU_HOST, UBU_PORT)
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EXEC / PING / STATUS (기존 기능)
+// ═══════════════════════════════════════════════════════════════════════
 
 fn is_reachable() -> bool {
+    if len(UBU_HOST) == 0 {
+        println("  [gate] 설정 없음. 'gate setup' 먼저 실행하세요.")
+        return false
+    }
     let result = exec("nc -z -w 1 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null && echo ok || echo fail").trim()
-    return result == "ok"
+    if result == "ok" { return true }
+    // Tailscale fallback
+    if len(TS_HOST) > 0 {
+        let ts_result = exec("nc -z -w 2 " + TS_HOST + " " + UBU_PORT + " 2>/dev/null && echo ok || echo fail").trim()
+        return ts_result == "ok"
+    }
+    return false
+}
+
+fn get_target_host() -> str {
+    let result = exec("nc -z -w 1 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null && echo ok || echo fail").trim()
+    if result == "ok" { return UBU_HOST }
+    if len(TS_HOST) > 0 { return TS_HOST }
+    return ""
 }
 
 fn gate_send(cmd: str) -> str {
-    let result = exec("echo '" + cmd + "' | nc -w 10 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null").trim()
+    let host = get_target_host()
+    if len(host) == 0 { return "" }
+    let result = exec("echo '" + cmd + "' | nc -w 600 " + host + " " + UBU_PORT + " 2>/dev/null").trim()
     return result
+}
+
+fn get_via() -> str {
+    let result = exec("nc -z -w 1 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null && echo ok || echo fail").trim()
+    if result == "ok" { return "Wi-Fi" }
+    return "Tailscale"
 }
 
 fn gate_exec(cmd: str) -> str {
     if is_reachable() {
-        println("  [gate] → Ubuntu: " + cmd)
+        let via = get_via()
+        println("  [gate] → Ubuntu (" + via + "): " + cmd)
         let result = gate_send(cmd)
         println(result)
         return result
     }
-    // Fallback: 로컬 실행
-    println("  [gate] Ubuntu unreachable, running locally")
+    println("  [gate] Ubuntu unreachable → running locally")
     let result = exec(cmd + " 2>&1")
     if to_string(result).contains("exec error") {
         println("  [gate] local error: " + to_string(result))
@@ -49,7 +260,8 @@ fn gate_ping() -> str {
     let result = gate_send("PING")
     let t1 = exec("python3 -c 'import time; print(time.time())'").trim()
     let ms = (to_float(t1) - to_float(t0)) * 1000.0
-    println("  [gate] " + result + " (" + to_string(to_int(ms)) + "ms)")
+    let via = get_via()
+    println("  [gate] " + result + " (" + to_string(to_int(ms)) + "ms via " + via + ")")
     return result
 }
 
@@ -63,24 +275,37 @@ fn gate_status() -> str {
     return result
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  HELP
+// ═══════════════════════════════════════════════════════════════════════
+
 fn gate_help() -> str {
-    println("gate v" + VERSION + " — MacBook → Ubuntu command bridge")
+    println("gate v" + VERSION + " — MacBook ↔ Ubuntu resource bridge")
     println("")
     println("Usage: gate <command> [args]")
     println("")
     println("Commands:")
-    println("  exec <cmd>  — run command on Ubuntu (fallback: local)")
-    println("  ping        — check gate daemon")
-    println("  status      — Ubuntu resource status")
-    println("  help        — show this message")
+    println("  setup         — 대화형 초기 설정 (신규 사용자)")
+    println("  exec <cmd>    — Ubuntu에서 실행 (fallback: 로컬)")
+    println("  ping          — gate 연결 확인")
+    println("  status        — Ubuntu 자원 상태")
+    println("  zshrc         — zshrc alias 블록 출력")
+    println("  help          — 도움말")
     println("")
-    println("Fallback: Ubuntu 접근 불가 시 MacBook 로컬 실행 자동 전환")
-    println("")
-    println("zshrc alias 예시:")
-    println("  alias cargo='hexa run gate.hexa exec cargo'")
-    println("  alias python3='hexa run gate.hexa exec python3'")
+    if len(UBU_HOST) > 0 {
+        println("Config: " + UBU_HOST + ":" + UBU_PORT + " (user=" + UBU_USER + ")")
+    }
+    if len(UBU_HOST) == 0 {
+        println("설정 없음 — 'gate setup'을 먼저 실행하세요")
+    }
+    println("Fallback: Ubuntu 접근 불가 → MacBook 로컬 자동 전환")
+    println("Config: " + CONFIG_PATH)
     return "ok"
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
 
 fn main() {
     let argv = args()
@@ -88,8 +313,10 @@ fn main() {
     if len(argv) > 3 { cmd = argv[3] }
 
     if cmd == "help" { gate_help() }
+    if cmd == "setup" { setup() }
     if cmd == "ping" { gate_ping() }
     if cmd == "status" { gate_status() }
+    if cmd == "zshrc" { show_zshrc() }
     if cmd == "exec" {
         let exec_cmd = ""
         if len(argv) > 4 {
@@ -105,9 +332,11 @@ fn main() {
     }
 
     let known = cmd == "help"
+    if cmd == "setup" { known = true }
     if cmd == "exec" { known = true }
     if cmd == "ping" { known = true }
     if cmd == "status" { known = true }
+    if cmd == "zshrc" { known = true }
     if known == false {
         println("unknown command: " + cmd)
         gate_help()

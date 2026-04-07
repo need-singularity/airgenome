@@ -85,6 +85,11 @@ The gate reinterprets raw activity into a **60-byte genome per source**.
 - ✅ Per-source genome accumulation (mk2_hexa/native/accumulate.hexa)
 - ✅ Signature diff between sources (mk2_hexa/native/sigdiff.hexa)
 - ✅ Runtime loop: live ps sampling → gate projection → genome log (mk2_hexa/native/runtime.hexa)
+- ✅ Ubuntu offload module (mk2_hexa/native/offload.hexa) — SSH 기반 원격 실행
+- ✅ Socket gate (mk2_hexa/native/gate.hexa + gate_daemon.hexa) — socat TCP 상시 연결
+  - setup 명령으로 신규 사용자 대화형 설정
+  - Wi-Fi/Tailscale 자동 전환, Ubuntu 불가 시 로컬 fallback
+  - 설정: nexus/shared/gate_config.jsonl (하드코딩 없음)
 
 ## Non-goals (explicit)
 

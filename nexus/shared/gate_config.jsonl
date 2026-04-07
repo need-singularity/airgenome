@@ -1,0 +1,6 @@
+{"key":"remote_host","value":"192.168.50.119","desc":"Ubuntu IP (Wi-Fi)"}
+{"key":"remote_port","value":"9900","desc":"gate daemon TCP port"}
+{"key":"remote_user","value":"aiden","desc":"Ubuntu SSH user"}
+{"key":"ssh_alias","value":"ubu","desc":"SSH config alias"}
+{"key":"remote_dir","value":"/tmp/airgenome","desc":"Ubuntu working directory"}
+{"key":"tailscale_host","value":"","desc":"Tailscale IP (외부 접속 시)"}
