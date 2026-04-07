@@ -184,9 +184,11 @@ while true; do
 
     # 세션 종료 후 해당 계정 usage 즉시 갱신 (ccmon 동일 — 동기+재시도)
     # Claude Code가 토큰을 자체 갱신했으므로 쿨다운 해제 후 API 호출
+    # 재시도 간격: 15초, 30초 (ccmon: 30초, 60초 — rate limit 해소 충분 대기)
     echo ""
     echo "  ⬡ $CURRENT_NAME usage 갱신 중..."
     _refresh_ok=false
+    _delays=(15 30)
     for _attempt in 1 2 3; do
         _result=$(cd "$AIRGENOME" && $HEXA run modules/usage.hexa one "$CURRENT_NAME" 2>&1)
         if echo "$_result" | grep -q '✓'; then
@@ -195,12 +197,13 @@ while true; do
             break
         fi
         if [ "$_attempt" -lt 3 ]; then
-            echo "    retry ${_attempt}/3 (5초 후)..."
-            sleep 5
+            echo "    retry ${_attempt}/3 (${_delays[$_attempt-1]}초 후)..."
+            sleep ${_delays[$_attempt-1]}
         fi
     done
     if [ "$_refresh_ok" = false ]; then
-        echo "    ✗ 갱신 실패 (API rate limit) — 백그라운드에서 재시도"
+        echo "    ✗ 갱신 실패 — 60초 후 백그라운드 재시도"
+        (sleep 60 && cd "$AIRGENOME" && $HEXA run modules/usage.hexa one "$CURRENT_NAME" >/dev/null 2>&1 &)
     fi
 
     LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)

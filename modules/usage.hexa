@@ -229,26 +229,80 @@ fn refresh_all() -> void {
     }
 
     let names = get_all_names().split("\n")
+
+    // Phase 0 (ccmon 동일): 에러 계정을 먼저 재조회 — rate limit 느슨할 때 복구
+    let error_names = exec("jq -r 'to_entries[] | select(.value.error != null and .key != \"_ts\") | .key' '" + CACHE_FILE + "' 2>/dev/null || echo ''").trim()
+
     let results = ""
     let i = 0
     let hit_rate_limit = false
+    let first = true
+
+    // Phase 0: 에러 계정 우선 갱신
+    if len(error_names) > 0 {
+        let err_list = error_names.split("\n")
+        let ei = 0
+        while ei < len(err_list) {
+            let ename = err_list[ei]
+            if len(ename) == 0 {
+                ei = ei + 1
+                continue
+            }
+            if hit_rate_limit {
+                ei = ei + 1
+                continue
+            }
+
+            let r = fetch_one(ename)
+            let status = "✓"
+            if r.contains("api_error") {
+                status = "✗ API에러"
+                hit_rate_limit = true
+            }
+            if r.contains("cooldown") { status = "⏭ 쿨다운" }
+            if r.contains("token_error") { status = "✗ 토큰에러" }
+            if status == "✓" {
+                let parts = r.split("|")
+                if len(parts) >= 2 {
+                    if len(parts[1]) > 0 { status = "✓ s=" + parts[1] }
+                }
+            }
+            println("    " + ename + " " + status + " (복구)")
+            if first == false { results = results + "\n" }
+            results = results + r
+            first = false
+            ei = ei + 1
+        }
+    }
+
+    // Phase 1: 나머지 계정 — 캐시 유효하면 스킵
     while i < len(names) {
         let name = names[i]
+
+        // Phase 0에서 이미 처리한 에러 계정은 스킵
+        if len(error_names) > 0 {
+            if error_names.contains(name) {
+                i = i + 1
+                continue
+            }
+        }
 
         // 이번 실행에서 rate limit 맞았으면 나머지 스킵
         if hit_rate_limit {
             println("    " + name + " ⏭ 스킵 (rate limit)")
-            if i > 0 { results = results + "\n" }
+            if first == false { results = results + "\n" }
             results = results + name + "||||cooldown"
+            first = false
             i = i + 1
             continue
         }
 
-        // 캐시에 유효 데이터가 있으면 API 호출 생략 (ccmon: 에러 계정만 재조회)
+        // 캐시에 유효 데이터가 있으면 API 호출 생략
         if has_valid_cache(name) {
             println("    " + name + " ✓ 캐시")
-            if i > 0 { results = results + "\n" }
+            if first == false { results = results + "\n" }
             results = results + name + "||||cached"
+            first = false
             i = i + 1
             continue
         }
@@ -271,8 +325,9 @@ fn refresh_all() -> void {
             }
         }
         println("    " + name + " " + status)
-        if i > 0 { results = results + "\n" }
+        if first == false { results = results + "\n" }
         results = results + r
+        first = false
         i = i + 1
     }
     save_cache(results)
