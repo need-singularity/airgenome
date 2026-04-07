@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# === airgenome gate single-flight lock ===
+_AGLOCK=/tmp/airgenome.gate.lock.d
+if ! mkdir "$_AGLOCK" 2>/dev/null; then
+  _agpid=$(cat "$_AGLOCK/pid" 2>/dev/null)
+  if [ -n "$_agpid" ] && ! kill -0 "$_agpid" 2>/dev/null; then
+    rm -rf "$_AGLOCK"; mkdir "$_AGLOCK" 2>/dev/null || exit 0
+  else
+    exit 0
+  fi
+fi
+echo $$ > "$_AGLOCK/pid"
+trap 'rm -rf "$_AGLOCK"' EXIT
+
+UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
+CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
+[ -f "$CFG" ] && {
+  _h=$(awk -F'"' '/"remote_host"/{print $8}' "$CFG"); _p=$(awk -F'"' '/"remote_port"/{print $8}' "$CFG")
+  _s=$(awk -F'"' '/"ssh_alias"/{print $8}' "$CFG"); _t=$(awk -F'"' '/"tailscale_host"/{print $8}' "$CFG")
+  [ -n "$_h" ] && UBU_HOST="$_h"; [ -n "$_p" ] && UBU_PORT="$_p"; [ -n "$_s" ] && UBU_SSH="$_s"; [ -n "$_t" ] && TS_HOST="$_t"
+}
+GH=""
+nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null && GH="$UBU_HOST"
+[ -z "$GH" ] && [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null && GH="$TS_HOST"
+
+# 로컬 fallback: gate없음, GATE_LOCAL=1, -c 인라인, 인자없음(REPL)
+[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] || [ "$1" = "-c" ] || [ $# -eq 0 ] && exec /opt/homebrew/bin/python3 "$@"
+
+# pre-sync: nexus/shared 변경분만 동기화
+rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+
+RARGS=()
+for a in "$@"; do
+  if [[ -f "$a" ]]; then
+    ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+    scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
+    RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
+  else
+    RARGS+=("$a")
+  fi
+done
+wait  # rsync 완료 대기
+echo "cd $UBU_DIR && python3 ${RARGS[*]}" | nc -w 60 "$GH" "$UBU_PORT" 2>/dev/null | head -c 65536 | LC_ALL=C grep -v '^---END---$'
