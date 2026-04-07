@@ -1,0 +1,117 @@
+// airgenome/mk2_hexa/native/gate.hexa — MacBook 측 게이트 클라이언트
+//
+// Ubuntu gate_daemon에 명령 전송 → 결과 수신
+// Ubuntu 접근 불가 시 로컬 실행 자동 전환 (fallback)
+//
+// Usage: hexa run gate.hexa <command>
+// Commands: exec, ping, status, help
+//
+// 또는 zshrc alias로: cargo → gate exec cargo
+
+let VERSION = "1.0.0"
+let UBU_HOST = "192.168.50.119"
+let UBU_PORT = "9900"
+
+fn is_reachable() -> bool {
+    let result = exec("nc -z -w 1 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null && echo ok || echo fail").trim()
+    return result == "ok"
+}
+
+fn gate_send(cmd: str) -> str {
+    let result = exec("echo '" + cmd + "' | nc -w 10 " + UBU_HOST + " " + UBU_PORT + " 2>/dev/null").trim()
+    return result
+}
+
+fn gate_exec(cmd: str) -> str {
+    if is_reachable() {
+        println("  [gate] → Ubuntu: " + cmd)
+        let result = gate_send(cmd)
+        println(result)
+        return result
+    }
+    // Fallback: 로컬 실행
+    println("  [gate] Ubuntu unreachable, running locally")
+    let result = exec(cmd + " 2>&1")
+    if to_string(result).contains("exec error") {
+        println("  [gate] local error: " + to_string(result))
+        return ""
+    }
+    println(result)
+    return result
+}
+
+fn gate_ping() -> str {
+    if is_reachable() == false {
+        println("  [gate] Ubuntu unreachable")
+        return "fail"
+    }
+    let t0 = exec("python3 -c 'import time; print(time.time())'").trim()
+    let result = gate_send("PING")
+    let t1 = exec("python3 -c 'import time; print(time.time())'").trim()
+    let ms = (to_float(t1) - to_float(t0)) * 1000.0
+    println("  [gate] " + result + " (" + to_string(to_int(ms)) + "ms)")
+    return result
+}
+
+fn gate_status() -> str {
+    if is_reachable() == false {
+        println("  [gate] Ubuntu unreachable")
+        return "fail"
+    }
+    let result = gate_send("STATUS")
+    println("  [gate] Ubuntu: " + result)
+    return result
+}
+
+fn gate_help() -> str {
+    println("gate v" + VERSION + " — MacBook → Ubuntu command bridge")
+    println("")
+    println("Usage: gate <command> [args]")
+    println("")
+    println("Commands:")
+    println("  exec <cmd>  — run command on Ubuntu (fallback: local)")
+    println("  ping        — check gate daemon")
+    println("  status      — Ubuntu resource status")
+    println("  help        — show this message")
+    println("")
+    println("Fallback: Ubuntu 접근 불가 시 MacBook 로컬 실행 자동 전환")
+    println("")
+    println("zshrc alias 예시:")
+    println("  alias cargo='hexa run gate.hexa exec cargo'")
+    println("  alias python3='hexa run gate.hexa exec python3'")
+    return "ok"
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "help"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help" { gate_help() }
+    if cmd == "ping" { gate_ping() }
+    if cmd == "status" { gate_status() }
+    if cmd == "exec" {
+        let exec_cmd = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(exec_cmd) > 0 { exec_cmd = exec_cmd + " " }
+                exec_cmd = exec_cmd + argv[i]
+                i = i + 1
+            }
+        }
+        if len(exec_cmd) > 0 { gate_exec(exec_cmd) }
+        if len(exec_cmd) == 0 { println("  [error] usage: gate exec <command>") }
+    }
+
+    let known = cmd == "help"
+    if cmd == "exec" { known = true }
+    if cmd == "ping" { known = true }
+    if cmd == "status" { known = true }
+    if known == false {
+        println("unknown command: " + cmd)
+        gate_help()
+    }
+}
+
+main()

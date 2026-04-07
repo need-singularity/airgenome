@@ -1,0 +1,141 @@
+// airgenome/mk2_hexa/native/gate_daemon.hexa — Ubuntu 측 상시 소켓 데몬
+//
+// socat TCP 리스너 + bash 핸들러로 상시 명령 수신
+// MacBook gate.hexa에서 보내는 명령을 실행하고 결과 반환
+//
+// Usage on Ubuntu:
+//   hexa run gate_daemon.hexa start [port]
+//   hexa run gate_daemon.hexa stop
+//   hexa run gate_daemon.hexa status
+//
+// Prime directive: observe only, never kill
+
+let VERSION = "1.0.0"
+let DEFAULT_PORT = "9900"
+let DIR = "/tmp/airgenome"
+let PID_FILE = "/tmp/airgenome/gate.pid"
+let HANDLER = "/tmp/airgenome/gate_handler.sh"
+let LOG_FILE = "/tmp/airgenome/gate.log"
+let CARGO_BIN = env("HOME") + "/.cargo/bin"
+
+fn write_handler() -> str {
+    let script = "#!/bin/bash\n"
+    script = script + "export PATH=" + CARGO_BIN + ":$PATH\n"
+    script = script + "read -r CMD\n"
+    script = script + "case \"$CMD\" in\n"
+    script = script + "  PING) echo PONG ;;\n"
+    script = script + "  STATUS)\n"
+    script = script + "    LOAD=$(cat /proc/loadavg | awk '{print $1,$2,$3}')\n"
+    script = script + "    MEM=$(LANG=C free -m | grep Mem | awk '{print $3\"/\"$2\"MB avail=\"$7\"MB\"}')\n"
+    script = script + "    echo \"load=$LOAD ram=$MEM\"\n"
+    script = script + "    ;;\n"
+    script = script + "  QUIT) echo BYE ;;\n"
+    script = script + "  *)\n"
+    script = script + "    RESULT=$(bash -c \"$CMD\" 2>&1)\n"
+    script = script + "    echo \"$RESULT\"\n"
+    script = script + "    echo \"---END---\"\n"
+    script = script + "    ;;\n"
+    script = script + "esac\n"
+    write_file(HANDLER, script)
+    exec("chmod +x " + HANDLER)
+    return "ok"
+}
+
+fn start(port: str) -> str {
+    exec("mkdir -p " + DIR)
+    write_handler()
+
+    // 기존 데몬 정리
+    exec("pkill -f 'socat.*" + port + "' 2>/dev/null")
+    exec("sleep 1")
+
+    // socat으로 TCP 리스너 시작 (fork로 다중 접속)
+    let socat_cmd = "socat TCP-LISTEN:" + port + ",reuseaddr,fork EXEC:" + HANDLER
+    exec("nohup " + socat_cmd + " >> " + LOG_FILE + " 2>&1 & echo $! > " + PID_FILE)
+
+    let pid = exec("cat " + PID_FILE).trim()
+    println("")
+    println("  gate daemon v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  port: " + port)
+    println("  pid: " + pid)
+    println("  handler: " + HANDLER)
+    println("  log: " + LOG_FILE)
+    println("  status: " + get_status())
+    println("")
+    println("  daemon running. stop with: gate_daemon stop")
+    println("")
+    return pid
+}
+
+fn stop() -> str {
+    exec("pkill -f 'socat.*" + DEFAULT_PORT + "' 2>/dev/null")
+    if file_exists(PID_FILE) {
+        let pid = read_file(PID_FILE).trim()
+        exec("kill " + pid + " 2>/dev/null")
+        println("  stopped (pid=" + pid + ")")
+    }
+    return "ok"
+}
+
+fn get_status() -> str {
+    let load = exec("cat /proc/loadavg | awk '{print $1, $2, $3}'").trim()
+    let mem = exec("LANG=C free -m | grep Mem | awk '{print $3, $2, $7}'").trim()
+    let parts = mem.split(" ")
+    return "load=" + load + " ram=" + parts[0] + "/" + parts[1] + "MB avail=" + parts[2] + "MB"
+}
+
+fn check() -> str {
+    let pid = exec("pgrep -f 'socat.*" + DEFAULT_PORT + "' 2>/dev/null").trim()
+    if len(pid) > 0 {
+        println("  gate daemon running (pid=" + pid + ")")
+        println("  " + get_status())
+    }
+    if len(pid) == 0 {
+        println("  gate daemon not running")
+    }
+    return "ok"
+}
+
+fn gate_help() -> str {
+    println("gate_daemon v" + VERSION + " — Ubuntu socat daemon")
+    println("")
+    println("Usage: gate_daemon <command> [port]")
+    println("")
+    println("Commands:")
+    println("  start [port]  — start daemon (default :9900)")
+    println("  stop          — stop daemon")
+    println("  status        — check if running + Ubuntu status")
+    println("  help          — show this message")
+    println("")
+    println("Protocol (line-based via TCP):")
+    println("  PING          → PONG")
+    println("  STATUS        → load/ram info")
+    println("  <command>     → execute, return stdout + ---END---")
+    println("  QUIT          → BYE")
+    return "ok"
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "help"
+    let port = DEFAULT_PORT
+    if len(argv) > 3 { cmd = argv[3] }
+    if len(argv) > 4 { port = argv[4] }
+
+    if cmd == "help" { gate_help() }
+    if cmd == "start" { start(port) }
+    if cmd == "stop" { stop() }
+    if cmd == "status" { check() }
+
+    let known = cmd == "help"
+    if cmd == "start" { known = true }
+    if cmd == "stop" { known = true }
+    if cmd == "status" { known = true }
+    if known == false {
+        println("unknown command: " + cmd)
+        gate_help()
+    }
+}
+
+main()
