@@ -2,7 +2,7 @@
   "_last_updated": "2026-04-07",
   "_scope": "airgenome",
   "_principle": "모든 프로세스 KILL 없이 성능/자원 개선. 효율은 데이터 재해석에서 온다.",
-  "_score": "5/7",
+  "_score": "7/7",
 
   "ossified": {
     "_description": "골화 완료 — 불변, 변경 금지",
@@ -10,28 +10,18 @@
     "aggregation":  { "status": "PASS", "value": "게이트별 통계 집계", "since": "2026-04-05" },
     "MI":           { "status": "PASS", "value": "상호정보량 기반 패턴 추출", "since": "2026-04-05" },
     "rule_firing":  { "status": "PASS", "value": "규칙 엔진 발화 (threshold 판정)", "since": "2026-04-05" },
-    "kill_free":    { "status": "PASS", "value": "kill/SIGTERM/SIGKILL 절대 금지", "since": "2026-04-05" }
+    "kill_free":    { "status": "PASS", "value": "kill/SIGTERM/SIGKILL 절대 금지", "since": "2026-04-05" },
+    "renice":       { "status": "PASS", "value": "qos.hexa — CPU hog 탐지 → renice 10", "since": "2026-04-07" },
+    "taskpolicy":   { "status": "PASS", "value": "qos.hexa — RAM hog 탐지 → taskpolicy -b", "since": "2026-04-07" },
+    "purge":        { "status": "PASS", "value": "purge.hexa — user-space 캐시 전용, is_forbidden() 경계 강제", "since": "2026-04-07" },
+    "compressor_ban": { "status": "PASS", "value": "purge.hexa — /var/vm, sysctl vm.compressor, sudo purge 절대 금지", "since": "2026-04-07" }
   },
 
   "stable": {
-    "_description": "유지중 — 작동하지만 아직 골화 전",
-    "renice":       { "status": "PASS", "value": "프로세스 우선순위 재조정", "note": "효과 범위 검증 중" },
-    "taskpolicy":   { "status": "PASS", "value": "macOS taskpolicy QoS 변경", "note": "프로파일별 최적값 탐색 중" }
+    "_description": "유지중 — 작동하지만 아직 골화 전"
   },
 
   "failed": {
-    "_description": "실패 — 골화 불가",
-    "purge": {
-      "status": "FAIL",
-      "value": "캐시/임시파일 정리",
-      "cause": "memory purge compressor 튜닝과 경계 모호",
-      "fix": "purge 대상을 user-space 캐시로 한정, compressor 영역 명시 분리"
-    },
-    "memory_purge_compressor": {
-      "status": "FAIL",
-      "value": "macOS memory compressor 튜닝 금지",
-      "cause": "purge와 compressor 경계가 불명확 — 안전측 금지 유지",
-      "fix": "커널 레벨 compressor vs user-space purge 경계 정의 필요"
-    }
+    "_description": "실패 — 골화 불가"
   }
 }

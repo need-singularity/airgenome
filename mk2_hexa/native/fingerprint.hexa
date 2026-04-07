@@ -1,0 +1,390 @@
+// airgenome/mk2_hexa/native/fingerprint.hexa — workload fingerprint classification
+//
+// Takes a live ps snapshot (or reads genomes.log) and classifies the current
+// system workload into known types:
+//   compile, browse, communicate, idle, mixed-dev, heavy-build, media
+//
+// Uses gate-relative resource ratios, not absolute values.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/fingerprint.hexa [command]
+// Commands: now, history, learn, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let FP_LOG = "forge/fingerprints.jsonl"
+let GATE_COUNT = 8
+
+// Dynamic gate config
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+// Classify a resource snapshot into workload type
+// Input: ram[8], cpu[8] (per-gate values)
+// Returns: [type_name, confidence, dominant_gate, secondary_gate]
+fn classify_workload(ram: auto, cpu: auto) -> auto {
+    // Compute totals
+    let total_ram = 0.0
+    let total_cpu = 0.0
+    let g = 0
+    while g < 8 {
+        total_ram = total_ram + ram[g]
+        total_cpu = total_cpu + cpu[g]
+        g = g + 1
+    }
+    if total_ram < 1.0 { total_ram = 1.0 }
+    if total_cpu < 0.01 { total_cpu = 0.01 }
+
+    // Compute per-gate fractions
+    let ram_frac = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu_frac = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    g = 0
+    while g < 8 {
+        ram_frac[g] = ram[g] / total_ram
+        cpu_frac[g] = cpu[g] / total_cpu
+        g = g + 1
+    }
+
+    // Find dominant and secondary gates (by RAM)
+    let dom = 0
+    let sec = 0
+    let dom_val = 0.0
+    let sec_val = 0.0
+    g = 0
+    while g < 8 {
+        if ram_frac[g] > dom_val {
+            sec = dom
+            sec_val = dom_val
+            dom = g
+            dom_val = ram_frac[g]
+        }
+        if ram_frac[g] > sec_val {
+            if g != dom {
+                sec = g
+                sec_val = ram_frac[g]
+            }
+        }
+        g = g + 1
+    }
+
+    // Classification rules (gate indices: 0=macos, 3=chrome, 4=safari, 7=devtools, etc.)
+    let wtype = "mixed"
+    let confidence = 0.5
+
+    // COMPILE: devtools(7) dominates CPU >40%
+    if cpu_frac[7] > 0.40 {
+        wtype = "compile"
+        confidence = 0.7 + cpu_frac[7] * 0.3
+    }
+
+    // HEAVY-BUILD: devtools(7) dominates both RAM >30% and CPU >30%
+    if ram_frac[7] > 0.30 {
+        if cpu_frac[7] > 0.30 {
+            wtype = "heavy-build"
+            confidence = 0.8
+        }
+    }
+
+    // BROWSE: chrome(3) + safari(4) combined RAM >50%
+    let browser_ram = ram_frac[3] + ram_frac[4]
+    let browser_cpu = cpu_frac[3] + cpu_frac[4]
+    if browser_ram > 0.50 {
+        wtype = "browse"
+        confidence = 0.6 + browser_ram * 0.3
+    }
+
+    // COMMUNICATE: telegram(2) + claude(5) significant
+    let comm_ram = ram_frac[2] + ram_frac[5]
+    if comm_ram > 0.30 {
+        if browser_ram < 0.30 {
+            wtype = "communicate"
+            confidence = 0.6 + comm_ram * 0.3
+        }
+    }
+
+    // MIXED-DEV: devtools + terminal + browser all active
+    if ram_frac[7] > 0.15 {
+        if ram_frac[6] > 0.05 {
+            if browser_ram > 0.15 {
+                wtype = "mixed-dev"
+                confidence = 0.7
+            }
+        }
+    }
+
+    // IDLE: macos(0) dominates >70% RAM, total CPU <10%
+    if ram_frac[0] > 0.70 {
+        if total_cpu < 10.0 {
+            wtype = "idle"
+            confidence = 0.8
+        }
+    }
+
+    // Clamp confidence
+    if confidence > 1.0 { confidence = 1.0 }
+
+    return [wtype, confidence, dom, sec]
+}
+
+// Parse last log line → RAM/CPU arrays
+fn parse_last_sample() -> auto {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return []
+    }
+    let last_line = exec("tail -1 " + LOG_FILE).trim()
+    if len(last_line) < 10 { return [] }
+
+    let fields = last_line.split("\t")
+    if len(fields) < 9 { return [] }
+
+    let ram = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let ts = fields[0].trim()
+
+    let g = 0
+    while g < 8 {
+        if g + 1 < len(fields) {
+            let field = fields[g + 1]
+            if field.contains(":") {
+                let parts = field.split(":")
+                if len(parts) >= 2 {
+                    let vals = parts[1].split("/")
+                    if len(vals) >= 2 {
+                        ram[g] = to_float(vals[0])
+                        cpu[g] = to_float(vals[1])
+                    }
+                }
+            }
+        }
+        g = g + 1
+    }
+    return [ts, ram, cpu]
+}
+
+// Classify current state
+fn print_now() -> str {
+    let sample = parse_last_sample()
+    if len(sample) == 0 { return "no data" }
+
+    let ts = sample[0]
+    let ram = sample[1]
+    let cpu = sample[2]
+    let result = classify_workload(ram, cpu)
+    let wtype = result[0]
+    let confidence = result[1]
+    let dom = result[2]
+    let sec = result[3]
+
+    let ts_fmt = exec("date -r " + ts + " '+%Y-%m-%d %H:%M:%S' 2>/dev/null").trim()
+
+    println("")
+    println("  workload fingerprint — current snapshot")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  timestamp:  " + ts_fmt)
+    println("  type:       " + wtype)
+    println("  confidence: " + to_string(to_int(confidence * 100.0)) + "%")
+    println("  dominant:   " + gate_name(dom) + " (" + to_string(to_int(ram[dom])) + " MB)")
+    println("  secondary:  " + gate_name(sec) + " (" + to_string(to_int(ram[sec])) + " MB)")
+    println("")
+
+    // Per-gate breakdown
+    let total_ram = 0.0
+    let g = 0
+    while g < 8 { total_ram = total_ram + ram[g]; g = g + 1 }
+    if total_ram < 1.0 { total_ram = 1.0 }
+
+    println("  gate breakdown:")
+    g = 0
+    while g < 8 {
+        if ram[g] > 1.0 {
+            let pct = ram[g] * 100.0 / total_ram
+            let bar_len = to_int(pct / 5.0)
+            if bar_len < 0 { bar_len = 0 }
+            if bar_len > 20 { bar_len = 20 }
+            let bar = ""
+            let bi = 0
+            while bi < bar_len { bar = bar + "▓"; bi = bi + 1 }
+            while bi < 20 { bar = bar + "░"; bi = bi + 1 }
+            println("    " + gate_name(g) + "\t" + bar + "  " + to_string(to_int(pct)) + "% (" + to_string(to_int(ram[g])) + "MB)")
+        }
+        g = g + 1
+    }
+    println("")
+
+    // Log the fingerprint
+    let fp_line = "{\"ts\":" + ts + ",\"type\":\"" + wtype + "\",\"confidence\":" + to_string(confidence) + ",\"dominant\":\"" + gate_name(dom) + "\",\"secondary\":\"" + gate_name(sec) + "\"}"
+    append_file(FP_LOG, fp_line + "\n")
+
+    return wtype
+}
+
+// Classify all log entries and show workload distribution over time
+fn print_history() -> str {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return "no data"
+    }
+    let content = read_file(LOG_FILE)
+    let lines = content.split("\n")
+
+    // Count each workload type
+    let type_counts = [0, 0, 0, 0, 0, 0, 0]
+    let type_names = ["idle", "browse", "communicate", "compile", "heavy-build", "mixed-dev", "mixed"]
+
+    let total = 0
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 9 {
+                let ram = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let cpu = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let g = 0
+                while g < 8 {
+                    if g + 1 < len(fields) {
+                        let field = fields[g + 1]
+                        if field.contains(":") {
+                            let parts = field.split(":")
+                            if len(parts) >= 2 {
+                                let vals = parts[1].split("/")
+                                if len(vals) >= 2 {
+                                    ram[g] = to_float(vals[0])
+                                    cpu[g] = to_float(vals[1])
+                                }
+                            }
+                        }
+                    }
+                    g = g + 1
+                }
+                let result = classify_workload(ram, cpu)
+                let wtype = result[0]
+                if wtype == "idle"        { type_counts[0] = type_counts[0] + 1 }
+                if wtype == "browse"      { type_counts[1] = type_counts[1] + 1 }
+                if wtype == "communicate" { type_counts[2] = type_counts[2] + 1 }
+                if wtype == "compile"     { type_counts[3] = type_counts[3] + 1 }
+                if wtype == "heavy-build" { type_counts[4] = type_counts[4] + 1 }
+                if wtype == "mixed-dev"   { type_counts[5] = type_counts[5] + 1 }
+                if wtype == "mixed"       { type_counts[6] = type_counts[6] + 1 }
+                total = total + 1
+            }
+        }
+        i = i + 1
+    }
+
+    println("")
+    println("  workload fingerprint history (" + to_string(total) + " samples)")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let t = 0
+    while t < 7 {
+        if type_counts[t] > 0 {
+            let pct = to_int(type_counts[t] * 100 / total)
+            let bar_len = pct / 5
+            if bar_len > 20 { bar_len = 20 }
+            let bar = ""
+            let bi = 0
+            while bi < bar_len { bar = bar + "▓"; bi = bi + 1 }
+            while bi < 20 { bar = bar + "░"; bi = bi + 1 }
+            println("  " + type_names[t] + "\t" + bar + "  " + to_string(pct) + "% (" + to_string(type_counts[t]) + ")")
+        }
+        t = t + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Learn: show which gate ratios define each workload type (reference)
+fn print_learn() -> str {
+    println("")
+    println("  workload fingerprint — classification rules")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  type          trigger condition")
+    println("  ────────────  ──────────────────────────────────────────────")
+    println("  idle          macos RAM >70% of total, total CPU <10%")
+    println("  browse        chrome+safari RAM >50% of total")
+    println("  communicate   telegram+claude RAM >30%, browsers <30%")
+    println("  compile       devtools CPU >40% of total")
+    println("  heavy-build   devtools RAM >30% AND CPU >30%")
+    println("  mixed-dev     devtools >15% + terminal >5% + browsers >15%")
+    println("  mixed         no dominant pattern (fallback)")
+    println("")
+    println("  Priority: idle > heavy-build > compile > browse > communicate > mixed-dev > mixed")
+    println("")
+    return "ok"
+}
+
+fn fingerprint_help() -> str {
+    println("fingerprint v" + VERSION + " — workload classification from genome snapshots")
+    println("")
+    println("Usage: fingerprint <command>")
+    println("")
+    println("Commands:")
+    println("  now      — classify current snapshot (last log entry)")
+    println("  history  — workload type distribution across all log entries")
+    println("  learn    — show classification rules")
+    println("  help     — show this message")
+    println("")
+    println("Types: idle, browse, communicate, compile, heavy-build, mixed-dev, mixed")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "now"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help"    { fingerprint_help() }
+    if cmd == "now"     { print_now() }
+    if cmd == "history" { print_history() }
+    if cmd == "learn"   { print_learn() }
+
+    if cmd != "help" {
+        if cmd != "now" {
+            if cmd != "history" {
+                if cmd != "learn" {
+                    println("unknown command: " + cmd)
+                    fingerprint_help()
+                }
+            }
+        }
+    }
+}
+
+main()

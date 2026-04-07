@@ -1,0 +1,440 @@
+// airgenome/mk2_hexa/native/temporal.hexa — time-of-day pattern extraction
+//
+// Reads genomes.log and splits per-gate signatures into temporal buckets:
+//   dawn (05-08), morning (08-12), afternoon (12-17), evening (17-21), night (21-05)
+//
+// Reveals: "Chrome peaks in afternoon", "rustc dominates evening", etc.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/temporal.hexa [command]
+// Commands: summary, gate <N>, heatmap, cycle, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let GATE_COUNT = 8
+let BUCKET_COUNT = 5
+
+// Dynamic gate config
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+fn bucket_name(b: int) -> str {
+    if b == 0 { return "dawn" }
+    if b == 1 { return "morning" }
+    if b == 2 { return "afternoon" }
+    if b == 3 { return "evening" }
+    if b == 4 { return "night" }
+    return "unknown"
+}
+
+fn bucket_hours(b: int) -> str {
+    if b == 0 { return "05-08" }
+    if b == 1 { return "08-12" }
+    if b == 2 { return "12-17" }
+    if b == 3 { return "17-21" }
+    if b == 4 { return "21-05" }
+    return "??-??"
+}
+
+// Map hour (0-23) → bucket index
+fn hour_to_bucket(h: int) -> int {
+    if h >= 5  { if h < 8  { return 0 } }
+    if h >= 8  { if h < 12 { return 1 } }
+    if h >= 12 { if h < 17 { return 2 } }
+    if h >= 17 { if h < 21 { return 3 } }
+    return 4
+}
+
+// Parse genomes.log → per-bucket per-gate accumulation
+// Returns: [ram_sum[bucket][gate], cpu_sum[bucket][gate], counts[bucket][gate]]
+fn accumulate_temporal() -> auto {
+    if file_exists(LOG_FILE) == false {
+        println("  no genomes.log found")
+        return []
+    }
+    let content = read_file(LOG_FILE)
+    let lines = content.split("\n")
+
+    // 5 buckets x 8 gates
+    let ram_sum = [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ]
+    let cpu_sum = [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ]
+    let counts = [
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ]
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 9 {
+                let ts_str = fields[0].trim()
+                let ts = to_int(ts_str)
+                if ts > 0 {
+                    // Get hour from timestamp
+                    let hour_str = exec("date -r " + ts_str + " +%H 2>/dev/null").trim()
+                    let hour = to_int(hour_str)
+                    let bucket = hour_to_bucket(hour)
+
+                    let g = 0
+                    while g < 8 {
+                        if g + 1 < len(fields) {
+                            let field = fields[g + 1]
+                            if field.contains(":") {
+                                let parts = field.split(":")
+                                if len(parts) >= 2 {
+                                    let vals = parts[1].split("/")
+                                    if len(vals) >= 2 {
+                                        let r = to_float(vals[0])
+                                        let c = to_float(vals[1])
+                                        if r > 0.0 {
+                                            ram_sum[bucket][g] = ram_sum[bucket][g] + r
+                                            cpu_sum[bucket][g] = cpu_sum[bucket][g] + c
+                                            counts[bucket][g] = counts[bucket][g] + 1.0
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        g = g + 1
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    return [ram_sum, cpu_sum, counts]
+}
+
+// Print temporal summary — per-bucket dominant gates
+fn print_summary(acc: auto) -> str {
+    let ram_sum = acc[0]
+    let cpu_sum = acc[1]
+    let counts = acc[2]
+
+    println("")
+    println("  temporal pattern — daily cycle signatures")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let b = 0
+    while b < 5 {
+        let total_samples = 0.0
+        let g = 0
+        while g < 8 {
+            total_samples = total_samples + counts[b][g]
+            g = g + 1
+        }
+
+        if total_samples > 0.0 {
+            // Find dominant RAM gate and dominant CPU gate
+            let max_ram = 0.0
+            let max_cpu = 0.0
+            let ram_gate = 0
+            let cpu_gate = 0
+            g = 0
+            while g < 8 {
+                if counts[b][g] > 0.0 {
+                    let rm = ram_sum[b][g] / counts[b][g]
+                    let cm = cpu_sum[b][g] / counts[b][g]
+                    if rm > max_ram { max_ram = rm; ram_gate = g }
+                    if cm > max_cpu { max_cpu = cm; cpu_gate = g }
+                }
+                g = g + 1
+            }
+
+            println("  " + bucket_name(b) + " (" + bucket_hours(b) + ")  samples=" + to_string(to_int(total_samples / 8.0)))
+            println("    RAM dominant: " + gate_name(ram_gate) + " (" + to_string(to_int(max_ram)) + " MB avg)")
+            println("    CPU dominant: " + gate_name(cpu_gate) + " (" + to_string(to_int(max_cpu)) + "% avg)")
+
+            // Show all gates with significant activity
+            g = 0
+            while g < 8 {
+                if counts[b][g] > 0.0 {
+                    let rm = ram_sum[b][g] / counts[b][g]
+                    if rm > 10.0 {
+                        let bar_len = to_int(rm / max_ram * 15.0)
+                        if bar_len < 0 { bar_len = 0 }
+                        if bar_len > 15 { bar_len = 15 }
+                        let bar = ""
+                        let bi = 0
+                        while bi < bar_len { bar = bar + "▓"; bi = bi + 1 }
+                        while bi < 15 { bar = bar + "░"; bi = bi + 1 }
+                        println("      " + gate_name(g) + "\t" + bar + "  " + to_string(to_int(rm)) + "MB")
+                    }
+                }
+                g = g + 1
+            }
+            println("")
+        }
+        b = b + 1
+    }
+    return "ok"
+}
+
+// Print per-gate temporal breakdown
+fn print_gate_temporal(acc: auto, gate_id: int) -> str {
+    let ram_sum = acc[0]
+    let cpu_sum = acc[1]
+    let counts = acc[2]
+
+    println("")
+    println("  temporal profile: " + gate_name(gate_id) + " (gate " + to_string(gate_id) + ")")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  bucket      RAM mean   CPU mean   samples")
+    println("  ──────────  ─────────  ─────────  ───────")
+
+    let peak_ram = 0.0
+    let peak_bucket = 0
+
+    let b = 0
+    while b < 5 {
+        let n = counts[b][gate_id]
+        if n > 0.0 {
+            let rm = ram_sum[b][gate_id] / n
+            let cm = cpu_sum[b][gate_id] / n
+            println("  " + bucket_name(b) + " (" + bucket_hours(b) + ")\t" + to_string(to_int(rm)) + " MB\t" + to_string(cm) + "%\t" + to_string(to_int(n)))
+            if rm > peak_ram { peak_ram = rm; peak_bucket = b }
+        }
+        if n == 0.0 {
+            println("  " + bucket_name(b) + " (" + bucket_hours(b) + ")\t—\t—\t0")
+        }
+        b = b + 1
+    }
+
+    println("")
+    println("  peak time: " + bucket_name(peak_bucket) + " (" + bucket_hours(peak_bucket) + ") → " + to_string(to_int(peak_ram)) + " MB")
+    println("")
+    return "ok"
+}
+
+// Heatmap: gate x bucket matrix
+fn print_heatmap(acc: auto) -> str {
+    let ram_sum = acc[0]
+    let counts = acc[2]
+
+    println("")
+    println("  temporal heatmap (RAM MB mean)")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Header
+    let header = "            "
+    let b = 0
+    while b < 5 {
+        header = header + bucket_name(b) + "\t"
+        b = b + 1
+    }
+    println(header)
+    println("  ──────────────────────────────────────────────────────────")
+
+    // Find global max for intensity scaling
+    let global_max = 1.0
+    let g = 0
+    while g < 8 {
+        b = 0
+        while b < 5 {
+            if counts[b][g] > 0.0 {
+                let rm = ram_sum[b][g] / counts[b][g]
+                if rm > global_max { global_max = rm }
+            }
+            b = b + 1
+        }
+        g = g + 1
+    }
+
+    g = 0
+    while g < 8 {
+        let row = "  " + gate_name(g) + "\t"
+        b = 0
+        while b < 5 {
+            if counts[b][g] > 0.0 {
+                let rm = ram_sum[b][g] / counts[b][g]
+                let intensity = rm / global_max
+                let symbol = "░"
+                if intensity > 0.2 { symbol = "▒" }
+                if intensity > 0.5 { symbol = "▓" }
+                if intensity > 0.8 { symbol = "█" }
+                row = row + symbol + to_string(to_int(rm)) + "\t"
+            }
+            if counts[b][g] == 0.0 {
+                row = row + "  ·\t"
+            }
+            b = b + 1
+        }
+        println(row)
+        g = g + 1
+    }
+    println("")
+    println("  intensity: · < ░ < ▒ < ▓ < █")
+    println("")
+    return "ok"
+}
+
+// Cycle analysis: find which gates shift most between buckets
+fn print_cycle(acc: auto) -> str {
+    let ram_sum = acc[0]
+    let counts = acc[2]
+
+    println("")
+    println("  daily cycle analysis — which gates change most?")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let g = 0
+    while g < 8 {
+        // Compute per-bucket means
+        let means = [0.0, 0.0, 0.0, 0.0, 0.0]
+        let has_data = 0
+        let b = 0
+        while b < 5 {
+            if counts[b][g] > 0.0 {
+                means[b] = ram_sum[b][g] / counts[b][g]
+                has_data = has_data + 1
+            }
+            b = b + 1
+        }
+
+        if has_data >= 2 {
+            // Find min and max bucket
+            let min_val = 999999.0
+            let max_val = 0.0
+            let min_b = 0
+            let max_b = 0
+            b = 0
+            while b < 5 {
+                if counts[b][g] > 0.0 {
+                    if means[b] < min_val { min_val = means[b]; min_b = b }
+                    if means[b] > max_val { max_val = means[b]; max_b = b }
+                }
+                b = b + 1
+            }
+
+            let swing = 0.0
+            if min_val > 0.0 { swing = max_val / min_val }
+
+            let tag = ""
+            if swing > 3.0 { tag = " <-- HIGH VARIANCE" }
+            if swing > 5.0 { tag = " <-- VERY HIGH VARIANCE" }
+
+            println("  " + gate_name(g) + "\tpeak=" + bucket_name(max_b) + " (" + to_string(to_int(max_val)) + "MB)  trough=" + bucket_name(min_b) + " (" + to_string(to_int(min_val)) + "MB)  swing=" + to_string(swing) + "x" + tag)
+        }
+        g = g + 1
+    }
+    println("")
+    return "ok"
+}
+
+fn temporal_help() -> str {
+    println("temporal v" + VERSION + " — time-of-day pattern extraction")
+    println("")
+    println("Usage: temporal <command>")
+    println("")
+    println("Commands:")
+    println("  summary    — per-bucket dominant gates + activity bars")
+    println("  gate <N>   — temporal breakdown for a specific gate")
+    println("  heatmap    — gate x bucket intensity matrix")
+    println("  cycle      — daily cycle analysis (peak/trough/swing per gate)")
+    println("  help       — show this message")
+    println("")
+    println("Buckets: dawn(05-08) morning(08-12) afternoon(12-17) evening(17-21) night(21-05)")
+    println("")
+    let gate_list = ""
+    let gi = 0
+    while gi < 8 {
+        gate_list = gate_list + to_string(gi) + "=" + gate_name(gi) + " "
+        gi = gi + 1
+    }
+    println("Gates: " + gate_list)
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "summary"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" { temporal_help() }
+    if cmd == "summary" {
+        let acc = accumulate_temporal()
+        if len(acc) > 0 { print_summary(acc) }
+    }
+    if cmd == "gate" {
+        let gate_id = 0
+        if len(argv) > 4 { gate_id = to_int(argv[4]) }
+        let acc = accumulate_temporal()
+        if len(acc) > 0 { print_gate_temporal(acc, gate_id) }
+    }
+    if cmd == "heatmap" {
+        let acc = accumulate_temporal()
+        if len(acc) > 0 { print_heatmap(acc) }
+    }
+    if cmd == "cycle" {
+        let acc = accumulate_temporal()
+        if len(acc) > 0 { print_cycle(acc) }
+    }
+
+    if cmd != "help" {
+        if cmd != "summary" {
+            if cmd != "gate" {
+                if cmd != "heatmap" {
+                    if cmd != "cycle" {
+                        println("unknown command: " + cmd)
+                        temporal_help()
+                    }
+                }
+            }
+        }
+    }
+}
+
+main()

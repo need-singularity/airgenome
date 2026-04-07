@@ -1,0 +1,358 @@
+// airgenome/mk2_hexa/native/qos.hexa — pattern-based QoS auto-adjustment
+//
+// Reads fingerprint + temporal data, applies renice/taskpolicy to
+// deprioritize resource hogs without killing anything.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/qos.hexa [command]
+// Commands: scan, apply, dry, rules, status, help
+//
+// Prime directive: observe only, never kill. renice/taskpolicy only.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let QOS_LOG = "forge/qos.jsonl"
+let GATE_COUNT = 8
+
+// Dynamic gate config
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+// QoS policy rules (loaded from JSONL config)
+let QOS_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_qos.jsonl"
+
+// Default thresholds (overridden by JSONL if present)
+let CPU_HOG_THRESHOLD = 30.0
+let RAM_HOG_MB = 2048.0
+let RENICE_LEVEL = 10
+let TASKPOLICY_BG = "background"
+
+// Load QoS config from JSONL
+fn load_qos_config() -> auto {
+    if file_exists(QOS_CFG_PATH) == false { return [] }
+    let content = read_file(QOS_CFG_PATH)
+    let lines = content.split("\n")
+    let rules = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            rules = rules + [parsed]
+        }
+        i = i + 1
+    }
+    return rules
+}
+
+// Scan current processes → find QoS candidates
+// Returns: [[pid, comm, cpu, rss_mb, action, reason], ...]
+fn scan_candidates() -> auto {
+    let ps = exec("ps -axm -o pid=,rss=,%cpu=,comm= | awk '{printf \"%s\\t%s\\t%s\\t\", $1, $2, $3; for(i=4;i<=NF;i++) printf \"%s \", $i; print \"\"}'")
+    let lines = ps.split("\n")
+    let candidates = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let fields = line.split("\t")
+            if len(fields) >= 4 {
+                let pid = fields[0].trim()
+                let rss_kb = to_float(fields[1].trim())
+                let cpu_pct = to_float(fields[2].trim())
+                let comm = fields[3].trim()
+                let rss_mb = rss_kb / 1024.0
+
+                // Skip system-critical (PID 0, 1, kernel_task, WindowServer)
+                if to_int(pid) > 100 {
+                    let action = ""
+                    let reason = ""
+
+                    // Rule 1: CPU hog — renice if >CPU_HOG_THRESHOLD sustained
+                    if cpu_pct > CPU_HOG_THRESHOLD {
+                        action = "renice"
+                        reason = "CPU " + to_string(cpu_pct) + "% > " + to_string(CPU_HOG_THRESHOLD) + "%"
+                    }
+
+                    // Rule 2: RAM hog — taskpolicy background if >RAM_HOG_MB
+                    if rss_mb > RAM_HOG_MB {
+                        if len(action) == 0 {
+                            action = "taskpolicy"
+                            reason = "RAM " + to_string(to_int(rss_mb)) + "MB > " + to_string(to_int(RAM_HOG_MB)) + "MB"
+                        }
+                        if len(action) > 0 {
+                            if action == "renice" {
+                                action = "renice+taskpolicy"
+                                reason = reason + " + RAM " + to_string(to_int(rss_mb)) + "MB"
+                            }
+                        }
+                    }
+
+                    // Rule 3: Skip whitelisted (system UI, Finder, WindowServer)
+                    if comm.contains("Finder") { action = "" }
+                    if comm.contains("WindowServer") { action = "" }
+                    if comm.contains("Dock") { action = "" }
+                    if comm.contains("SystemUIServer") { action = "" }
+                    if comm.contains("loginwindow") { action = "" }
+
+                    if len(action) > 0 {
+                        candidates = candidates + [[pid, comm, cpu_pct, rss_mb, action, reason]]
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return candidates
+}
+
+// Print scan results (dry run)
+fn print_scan(candidates: auto, dry: int) -> str {
+    let ts = exec("date '+%Y-%m-%d %H:%M:%S'").trim()
+    let mode = "SCAN"
+    if dry == 1 { mode = "DRY RUN" }
+    if dry == 0 { mode = "APPLY" }
+
+    println("")
+    println("  QoS " + mode + " — " + ts)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    if len(candidates) == 0 {
+        println("  no QoS candidates found — system is balanced")
+        println("")
+        return "ok"
+    }
+
+    // Get system totals for savings calculation
+    let sys_cpu_str = exec("ps -A -o %cpu= | awk '{s+=$1}END{print s}'").trim()
+    let sys_ram_str = exec("ps -A -o rss= | awk '{s+=$1}END{print s/1024}'").trim()
+    let sys_cpu = to_float(sys_cpu_str)
+    let sys_ram = to_float(sys_ram_str)
+    if sys_cpu < 1.0 { sys_cpu = 1.0 }
+    if sys_ram < 1.0 { sys_ram = 1.0 }
+
+    println("  pid     cpu%    ram MB  saving   action              process")
+    println("  ──────  ──────  ──────  ───────  ──────────────────  ────────────────────")
+
+    let sum_cpu_save = 0.0
+    let sum_ram_save = 0.0
+    let i = 0
+    while i < len(candidates) {
+        let c = candidates[i]
+        let pid = c[0]
+        let comm = c[1]
+        let cpu = c[2]
+        let rss = c[3]
+        let action = c[4]
+
+        // Estimate savings: renice ~30% CPU reduction, taskpolicy ~20% RAM deprioritization
+        let cpu_save = 0.0
+        let ram_save = 0.0
+        if action.contains("renice") { cpu_save = cpu * 0.30 }
+        if action.contains("taskpolicy") { ram_save = rss * 0.20 }
+        sum_cpu_save = sum_cpu_save + cpu_save
+        sum_ram_save = sum_ram_save + ram_save
+
+        let save_tag = ""
+        if cpu_save > 0.0 { save_tag = "-" + to_string(to_int(cpu_save)) + "%" }
+        if ram_save > 0.0 {
+            if len(save_tag) > 0 { save_tag = save_tag + " " }
+            save_tag = save_tag + "-" + to_string(to_int(ram_save)) + "MB"
+        }
+
+        let short_comm = comm
+        if len(short_comm) > 30 { short_comm = short_comm[0:30] }
+
+        println("  " + pid + "\t" + to_string(cpu) + "\t" + to_string(to_int(rss)) + "\t" + save_tag + "\t" + action + "\t" + short_comm)
+        i = i + 1
+    }
+
+    // System-wide savings percentage
+    let cpu_pct_save = sum_cpu_save * 100.0 / sys_cpu
+    let ram_pct_save = sum_ram_save * 100.0 / sys_ram
+
+    println("")
+    println("  candidates: " + to_string(len(candidates)))
+    println("  thresholds: CPU >" + to_string(CPU_HOG_THRESHOLD) + "%  RAM >" + to_string(to_int(RAM_HOG_MB)) + "MB")
+    println("  estimated savings: CPU -" + to_string(to_int(cpu_pct_save)) + "% (" + to_string(to_int(sum_cpu_save)) + "%)  RAM -" + to_string(to_int(ram_pct_save)) + "% (" + to_string(to_int(sum_ram_save)) + "MB)")
+    println("")
+    return "ok"
+}
+
+// Apply QoS adjustments
+fn apply_qos(candidates: auto) -> str {
+    let applied = 0
+    let ts = exec("date +%s").trim()
+    let i = 0
+    while i < len(candidates) {
+        let c = candidates[i]
+        let pid = c[0]
+        let comm = c[1]
+        let action = c[4]
+        let reason = c[5]
+
+        if action.contains("renice") {
+            let result = exec("renice " + to_string(RENICE_LEVEL) + " -p " + pid + " 2>&1").trim()
+            println("  renice " + to_string(RENICE_LEVEL) + " pid=" + pid + " → " + result)
+        }
+        if action.contains("taskpolicy") {
+            let result = exec("taskpolicy -b -p " + pid + " 2>&1").trim()
+            println("  taskpolicy -b pid=" + pid + " → " + result)
+        }
+
+        // Log
+        let log_line = "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + comm + "\",\"action\":\"" + action + "\",\"reason\":\"" + reason + "\"}"
+        append_file(QOS_LOG, log_line + "\n")
+        applied = applied + 1
+
+        i = i + 1
+    }
+    println("")
+    println("  applied: " + to_string(applied) + " adjustments")
+    println("  logged to: " + QOS_LOG)
+    println("")
+    return "ok"
+}
+
+// Show current QoS status (which processes have been adjusted)
+fn print_status() -> str {
+    println("")
+    println("  QoS status — recently adjusted processes")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    if file_exists(QOS_LOG) == false {
+        println("  no QoS adjustments recorded yet")
+        println("")
+        return "ok"
+    }
+
+    let tail = exec("tail -10 " + QOS_LOG).trim()
+    let lines = tail.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            let ts_fmt = exec("date -r " + to_string(parsed["ts"]) + " '+%H:%M:%S' 2>/dev/null").trim()
+            println("  [" + ts_fmt + "] " + parsed["action"] + " pid=" + to_string(parsed["pid"]) + " " + parsed["comm"])
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+// Show rules
+fn print_rules() -> str {
+    println("")
+    println("  QoS rules")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  rule              trigger                   action")
+    println("  ────────────────  ────────────────────────  ──────────────────")
+    println("  CPU hog           CPU >" + to_string(CPU_HOG_THRESHOLD) + "%              renice " + to_string(RENICE_LEVEL))
+    println("  RAM hog           RAM >" + to_string(to_int(RAM_HOG_MB)) + " MB            taskpolicy -b")
+    println("  CPU+RAM hog       both above                renice + taskpolicy")
+    println("")
+    println("  whitelist (never adjusted):")
+    println("    Finder, WindowServer, Dock, SystemUIServer, loginwindow")
+    println("    PID <= 100 (kernel/system)")
+    println("")
+    println("  prime directive: NEVER kill. renice/taskpolicy only.")
+    println("  config: " + QOS_CFG_PATH)
+    println("")
+    return "ok"
+}
+
+fn qos_help() -> str {
+    println("qos v" + VERSION + " — pattern-based QoS auto-adjustment")
+    println("")
+    println("Usage: qos <command>")
+    println("")
+    println("Commands:")
+    println("  scan    — find QoS candidates (report only)")
+    println("  dry     — dry run: show what would be applied")
+    println("  apply   — apply renice/taskpolicy to candidates")
+    println("  status  — show recently adjusted processes")
+    println("  rules   — show QoS rules and thresholds")
+    println("  help    — show this message")
+    println("")
+    println("Prime directive: observe + adjust priority, never kill.")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    assert GATE_COUNT == 8
+
+    let argv = args()
+    let cmd = "scan"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" { qos_help() }
+    if cmd == "rules" { print_rules() }
+    if cmd == "status" { print_status() }
+    if cmd == "scan" {
+        let candidates = scan_candidates()
+        print_scan(candidates, 2)
+    }
+    if cmd == "dry" {
+        let candidates = scan_candidates()
+        print_scan(candidates, 1)
+    }
+    if cmd == "apply" {
+        println("")
+        println("  applying QoS adjustments...")
+        let candidates = scan_candidates()
+        print_scan(candidates, 0)
+        if len(candidates) > 0 {
+            apply_qos(candidates)
+        }
+    }
+
+    if cmd != "help" {
+        if cmd != "scan" {
+            if cmd != "dry" {
+                if cmd != "apply" {
+                    if cmd != "status" {
+                        if cmd != "rules" {
+                            println("unknown command: " + cmd)
+                            qos_help()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+main()

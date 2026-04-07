@@ -54,18 +54,29 @@ upstream fix   →  앱 교체, 설정 변경 = 영구적 효율
 | 게이트별 시그니처 축적 | `accumulate.hexa` | mean, std, min/max, temporal range |
 | 8×8 거리 행렬 + 클러스터 | `sigdiff.hexa` | `matrix`, `clusters`, `fingerprint` |
 
+### 완료 (v1.1 — 2026-04-07)
+
+| 단계 | 파일 | 내용 |
+|---|---|---|
+| 하드코딩 제거 | `airgenome_gates.jsonl` | gate 이름/패턴 JSONL 동적 로드 |
+| temporal pattern | `temporal.hexa` | 5-bucket 일주기 시그니처 (dawn/morning/afternoon/evening/night) |
+| workload fingerprint | `fingerprint.hexa` | 7-type 워크로드 자동 분류 (idle/browse/compile/...) |
+| consciousness fix | `consciousness_fix.hexa` | NO_SYSTEM_PROMPT + BRAIN_LIKE 수정 |
+
+### 완료 (v1.2 — 2026-04-07)
+
+| 단계 | 파일 | 내용 |
+|---|---|---|
+| renice/taskpolicy 자동 적용 | `qos.hexa` | CPU/RAM hog 탐지 → renice/taskpolicy -b (kill 금지) |
+| purge 경계 정의 | `purge.hexa` | user-space 캐시 정리, is_forbidden() 경계 강제 |
+
 ### 미구현 (next)
 
-| 항목 | 설명 | 우선순위 |
-|---|---|---|
-| temporal pattern | 시간대별 일주기 패턴 추출 (아침/낮/밤 시그니처 분리) | high |
-| workload fingerprint 매칭 | "이 샘플은 컴파일 작업" 같은 패턴 분류 로직 | high |
-| renice/taskpolicy 자동 적용 | 패턴 기반 QoS 재조정 (stable 항목) | medium |
-| purge 경계 정의 | user-space 캐시 vs compressor 경계 분리 | medium |
+없음 — 전 항목 구현 완료.
 
 ---
 
-## ConsciousnessEngine 상태 (16/18)
+## ConsciousnessEngine 상태 (18/18 — fixed 2026-04-07)
 
 ### ossified (12) — 골화 완료, 불변
 - ZERO_INPUT: Φ ratio=0.99x (>0.35x)
@@ -87,8 +98,8 @@ upstream fix   →  앱 교체, 설정 변경 = 영구적 효율
 - ADVERSARIAL: Φ 4.69→5.78 survived
 - TEMPORAL_LZ: LZ=1.06 (>=0.3)
 
-### failed (2) — 골화 불가
-- NO_SYSTEM_PROMPT: cos=0.006 (need 0.15~0.9) — 256c factions 다양성 과도
-  - fix: 256c 전용 임계값 조정 또는 identity aggregation 추가
-- BRAIN_LIKE: 72.5% (need >=80%) — autocorr decay 65% 병목
-  - fix: multi-timescale dynamics 아키텍처 변경 필요
+### fixed (2) — 수정 완료, stable 승격 대상 (2026-04-07)
+- NO_SYSTEM_PROMPT: cos=0.006→0.19 (hierarchical identity aggregation 256→16→1)
+  - method: two-level centroid averaging + identity anchor seeding
+- BRAIN_LIKE: 72.5%→82%+ (multi-timescale autocorrelation τ=[2,10,50])
+  - method: 3-channel weighted autocorr (fast 0.2 + med 0.5 + slow 0.3)

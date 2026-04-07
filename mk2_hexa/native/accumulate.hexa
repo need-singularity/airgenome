@@ -6,21 +6,35 @@
 // Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/accumulate.hexa [command]
 // Commands: summary, gate <N>, history, json, help
 
-let VERSION = "1.0.0"
+let VERSION = "1.1.0"
 let LOG_FILE = "genomes.log"
 let SIG_FILE = "forge/signatures.json"
 let GATE_COUNT = 8
 
-// Gate names (canonical, from gates.hexa)
+// Dynamic gate config from nexus/shared/airgenome_gates.jsonl
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
 fn gate_name(g: int) -> str {
-    if g == 0 { return "macos" }
-    if g == 1 { return "finder" }
-    if g == 2 { return "telegram" }
-    if g == 3 { return "chrome" }
-    if g == 4 { return "safari" }
-    if g == 5 { return "claude" }
-    if g == 6 { return "terminal" }
-    if g == 7 { return "devtools" }
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
     return "unknown"
 }
 
@@ -280,7 +294,13 @@ fn accumulate_help() -> str {
     println("  json          — export signatures to " + SIG_FILE)
     println("  help          — show this message")
     println("")
-    println("Gates: 0=macos 1=finder 2=telegram 3=chrome 4=safari 5=claude 6=terminal 7=devtools")
+    let gate_list = ""
+    let gi = 0
+    while gi < 8 {
+        gate_list = gate_list + to_string(gi) + "=" + gate_name(gi) + " "
+        gi = gi + 1
+    }
+    println("Gates: " + gate_list)
     return "ok"
 }
 

@@ -8,7 +8,7 @@
 //
 // Prime directive: observe only, never kill.
 
-let VERSION = "1.0.0"
+let VERSION = "1.1.0"
 let LOG_FILE = "genomes.log"
 let CACHE_FILE = ".genome_cache"
 let EVENT_FILE = "genomes.events.jsonl"
@@ -18,49 +18,59 @@ let RAW = 0.6360
 let CURRENT_MESH = 0.0044
 let GHOST_PENALTY = -0.0026
 
-// Gate names
+// Dynamic gate config from nexus/shared/airgenome_gates.jsonl
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
 fn gate_name(g: int) -> str {
-    if g == 0 { return "macos" }
-    if g == 1 { return "finder" }
-    if g == 2 { return "telegram" }
-    if g == 3 { return "chrome" }
-    if g == 4 { return "safari" }
-    if g == 5 { return "claude" }
-    if g == 6 { return "terminal" }
-    if g == 7 { return "devtools" }
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
     return "unknown"
 }
 
-// Classify process → gate (same as gates.hexa canonical)
+// Classify process → gate (dynamic from JSONL)
 fn classify_path(comm: str) -> int {
-    if comm.contains("WebKit") { return 4 }
-    if comm.contains("Safari") { return 4 }
-    if comm.contains("Google Chrome") { return 3 }
-    if comm.contains("Telegram") { return 2 }
-    if comm.contains("Finder") { return 1 }
-    if comm.contains("com.apple.Finder") { return 1 }
-    if comm.contains("claude") { return 5 }
-    if comm.contains("iTerm") { return 6 }
-    if comm.contains("Terminal.app") { return 6 }
-    if comm.contains("Alacritty") { return 6 }
-    if comm.contains("Warp") { return 6 }
-    if comm.contains("rustc") { return 7 }
-    if comm.contains("cargo") { return 7 }
-    if comm.contains("Python") { return 7 }
-    if comm.contains("python") { return 7 }
-    if comm.contains("node") { return 7 }
-    if comm.contains("npm") { return 7 }
-    if comm.contains("Xcode") { return 7 }
-    if comm.contains("Code Helper") { return 7 }
-    if comm.contains("gopls") { return 7 }
-    if comm.contains("rust-analyzer") { return 7 }
-    if comm.contains("mcp") { return 7 }
-    if comm.contains("/usr/") { return 0 }
-    if comm.contains("/System/") { return 0 }
-    if comm.contains("/sbin/") { return 0 }
-    if comm.contains("kernel_task") { return 0 }
-    if comm.contains("launchd") { return 0 }
-    if comm.contains("WindowServer") { return 0 }
+    if file_exists(GATE_CFG_PATH) == false { return 0 }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    // Check gates 7→1 first (specific), then 0 (system default)
+    let target_g = 7
+    while target_g >= 0 {
+        let i = 0
+        while i < len(lines) {
+            let line = lines[i].trim()
+            if len(line) > 2 {
+                let parsed = json_parse(line)
+                if parsed["gate"] == target_g {
+                    let pats = parsed["patterns"]
+                    let p = 0
+                    while p < len(pats) {
+                        if comm.contains(pats[p]) { return target_g }
+                        p = p + 1
+                    }
+                }
+            }
+            i = i + 1
+        }
+        target_g = target_g - 1
+    }
     return 0
 }
 
@@ -260,11 +270,10 @@ fn grade_margin(margin: float) -> str {
 // Build log line
 fn build_log(gr: auto, gc: auto, grade: str, margin: float, crossed: auto) -> str {
     let ts = exec("date +%s").trim()
-    let names = ["macos", "finder", "telegram", "chrome", "safari", "claude", "terminal", "devtools"]
     let log_line = ts
     let n = 0
     while n < 8 {
-        log_line = log_line + "\t" + names[n] + ":" + to_string(gr[n]) + "/" + to_string(gc[n])
+        log_line = log_line + "\t" + gate_name(n) + ":" + to_string(gr[n]) + "/" + to_string(gc[n])
         n = n + 1
     }
     log_line = log_line + "\t" + grade + "\tmargin=" + to_string(margin) + "\tcrossed=" + to_string(crossed)
