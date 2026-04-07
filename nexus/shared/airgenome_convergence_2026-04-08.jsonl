@@ -21,3 +21,10 @@
 {"type":"todo","id":"T2","action":"hexa_binary_proper_rebuild","detail":"target/release/hexa는 hexa-bin-actual symlink. 정식 hexa binary는 hexa-lang src/interpreter.rs:1338 try_fuse_chain 컴파일 에러 수정 후 cargo build로 복구.","priority":"medium","timestamp":"2026-04-08"}
 {"type":"todo","id":"T3","action":"nexus_agents_restore","detail":"11개 nexus launchd agent bootstrap 복구. lock 적용 덕에 CPU 폭주 재발 안 함.","priority":"medium","timestamp":"2026-04-08"}
 {"type":"todo","id":"T4","action":"caller_audit","detail":"Claude Code post-edit hook chain (nexus-post-edit.sh, nexus-engine.py 등) 실제 hexa 호출 빈도 측정. 필요 시 추가 throttle.","priority":"low","timestamp":"2026-04-08"}
+{"type":"discovery","id":"D7","subject":"symlink_bypass","finding":"target/release/hexa를 hexa-bin-actual symlink로 두면 caller가 wrapper 우회. 반드시 wrapper bash script로 교체해야 lock 적용됨.","timestamp":"2026-04-08"}
+{"type":"discovery","id":"D8","subject":"exec_breaks_trap","finding":"wrapper에서 exec \"$LOCAL_BIN\" 패턴은 bash 종료 안 시키고 binary로 교체하므로 EXIT trap 발생 안 함. lock 자동 정리 실패. stale 검사(kill -0 + cleanup)로 다음 호출에서 회수.","timestamp":"2026-04-08"}
+{"type":"discovery","id":"D9","subject":"nc_timeout_too_short","finding":"wrapper의 nc -z -w 1 (1초)은 일시적 network latency에 false negative → LOCAL_BIN fallback 빈도↑. 3초 권장.","timestamp":"2026-04-08"}
+{"type":"metric","id":"M5","name":"mac_load_natural_convergence","timeline":[{"t":"00:21","load":144},{"t":"01:15","load":12},{"t":"01:35","load":7.67},{"t":"01:40","load":6.63}],"delta_pct":-95,"timestamp":"2026-04-08"}
+{"type":"metric","id":"M6","name":"ubu_jobs_5min","peak":195,"steady":6,"timestamp":"2026-04-08"}
+{"type":"metric","id":"M7","name":"nexus_stuck_pid_natural_termination","before":7,"after":0,"timestamp":"2026-04-08"}
+{"type":"validation","id":"V1","subject":"lock_under_nexus_load","finding":"nexus 11개 agent bootstrap 후에도 burst 0건. lock이 정확히 작동. Ubuntu가 195 jobs/5min 처리해도 mac CPU 영향 0.","timestamp":"2026-04-08"}
