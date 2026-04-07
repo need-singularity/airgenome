@@ -455,6 +455,39 @@ fn refresh_if_stale() -> void {
     }
 }
 
+fn refresh_next() -> void {
+    // 라운드 로빈: 1계정씩 순차 갱신 (10분 간격 launchd용)
+    // 상태 파일에서 다음 인덱스 읽기
+    let idx_file = HOME + "/.airgenome/refresh-next-idx"
+    let idx = to_int(exec("cat '" + idx_file + "' 2>/dev/null || echo '0'").trim())
+    let names = get_all_names().split("\n")
+    if idx >= len(names) { idx = 0 }
+    let name = names[idx]
+
+    // CLI로 키체인 토큰 강제 갱신
+    let config_dir = HOME + "/.claude-" + name
+    exec("CLAUDE_CONFIG_DIR='" + config_dir + "' " + HOME + "/.local/bin/claude -p 'ok' --max-turns 1 >/dev/null 2>&1 || true")
+
+    // 쿨다운 해제 + API 호출
+    set_cooldown(name, false)
+    let r = fetch_one_force(name)
+    let status = "✓"
+    if r.contains("api_error") { status = "✗" }
+    if r.contains("token_error") { status = "✗" }
+    if r.contains("no_keychain") { status = "✗" }
+    if status == "✓" {
+        let parts = r.split("|")
+        if len(parts) >= 4 { status = "✓ s=" + parts[1] + " w=" + parts[3] }
+    }
+    println("  [" + to_string(idx + 1) + "/10] " + name + " " + status)
+    save_cache(r)
+
+    // 다음 인덱스 저장
+    let next = idx + 1
+    if next >= len(names) { next = 0 }
+    exec("echo '" + to_string(next) + "' > '" + idx_file + "'")
+}
+
 fn main() {
     let argv = args()
     let cmd = ""
@@ -465,8 +498,9 @@ fn main() {
     if cmd == "refresh" { refresh_all() }
     if cmd == "one" { refresh_one(target) }
     if cmd == "auto" { refresh_if_stale() }
+    if cmd == "next" { refresh_next() }
     if cmd == "" {
-        println("usage: hexa usage.hexa [refresh|auto|one <name>]")
+        println("usage: hexa usage.hexa [refresh|auto|one <name>|next]")
     }
 }
 
