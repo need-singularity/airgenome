@@ -1,0 +1,270 @@
+// airgenome/mk2_hexa/native/autoprofile.hexa — automatic ceiling profile switching
+//
+// Combines temporal bucket + workload fingerprint to auto-adjust
+// CPU/RAM/swap ceilings in ~/.airgenome/config.json.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/autoprofile.hexa [command]
+// Commands: auto, profiles, current, reset, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let CONFIG_PATH = env("HOME") + "/.airgenome/config.json"
+let LOG_FILE = "genomes.log"
+let PROFILE_LOG = "forge/autoprofile.jsonl"
+let GATE_COUNT = 8
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PROFILE MATRIX: bucket × workload → ceiling preset
+// ═══════════════════════════════════════════════════════════════════════
+//
+//  Principle: when the user is less active, tighten ceilings
+//  (more aggressive QoS). When active, loosen (less interference).
+//
+//  bucket      idle        browse      compile     mixed
+//  ──────────  ──────────  ──────────  ──────────  ──────────
+//  night       tight       tight       medium      medium
+//  dawn        tight       medium      medium      medium
+//  morning     medium      loose       loose       loose
+//  afternoon   medium      loose       loose       loose
+//  evening     medium      loose       medium      medium
+
+// Profile presets: [cpu_ceil, ram_ceil, swap_ceil]
+fn profile_tight() -> auto   { return [60, 60, 30] }
+fn profile_medium() -> auto  { return [75, 70, 40] }
+fn profile_loose() -> auto   { return [90, 85, 50] }
+
+fn hour_to_bucket(h: int) -> int {
+    if h >= 5  { if h < 8  { return 0 } }
+    if h >= 8  { if h < 12 { return 1 } }
+    if h >= 12 { if h < 17 { return 2 } }
+    if h >= 17 { if h < 21 { return 3 } }
+    return 4
+}
+
+fn bucket_name(b: int) -> str {
+    if b == 0 { return "dawn" }
+    if b == 1 { return "morning" }
+    if b == 2 { return "afternoon" }
+    if b == 3 { return "evening" }
+    return "night"
+}
+
+// Detect workload (same as qos.hexa)
+fn detect_workload() -> str {
+    if file_exists(LOG_FILE) == false { return "mixed" }
+    let last = exec("tail -1 " + LOG_FILE).trim()
+    if len(last) < 10 { return "mixed" }
+    let fields = last.split("\t")
+    if len(fields) < 9 { return "mixed" }
+
+    let ram = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let cpu = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let total_ram = 0.0
+    let total_cpu = 0.0
+    let g = 0
+    while g < 8 {
+        if g + 1 < len(fields) {
+            let field = fields[g + 1]
+            if field.contains(":") {
+                let parts = field.split(":")
+                if len(parts) >= 2 {
+                    let vals = parts[1].split("/")
+                    if len(vals) >= 2 {
+                        ram[g] = to_float(vals[0])
+                        cpu[g] = to_float(vals[1])
+                        total_ram = total_ram + ram[g]
+                        total_cpu = total_cpu + cpu[g]
+                    }
+                }
+            }
+        }
+        g = g + 1
+    }
+    if total_ram < 1.0 { return "mixed" }
+    if total_cpu < 0.01 { return "idle" }
+
+    if cpu[7] / total_cpu > 0.40 { return "compile" }
+    if (ram[3] + ram[4]) / total_ram > 0.50 { return "browse" }
+    if ram[0] / total_ram > 0.70 { return "idle" }
+    return "mixed"
+}
+
+// Select profile based on bucket + workload
+fn select_profile(bucket: int, workload: str) -> auto {
+    // night (4)
+    if bucket == 4 {
+        if workload == "idle" { return profile_tight() }
+        if workload == "browse" { return profile_tight() }
+        return profile_medium()
+    }
+    // dawn (0)
+    if bucket == 0 {
+        if workload == "idle" { return profile_tight() }
+        if workload == "browse" { return profile_medium() }
+        return profile_medium()
+    }
+    // morning (1) / afternoon (2) — user active
+    if bucket == 1 {
+        if workload == "idle" { return profile_medium() }
+        return profile_loose()
+    }
+    if bucket == 2 {
+        if workload == "idle" { return profile_medium() }
+        return profile_loose()
+    }
+    // evening (3)
+    if bucket == 3 {
+        if workload == "idle" { return profile_medium() }
+        if workload == "browse" { return profile_loose() }
+        return profile_medium()
+    }
+    return profile_medium()
+}
+
+fn profile_label(p: auto) -> str {
+    if p[0] == 60 { return "tight" }
+    if p[0] == 90 { return "loose" }
+    return "medium"
+}
+
+// Read current config
+fn read_config() -> auto {
+    if file_exists(CONFIG_PATH) == false { return [90, 80, 50, 4] }
+    let content = read_file(CONFIG_PATH)
+    let parsed = json_parse(content)
+    let cc = to_int(to_string(parsed["cpu_ceil"]))
+    let rc = to_int(to_string(parsed["ram_ceil"]))
+    let sc = to_int(to_string(parsed["swap_ceil"]))
+    let bm = 4
+    if to_string(parsed["bridge_max"]) != "null" { bm = to_int(to_string(parsed["bridge_max"])) }
+    return [cc, rc, sc, bm]
+}
+
+// Write config
+fn write_config(cpu_ceil: int, ram_ceil: int, swap_ceil: int, bridge_max: int) -> str {
+    let json = "{\"cpu_ceil\": " + to_string(cpu_ceil) + ", \"ram_ceil\": " + to_string(ram_ceil) + ", \"swap_ceil\": " + to_string(swap_ceil) + ", \"bridge_max\": " + to_string(bridge_max) + "}"
+    write_file(CONFIG_PATH, json)
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn auto_switch() -> str {
+    let hour = to_int(exec("date +%H").trim())
+    let bucket = hour_to_bucket(hour)
+    let workload = detect_workload()
+    let profile = select_profile(bucket, workload)
+    let label = profile_label(profile)
+    let current = read_config()
+    let ts = exec("date '+%Y-%m-%d %H:%M:%S'").trim()
+
+    let changed = 0
+    if current[0] != profile[0] { changed = 1 }
+    if current[1] != profile[1] { changed = 1 }
+    if current[2] != profile[2] { changed = 1 }
+
+    println("")
+    println("  auto-profile — " + ts)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  bucket:    " + bucket_name(bucket) + " (hour " + to_string(hour) + ")")
+    println("  workload:  " + workload)
+    println("  profile:   " + label)
+    println("  ceilings:  CPU " + to_string(profile[0]) + "%  RAM " + to_string(profile[1]) + "%  Swap " + to_string(profile[2]) + "%")
+    println("")
+
+    if changed == 0 {
+        println("  no change needed — already on " + label + " profile")
+    }
+    if changed == 1 {
+        println("  switching: CPU " + to_string(current[0]) + "→" + to_string(profile[0]) + "  RAM " + to_string(current[1]) + "→" + to_string(profile[1]) + "  Swap " + to_string(current[2]) + "→" + to_string(profile[2]))
+        write_config(profile[0], profile[1], profile[2], current[3])
+        println("  config updated: " + CONFIG_PATH)
+
+        // Log
+        let log_ts = exec("date +%s").trim()
+        let log_line = "{\"ts\":" + log_ts + ",\"bucket\":\"" + bucket_name(bucket) + "\",\"workload\":\"" + workload + "\",\"profile\":\"" + label + "\",\"cpu\":" + to_string(profile[0]) + ",\"ram\":" + to_string(profile[1]) + ",\"swap\":" + to_string(profile[2]) + "}"
+        append_file(PROFILE_LOG, log_line + "\n")
+    }
+    println("")
+    return "ok"
+}
+
+fn print_profiles() -> str {
+    println("")
+    println("  auto-profile matrix")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  bucket       idle     browse   compile  mixed")
+    println("  ───────────  ───────  ───────  ───────  ───────")
+    println("  night        tight    tight    medium   medium")
+    println("  dawn         tight    medium   medium   medium")
+    println("  morning      medium   loose    loose    loose")
+    println("  afternoon    medium   loose    loose    loose")
+    println("  evening      medium   loose    medium   medium")
+    println("")
+    println("  presets:")
+    println("    tight:   CPU 60%  RAM 60%  Swap 30%")
+    println("    medium:  CPU 75%  RAM 70%  Swap 40%")
+    println("    loose:   CPU 90%  RAM 85%  Swap 50%")
+    println("")
+    return "ok"
+}
+
+fn print_current() -> str {
+    let current = read_config()
+    let hour = to_int(exec("date +%H").trim())
+    let bucket = hour_to_bucket(hour)
+    let workload = detect_workload()
+    let recommended = select_profile(bucket, workload)
+
+    println("")
+    println("  current profile state")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  config:      CPU " + to_string(current[0]) + "%  RAM " + to_string(current[1]) + "%  Swap " + to_string(current[2]) + "%")
+    println("  recommended: CPU " + to_string(recommended[0]) + "%  RAM " + to_string(recommended[1]) + "%  Swap " + to_string(recommended[2]) + "% (" + profile_label(recommended) + ")")
+    println("  context:     " + bucket_name(bucket) + " + " + workload)
+
+    let match = 1
+    if current[0] != recommended[0] { match = 0 }
+    if current[1] != recommended[1] { match = 0 }
+    if match == 1 { println("  status:      IN SYNC") }
+    if match == 0 { println("  status:      OUT OF SYNC — run 'autoprofile auto' to switch") }
+    println("")
+    return "ok"
+}
+
+fn reset_profile() -> str {
+    let current = read_config()
+    write_config(90, 80, 50, current[3])
+    println("  reset to default: CPU 90%  RAM 80%  Swap 50%")
+    return "ok"
+}
+
+fn autoprofile_help() -> str {
+    println("autoprofile v" + VERSION + " — automatic ceiling switching")
+    println("")
+    println("Commands:")
+    println("  auto     — detect context and switch profile if needed")
+    println("  profiles — show profile matrix (bucket x workload)")
+    println("  current  — show current vs recommended profile")
+    println("  reset    — reset to default (loose)")
+    println("  help     — this message")
+    return "ok"
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "auto"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"     { autoprofile_help() }
+    if cmd == "auto"     { auto_switch() }
+    if cmd == "profiles" { print_profiles() }
+    if cmd == "current"  { print_current() }
+    if cmd == "reset"    { reset_profile() }
+}
+
+main()

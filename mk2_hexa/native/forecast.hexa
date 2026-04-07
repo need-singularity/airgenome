@@ -1,0 +1,355 @@
+// airgenome/mk2_hexa/native/forecast.hexa — genome trend forecasting
+//
+// Reads genomes.log history, computes per-gate linear trend (slope),
+// and predicts next-hour resource usage. Triggers preemptive QoS
+// if predicted values breach ceilings.
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/forecast.hexa [command]
+// Commands: predict, trend, preempt, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let FORECAST_LOG = "forge/forecast.jsonl"
+let GATE_COUNT = 8
+let CONFIG_PATH = env("HOME") + "/.airgenome/config.json"
+
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+// Load ceilings from config
+fn load_ceilings() -> auto {
+    let cpu_ceil = 90.0
+    let ram_ceil = 80.0
+    if file_exists(CONFIG_PATH) {
+        let content = read_file(CONFIG_PATH)
+        let parsed = json_parse(content)
+        cpu_ceil = to_float(to_string(parsed["cpu_ceil"]))
+        ram_ceil = to_float(to_string(parsed["ram_ceil"]))
+    }
+    return [cpu_ceil, ram_ceil]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TREND: linear regression on recent samples
+// ═══════════════════════════════════════════════════════════════════════
+
+// Load last N samples from genomes.log → per-gate RAM/CPU time series
+fn load_recent(max_samples: int) -> auto {
+    if file_exists(LOG_FILE) == false { return [] }
+    let tail_cmd = "tail -" + to_string(max_samples) + " " + LOG_FILE
+    let content = exec(tail_cmd).trim()
+    let lines = content.split("\n")
+
+    let timestamps = []
+    let ram_series = []   // [[ram_g0, ram_g1, ...], ...]
+    let cpu_series = []
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 9 {
+                let ts = to_float(fields[0].trim())
+                let ram = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let cpu = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let g = 0
+                while g < 8 {
+                    if g + 1 < len(fields) {
+                        let field = fields[g + 1]
+                        if field.contains(":") {
+                            let parts = field.split(":")
+                            if len(parts) >= 2 {
+                                let vals = parts[1].split("/")
+                                if len(vals) >= 2 {
+                                    ram[g] = to_float(vals[0])
+                                    cpu[g] = to_float(vals[1])
+                                }
+                            }
+                        }
+                    }
+                    g = g + 1
+                }
+                timestamps = timestamps + [ts]
+                ram_series = ram_series + [ram]
+                cpu_series = cpu_series + [cpu]
+            }
+        }
+        i = i + 1
+    }
+    return [timestamps, ram_series, cpu_series]
+}
+
+// Linear regression: y = a + b*x, returns [slope, intercept, r_squared]
+// x = normalized time (0..1), y = values
+fn linreg(timestamps: auto, values: auto) -> auto {
+    let n = len(timestamps)
+    if n < 3 { return [0.0, 0.0, 0.0] }
+
+    let t0 = timestamps[0]
+    let t_range = timestamps[n - 1] - t0
+    if t_range < 1.0 { t_range = 1.0 }
+
+    let sum_x = 0.0
+    let sum_y = 0.0
+    let sum_xx = 0.0
+    let sum_xy = 0.0
+    let sum_yy = 0.0
+
+    let i = 0
+    while i < n {
+        let x = (timestamps[i] - t0) / t_range
+        let y = values[i]
+        sum_x = sum_x + x
+        sum_y = sum_y + y
+        sum_xx = sum_xx + x * x
+        sum_xy = sum_xy + x * y
+        sum_yy = sum_yy + y * y
+        i = i + 1
+    }
+
+    let nf = to_float(n)
+    let denom = nf * sum_xx - sum_x * sum_x
+    if denom < 0.0001 { return [0.0, sum_y / nf, 0.0] }
+
+    let slope = (nf * sum_xy - sum_x * sum_y) / denom
+    let intercept = (sum_y - slope * sum_x) / nf
+
+    // R-squared
+    let ss_tot = sum_yy - sum_y * sum_y / nf
+    let ss_res = 0.0
+    i = 0
+    while i < n {
+        let x = (timestamps[i] - t0) / t_range
+        let pred = intercept + slope * x
+        let diff = values[i] - pred
+        ss_res = ss_res + diff * diff
+        i = i + 1
+    }
+    let r2 = 0.0
+    if ss_tot > 0.0001 { r2 = 1.0 - ss_res / ss_tot }
+
+    return [slope, intercept, r2]
+}
+
+// Predict value at future_x (1.0 = same duration into future)
+fn predict_at(reg: auto, future_x: float) -> float {
+    return reg[1] + reg[0] * future_x
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn print_predict() -> str {
+    let data = load_recent(60)
+    if len(data) == 0 {
+        println("  no data for forecasting")
+        return "ok"
+    }
+    let timestamps = data[0]
+    let ram_series = data[1]
+    let cpu_series = data[2]
+    let n = len(timestamps)
+    let ceilings = load_ceilings()
+    let cpu_ceil = ceilings[0]
+    let ram_ceil = ceilings[1]
+    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
+
+    println("")
+    println("  genome forecast — next 1 hour prediction")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  based on " + to_string(n) + " recent samples")
+    println("")
+    println("  gate          RAM now   RAM +1h   trend     CPU now   CPU +1h   alert")
+    println("  ────────────  ────────  ────────  ────────  ────────  ────────  ─────")
+
+    let alerts = 0
+    let g = 0
+    while g < 8 {
+        // Extract per-gate time series
+        let ram_vals = []
+        let cpu_vals = []
+        let si = 0
+        while si < n {
+            ram_vals = ram_vals + [ram_series[si][g]]
+            cpu_vals = cpu_vals + [cpu_series[si][g]]
+            si = si + 1
+        }
+
+        let ram_reg = linreg(timestamps, ram_vals)
+        let cpu_reg = linreg(timestamps, cpu_vals)
+
+        let ram_now = ram_vals[n - 1]
+        let cpu_now = cpu_vals[n - 1]
+        let ram_pred = predict_at(ram_reg, 1.5)  // 1.5 = ~1h ahead
+        let cpu_pred = predict_at(cpu_reg, 1.5)
+        if ram_pred < 0.0 { ram_pred = 0.0 }
+        if cpu_pred < 0.0 { cpu_pred = 0.0 }
+
+        let ram_trend = ""
+        if ram_reg[0] > 50.0 { ram_trend = "UP" }
+        if ram_reg[0] < -50.0 { ram_trend = "DOWN" }
+        if ram_reg[0] >= -50.0 { if ram_reg[0] <= 50.0 { ram_trend = "FLAT" } }
+
+        // Alert: predicted RAM exceeds threshold or CPU ceiling breach
+        let alert = ""
+        let ram_pred_pct = ram_pred * 100.0 / total_ram_mb
+        if ram_pred_pct > ram_ceil { alert = "RAM"; alerts = alerts + 1 }
+        if cpu_pred > cpu_ceil { if len(alert) > 0 { alert = alert + "+CPU" } else { alert = "CPU" }; alerts = alerts + 1 }
+
+        if ram_now > 10.0 {
+            println("  " + gate_name(g) + "\t" + to_string(to_int(ram_now)) + "MB\t" + to_string(to_int(ram_pred)) + "MB\t" + ram_trend + "\t" + to_string(to_int(cpu_now)) + "%\t" + to_string(to_int(cpu_pred)) + "%\t" + alert)
+        }
+        g = g + 1
+    }
+
+    println("")
+    if alerts > 0 {
+        println("  WARNING: " + to_string(alerts) + " ceiling breach(es) predicted in next hour")
+        println("  recommendation: run 'qos apply' or 'forecast preempt'")
+    }
+    if alerts == 0 {
+        println("  all clear — no ceiling breaches predicted")
+    }
+    println("")
+
+    // Log
+    let ts = exec("date +%s").trim()
+    let log_line = "{\"ts\":" + ts + ",\"samples\":" + to_string(n) + ",\"alerts\":" + to_string(alerts) + "}"
+    append_file(FORECAST_LOG, log_line + "\n")
+
+    return "ok"
+}
+
+fn print_trend() -> str {
+    let data = load_recent(120)
+    if len(data) == 0 {
+        println("  no data")
+        return "ok"
+    }
+    let timestamps = data[0]
+    let ram_series = data[1]
+    let n = len(timestamps)
+
+    // Compute total system RAM trend
+    let total_ram = []
+    let si = 0
+    while si < n {
+        let sum = 0.0
+        let g = 0
+        while g < 8 { sum = sum + ram_series[si][g]; g = g + 1 }
+        total_ram = total_ram + [sum]
+        si = si + 1
+    }
+
+    let reg = linreg(timestamps, total_ram)
+
+    println("")
+    println("  system RAM trend")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  samples: " + to_string(n))
+    println("  current: " + to_string(to_int(total_ram[n - 1])) + " MB")
+    println("  slope:   " + to_string(to_int(reg[0])) + " MB/period")
+    println("  R^2:     " + to_string(reg[2]))
+    println("")
+
+    let direction = "STABLE"
+    if reg[0] > 100.0 { direction = "RISING — RAM pressure increasing" }
+    if reg[0] > 500.0 { direction = "SURGING — action recommended" }
+    if reg[0] < -100.0 { direction = "FALLING — RAM pressure decreasing" }
+    println("  verdict: " + direction)
+    println("")
+    return "ok"
+}
+
+// Preemptive QoS: if forecast predicts breach, apply QoS now
+fn preempt() -> str {
+    let data = load_recent(60)
+    if len(data) == 0 {
+        println("  no data")
+        return "ok"
+    }
+    let timestamps = data[0]
+    let ram_series = data[1]
+    let cpu_series = data[2]
+    let n = len(timestamps)
+    let ceilings = load_ceilings()
+    let total_ram_mb = to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0
+
+    let need_action = 0
+    let g = 0
+    while g < 8 {
+        let ram_vals = []
+        let si = 0
+        while si < n {
+            ram_vals = ram_vals + [ram_series[si][g]]
+            si = si + 1
+        }
+        let reg = linreg(timestamps, ram_vals)
+        let pred = predict_at(reg, 1.5)
+        if pred * 100.0 / total_ram_mb > ceilings[1] { need_action = 1 }
+        g = g + 1
+    }
+
+    if need_action == 0 {
+        println("  no preemptive action needed — forecast is clear")
+        return "ok"
+    }
+
+    println("  forecast breach detected — applying preemptive QoS...")
+    // Delegate to qos apply
+    let result = exec(env("HOME") + "/Dev/hexa-lang/target/release/hexa run mk2_hexa/native/qos.hexa apply 2>&1").trim()
+    println(result)
+    return "ok"
+}
+
+fn forecast_help() -> str {
+    println("forecast v" + VERSION + " — genome trend prediction")
+    println("")
+    println("Commands:")
+    println("  predict  — per-gate 1h prediction + ceiling alerts")
+    println("  trend    — system-wide RAM trend (slope, R^2)")
+    println("  preempt  — if breach predicted, apply QoS now")
+    println("  help     — this message")
+    return "ok"
+}
+
+fn main() {
+    assert GATE_COUNT == 8
+    let argv = args()
+    let cmd = "predict"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"    { forecast_help() }
+    if cmd == "predict" { print_predict() }
+    if cmd == "trend"   { print_trend() }
+    if cmd == "preempt" { preempt() }
+}
+
+main()

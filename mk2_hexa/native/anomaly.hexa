@@ -1,0 +1,385 @@
+// airgenome/mk2_hexa/native/anomaly.hexa — signature anomaly detection
+//
+// Builds a "normal" baseline from historical genomes.log, then
+// flags current samples that deviate beyond z-score threshold.
+//
+// "새벽 3시에 Chrome이 2GB 먹고 있다" → anomaly alert
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/anomaly.hexa [command]
+// Commands: check, baseline, history, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "1.0.0"
+let LOG_FILE = "genomes.log"
+let ANOMALY_LOG = "forge/anomaly.jsonl"
+let GATE_COUNT = 8
+let Z_THRESHOLD = 2.0  // z-score > 2.0 = anomaly
+
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+
+fn load_gate_names() -> auto {
+    let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
+    if file_exists(GATE_CFG_PATH) == false { return names }
+    let content = read_file(GATE_CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            names[parsed["gate"]] = parsed["name"]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+let GATE_NAMES = load_gate_names()
+
+fn gate_name(g: int) -> str {
+    if g >= 0 { if g < 8 { return GATE_NAMES[g] } }
+    return "unknown"
+}
+
+fn hour_to_bucket(h: int) -> int {
+    if h >= 5  { if h < 8  { return 0 } }
+    if h >= 8  { if h < 12 { return 1 } }
+    if h >= 12 { if h < 17 { return 2 } }
+    if h >= 17 { if h < 21 { return 3 } }
+    return 4
+}
+
+fn bucket_name(b: int) -> str {
+    if b == 0 { return "dawn" }
+    if b == 1 { return "morning" }
+    if b == 2 { return "afternoon" }
+    if b == 3 { return "evening" }
+    return "night"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BASELINE: per-gate per-bucket mean + stddev
+// ═══════════════════════════════════════════════════════════════════════
+
+// Returns: [ram_mean[5][8], ram_std[5][8], cpu_mean[5][8], cpu_std[5][8], counts[5][8]]
+fn build_baseline() -> auto {
+    if file_exists(LOG_FILE) == false { return [] }
+    let content = read_file(LOG_FILE)
+    let lines = content.split("\n")
+
+    // Accumulators: 5 buckets x 8 gates
+    let ram_sum = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let ram_sq = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let cpu_sum = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let cpu_sq = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let counts = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let fields = line.split("\t")
+            if len(fields) >= 9 {
+                let ts_str = fields[0].trim()
+                let ts = to_int(ts_str)
+                if ts > 0 {
+                    let hour_str = exec("date -r " + ts_str + " +%H 2>/dev/null").trim()
+                    let hour = to_int(hour_str)
+                    let b = hour_to_bucket(hour)
+
+                    let g = 0
+                    while g < 8 {
+                        if g + 1 < len(fields) {
+                            let field = fields[g + 1]
+                            if field.contains(":") {
+                                let parts = field.split(":")
+                                if len(parts) >= 2 {
+                                    let vals = parts[1].split("/")
+                                    if len(vals) >= 2 {
+                                        let r = to_float(vals[0])
+                                        let c = to_float(vals[1])
+                                        ram_sum[b][g] = ram_sum[b][g] + r
+                                        ram_sq[b][g] = ram_sq[b][g] + r * r
+                                        cpu_sum[b][g] = cpu_sum[b][g] + c
+                                        cpu_sq[b][g] = cpu_sq[b][g] + c * c
+                                        counts[b][g] = counts[b][g] + 1.0
+                                    }
+                                }
+                            }
+                        }
+                        g = g + 1
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    // Compute mean + std
+    let ram_mean = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let ram_std = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let cpu_mean = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+    let cpu_std = [
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
+        [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+    ]
+
+    let b = 0
+    while b < 5 {
+        let g = 0
+        while g < 8 {
+            let n = counts[b][g]
+            if n > 1.0 {
+                ram_mean[b][g] = ram_sum[b][g] / n
+                cpu_mean[b][g] = cpu_sum[b][g] / n
+                let rv = ram_sq[b][g] / n - ram_mean[b][g] * ram_mean[b][g]
+                let cv = cpu_sq[b][g] / n - cpu_mean[b][g] * cpu_mean[b][g]
+                if rv < 0.0 { rv = 0.0 }
+                if cv < 0.0 { cv = 0.0 }
+                ram_std[b][g] = to_float(exec("python3 -c \"import math;print(math.sqrt(" + to_string(rv) + "))\" 2>/dev/null").trim())
+                cpu_std[b][g] = to_float(exec("python3 -c \"import math;print(math.sqrt(" + to_string(cv) + "))\" 2>/dev/null").trim())
+            }
+            g = g + 1
+        }
+        b = b + 1
+    }
+
+    return [ram_mean, ram_std, cpu_mean, cpu_std, counts]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CHECK: compare current snapshot vs baseline
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_anomalies() -> str {
+    let baseline = build_baseline()
+    if len(baseline) == 0 {
+        println("  no baseline data")
+        return "ok"
+    }
+    let ram_mean = baseline[0]
+    let ram_std = baseline[1]
+    let cpu_mean = baseline[2]
+    let cpu_std = baseline[3]
+
+    // Current hour → bucket
+    let hour = to_int(exec("date +%H").trim())
+    let b = hour_to_bucket(hour)
+    let ts = exec("date '+%Y-%m-%d %H:%M:%S'").trim()
+
+    // Get current values from last log line
+    if file_exists(LOG_FILE) == false {
+        println("  no current data")
+        return "ok"
+    }
+    let last = exec("tail -1 " + LOG_FILE).trim()
+    let fields = last.split("\t")
+    if len(fields) < 9 {
+        println("  incomplete log line")
+        return "ok"
+    }
+
+    println("")
+    println("  anomaly check — " + ts + " [" + bucket_name(b) + "]")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let anomaly_count = 0
+    let g = 0
+    while g < 8 {
+        if g + 1 < len(fields) {
+            let field = fields[g + 1]
+            if field.contains(":") {
+                let parts = field.split(":")
+                if len(parts) >= 2 {
+                    let vals = parts[1].split("/")
+                    if len(vals) >= 2 {
+                        let r = to_float(vals[0])
+                        let c = to_float(vals[1])
+
+                        // Z-score for RAM
+                        let r_z = 0.0
+                        if ram_std[b][g] > 1.0 {
+                            r_z = (r - ram_mean[b][g]) / ram_std[b][g]
+                        }
+                        // Z-score for CPU
+                        let c_z = 0.0
+                        if cpu_std[b][g] > 0.1 {
+                            c_z = (c - cpu_mean[b][g]) / cpu_std[b][g]
+                        }
+
+                        let r_flag = ""
+                        let c_flag = ""
+                        if r_z > Z_THRESHOLD { r_flag = " ANOMALY"; anomaly_count = anomaly_count + 1 }
+                        if r_z < -Z_THRESHOLD { r_flag = " (low)" }
+                        if c_z > Z_THRESHOLD { c_flag = " ANOMALY"; anomaly_count = anomaly_count + 1 }
+
+                        if r_z > Z_THRESHOLD {
+                            println("  " + gate_name(g) + " RAM: " + to_string(to_int(r)) + "MB (baseline " + to_string(to_int(ram_mean[b][g])) + "+-" + to_string(to_int(ram_std[b][g])) + ")  z=" + to_string(r_z) + r_flag)
+                        }
+                        if c_z > Z_THRESHOLD {
+                            println("  " + gate_name(g) + " CPU: " + to_string(c) + "% (baseline " + to_string(cpu_mean[b][g]) + "+-" + to_string(cpu_std[b][g]) + ")  z=" + to_string(c_z) + c_flag)
+                        }
+                    }
+                }
+            }
+        }
+        g = g + 1
+    }
+
+    if anomaly_count == 0 {
+        println("  all gates within normal range for " + bucket_name(b))
+    }
+    if anomaly_count > 0 {
+        println("")
+        println("  " + to_string(anomaly_count) + " anomaly(s) detected — consider 'qos apply'")
+    }
+    println("")
+
+    // Log
+    let log_ts = exec("date +%s").trim()
+    let log_line = "{\"ts\":" + log_ts + ",\"bucket\":\"" + bucket_name(b) + "\",\"anomalies\":" + to_string(anomaly_count) + "}"
+    append_file(ANOMALY_LOG, log_line + "\n")
+
+    return "ok"
+}
+
+fn print_baseline() -> str {
+    let baseline = build_baseline()
+    if len(baseline) == 0 {
+        println("  no data")
+        return "ok"
+    }
+    let ram_mean = baseline[0]
+    let ram_std = baseline[1]
+    let counts = baseline[4]
+
+    println("")
+    println("  anomaly baseline — normal RAM signatures per time bucket")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let b = 0
+    while b < 5 {
+        println("  " + bucket_name(b) + ":")
+        let g = 0
+        while g < 8 {
+            if counts[b][g] > 1.0 {
+                println("    " + gate_name(g) + "\t" + to_string(to_int(ram_mean[b][g])) + " +/- " + to_string(to_int(ram_std[b][g])) + " MB  (n=" + to_string(to_int(counts[b][g])) + ")")
+            }
+            g = g + 1
+        }
+        println("")
+        b = b + 1
+    }
+    return "ok"
+}
+
+fn print_history() -> str {
+    if file_exists(ANOMALY_LOG) == false {
+        println("  no anomaly history")
+        return "ok"
+    }
+    let tail = exec("tail -15 " + ANOMALY_LOG).trim()
+    let lines = tail.split("\n")
+
+    println("")
+    println("  anomaly history")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            let ts_fmt = exec("date -r " + to_string(parsed["ts"]) + " '+%m-%d %H:%M' 2>/dev/null").trim()
+            let count = to_int(to_string(parsed["anomalies"]))
+            let icon = "OK"
+            if count > 0 { icon = "ALERT(" + to_string(count) + ")" }
+            println("  [" + ts_fmt + "] " + parsed["bucket"] + "  " + icon)
+        }
+        i = i + 1
+    }
+    println("")
+    return "ok"
+}
+
+fn anomaly_help() -> str {
+    println("anomaly v" + VERSION + " — signature anomaly detection")
+    println("")
+    println("Commands:")
+    println("  check    — compare current snapshot vs baseline (z-score)")
+    println("  baseline — show normal signatures per time bucket")
+    println("  history  — recent anomaly alerts")
+    println("  help     — this message")
+    println("")
+    println("Threshold: z-score > " + to_string(Z_THRESHOLD) + " = anomaly")
+    return "ok"
+}
+
+fn main() {
+    assert GATE_COUNT == 8
+    let argv = args()
+    let cmd = "check"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"     { anomaly_help() }
+    if cmd == "check"    { check_anomalies() }
+    if cmd == "baseline" { print_baseline() }
+    if cmd == "history"  { print_history() }
+}
+
+main()
