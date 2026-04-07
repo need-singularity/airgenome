@@ -11,6 +11,9 @@ CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
   [ -n "$_h" ] && UBU_HOST="$_h"; [ -n "$_p" ] && UBU_PORT="$_p"; [ -n "$_s" ] && UBU_SSH="$_s"; [ -n "$_t" ] && TS_HOST="$_t"
 }
 
+# budget cap — 동시 wrapper 수 제한 (맥 폭주 방지)
+_AG_N=$(pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l); [ "${_AG_N:-0}" -ge "${AG_BUDGET_CAP:-20}" ] && GATE_LOCAL=1
+
 # 강제 로컬
 [ "$GATE_LOCAL" = "1" ] && exec "$LOCAL_BIN" "$@"
 

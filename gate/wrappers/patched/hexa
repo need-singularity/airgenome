@@ -13,6 +13,9 @@ fi
 echo $$ > "$_AGLOCK/pid"
 trap 'rm -rf "$_AGLOCK"' EXIT
 
+# budget cap — 동시 wrapper 수 제한 (맥 폭주 방지)
+_AG_N=$(pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l); [ "${_AG_N:-0}" -ge "${AG_BUDGET_CAP:-20}" ] && GATE_LOCAL=1
+
 # airgenome gate — hexa → Ubuntu 오프로드 (with pre-sync)
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"

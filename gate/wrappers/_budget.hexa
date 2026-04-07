@@ -1,0 +1,57 @@
+// airgenome process budget cap — wrapper 동시 실행 수 제한
+// 사용: wrapper 스크립트에서 budget_check() 결과로 GATE_LOCAL 결정
+//
+// CLI: hexa run _budget.hexa check
+//   exit 0 = 통과, exit 1 = cap 초과 (GATE_LOCAL=1 권장)
+
+let DEFAULT_CAP = 20
+let RETRIES = 3
+let WAIT_SEC = 2
+
+fn get_cap() -> int {
+    let env_cap = env("AG_BUDGET_CAP")
+    if len(env_cap) > 0 { return to_int(env_cap) }
+    return DEFAULT_CAP
+}
+
+fn count_wrappers() -> int {
+    let out = exec("pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l").trim()
+    if len(out) == 0 { return 0 }
+    return to_int(out)
+}
+
+fn budget_check() -> bool {
+    let cap = get_cap()
+    let count = count_wrappers()
+    if count < cap { return true }
+
+    let attempt = 0
+    while attempt < RETRIES {
+        exec("sleep " + to_string(WAIT_SEC))
+        count = count_wrappers()
+        if count < cap { return true }
+        attempt = attempt + 1
+    }
+    return false
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "check"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "check" {
+        let ok = budget_check()
+        if ok {
+            println("budget:ok count=" + to_string(count_wrappers()) + "/" + to_string(get_cap()))
+        } else {
+            println("budget:over count=" + to_string(count_wrappers()) + "/" + to_string(get_cap()) + " → GATE_LOCAL=1")
+            exec("exit 1")
+        }
+    }
+    if cmd == "status" {
+        println("wrappers=" + to_string(count_wrappers()) + " cap=" + to_string(get_cap()))
+    }
+}
+
+main()

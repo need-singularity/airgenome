@@ -24,6 +24,9 @@ if [ -f "$CFG" ]; then
   [ -n "$_t" ] && TS_HOST="$_t"
 fi
 
+# budget cap — 동시 wrapper 수 제한 (맥 폭주 방지)
+_AG_N=$(pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l); [ "${_AG_N:-0}" -ge "${AG_BUDGET_CAP:-20}" ] && HEXA_LOCAL=1
+
 # Wi-Fi → Tailscale → 없음
 GATE_HOST=""
 if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
