@@ -257,8 +257,19 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
     [ "$SAVE_CPU" -gt 99 ] 2>/dev/null && SAVE_CPU=99
     [ "$SAVE_RAM" -gt 99 ] 2>/dev/null && SAVE_RAM=99
 
+    # ── GATE STATUS ────────────────────────────────────────────
+    GATE_CFG="$DIR/nexus/shared/gate_config.jsonl"
+    UBU_HOST=$(awk -F'"' '/"remote_host"/{print $8}' "$GATE_CFG" 2>/dev/null)
+    UBU_PORT=$(awk -F'"' '/"remote_port"/{print $8}' "$GATE_CFG" 2>/dev/null)
+    : "${UBU_HOST:=192.168.50.119}" "${UBU_PORT:=9900}"
+    if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
+      GATE="online"
+    else
+      GATE="offline"
+    fi
+
     cat > "$STATE" <<EOF
-{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM}
+{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM,"gate":"$GATE"}
 EOF
     sleep 5
   done
@@ -313,6 +324,10 @@ menu.addItem(swapItem);
 var saveItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Save ...'), null, $(''));
 saveItem.enabled = false;
 menu.addItem(saveItem);
+
+var gateItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Gate ...'), null, $(''));
+gateItem.enabled = false;
+menu.addItem(gateItem);
 
 menu.addItem($.NSMenuItem.separatorItem);
 
@@ -385,7 +400,8 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var saveRamBar = j.save_ram || 0;
     var saveTotalBar = Math.min(Math.round((saveCpuBar + saveRamBar) / 2), 99);
     var saveTag = saveTotalBar > 0 ? ' \u2193' + saveTotalBar + '%' : '';
-    statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag + saveTag);
+    var gateIcon = j.gate === 'online' ? ' \uD83D\uDFE2' : ' \uD83D\uDD34';
+    statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag + saveTag + gateIcon);
 
     var bw = 16;
     cpuItem.title  = $('CPU  ' + bar(j.cpu, cc, bw)  + '  ' + j.cpu  + '/' + cc + '%');
@@ -398,6 +414,12 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var saveTotal = Math.min(Math.round((saveCpu + saveRam) / 2), 99);
     var saveIcon = saveTotal > 0 ? '\u2193' : '\u2500';
     saveItem.title = $(saveIcon + ' Save  CPU -' + saveCpu + '%  RAM -' + saveRam + '%  (\u2248' + saveTotal + '% \uC808\uAC10)');
+
+    if (j.gate === 'online') {
+        gateItem.title = $('\uD83D\uDFE2 Gate \u2014 Ubuntu online');
+    } else {
+        gateItem.title = $('\uD83D\uDD34 Gate \u2014 Ubuntu offline (local mode)');
+    }
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');
     var freeMB = j.free_mb || 0;
