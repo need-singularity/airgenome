@@ -271,13 +271,17 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
       UBU_RAM_AVAIL=$(echo "$UBU_STATUS" | grep -o 'avail=[^ ]*' | cut -d= -f2 | sed 's/MB.*//')
       : "${UBU_LOAD:=0}" "${UBU_RAM_USED:=0}" "${UBU_RAM_TOTAL:=1}" "${UBU_RAM_AVAIL:=0}"
       UBU_RAM_PCT=$((UBU_RAM_USED * 100 / (UBU_RAM_TOTAL > 0 ? UBU_RAM_TOTAL : 1)))
+      UBU_SSH=$(awk -F'"' '/"ssh_alias"/{print $8}' "$GATE_CFG" 2>/dev/null)
+      : "${UBU_SSH:=ubu}"
+      UBU_JOBS=$(ssh -o ConnectTimeout=1 "$UBU_SSH" "find /tmp/airgenome/gate_files -mmin -60 -type f 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ')
+      : "${UBU_JOBS:=0}"
     else
       GATE="offline"
-      UBU_LOAD="0"; UBU_RAM_PCT=0; UBU_RAM_USED=0; UBU_RAM_TOTAL=0; UBU_RAM_AVAIL=0
+      UBU_LOAD="0"; UBU_RAM_PCT=0; UBU_RAM_USED=0; UBU_RAM_TOTAL=0; UBU_RAM_AVAIL=0; UBU_JOBS=0
     fi
 
     cat > "$STATE" <<EOF
-{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM,"gate":"$GATE","ubu_load":"$UBU_LOAD","ubu_ram_pct":$UBU_RAM_PCT,"ubu_ram_used":$UBU_RAM_USED,"ubu_ram_total":$UBU_RAM_TOTAL,"ubu_ram_avail":$UBU_RAM_AVAIL}
+{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM,"gate":"$GATE","ubu_load":"$UBU_LOAD","ubu_ram_pct":$UBU_RAM_PCT,"ubu_ram_used":$UBU_RAM_USED,"ubu_ram_total":$UBU_RAM_TOTAL,"ubu_ram_avail":$UBU_RAM_AVAIL,"ubu_jobs":$UBU_JOBS}
 EOF
     sleep 5
   done
@@ -428,7 +432,9 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         var uRamPct = j.ubu_ram_pct || 0;
         var uRamAvail = j.ubu_ram_avail || 0;
         var uRamAvailG = Math.round(uRamAvail / 1024 * 10) / 10;
-        gateItem.title = $('\u25CF Gate  load=' + uLoad + '  RAM ' + uRamPct + '%  (' + uRamAvailG + 'G free)');
+        var uJobs = j.ubu_jobs || 0;
+        var jobsTag = uJobs > 0 ? '  \u2191' + uJobs + 'jobs' : '';
+        gateItem.title = $('\u25CF Gate  load=' + uLoad + '  RAM ' + uRamPct + '%  (' + uRamAvailG + 'G free)' + jobsTag);
     } else {
         gateItem.title = $('\u25CB Gate \u2014 offline (local mode)');
     }
