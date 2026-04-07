@@ -1,0 +1,439 @@
+// airgenome/mk2_hexa/native/offload.hexa — Ubuntu resource offload via SSH
+//
+// MacBook에서 무거운 연산을 Ubuntu로 위임하고 결과를 받아옴.
+// Wi-Fi SSH 기반, Prime Directive 준수 (양쪽 프로세스 kill 없음).
+//
+// Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/offload.hexa [command]
+// Commands: status, exec, bench, genome-remote, sync, help
+
+let VERSION = "1.0.0"
+let REMOTE = "ubu"
+let LOG_FILE = "offload.log"
+let REMOTE_DIR = "/tmp/airgenome"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SSH helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ssh_cmd(cmd: str) -> str {
+    write_file("/tmp/_ag_ssh.sh", cmd)
+    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>&1")
+    if to_string(result).contains("exec error") { return to_string(result) }
+    return result.trim()
+}
+
+fn ssh_quiet(cmd: str) -> str {
+    write_file("/tmp/_ag_ssh.sh", cmd)
+    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>/dev/null")
+    if to_string(result).contains("exec error") { return "" }
+    return result.trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STATUS — Ubuntu 자원 현황
+// ═══════════════════════════════════════════════════════════════════════
+
+fn remote_status() -> str {
+    println("")
+    println("  offload v" + VERSION + " — Ubuntu resource bridge")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Connectivity
+    let ping = exec("ping -c 1 -W 1000 192.168.50.119 2>/dev/null | grep 'time=' | awk -F'time=' '{print $2}'").trim()
+    if len(ping) == 0 {
+        println("  [ERROR] Ubuntu unreachable")
+        return "error"
+    }
+    println("  ping: " + ping)
+
+    // Host info
+    let hostname = ssh_quiet("hostname")
+    let kernel = ssh_quiet("uname -r")
+    println("  host: " + hostname + " (" + kernel + ")")
+
+    // CPU
+    let cpu_model = ssh_quiet("grep 'model name' /proc/cpuinfo | head -1 | sed 's/.*: //'")
+    let cores = ssh_quiet("nproc")
+    let load = ssh_quiet("cat /proc/loadavg | awk '{print $1, $2, $3}'")
+    println("  cpu: " + cpu_model.trim() + " (" + cores + " threads)")
+    println("  load: " + load)
+
+    // RAM
+    let mem_total = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $2}'")
+    let mem_avail = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $7}'")
+    let mem_used = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $3}'")
+    println("  ram: " + mem_used + "MB / " + mem_total + "MB (avail " + mem_avail + "MB)")
+
+    // Disk
+    let disk = ssh_quiet("df -h / | tail -1 | awk '{print $3, $2, $5}'")
+    println("  disk: " + disk)
+
+    // Top processes
+    println("")
+    println("  top 5 processes (CPU):")
+    let top5 = ssh_quiet("ps aux --sort=-%cpu | head -6 | tail -5 | awk '{print $11, $3, int($6/1024)}'")
+    println("    " + top5)
+
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EXEC — 원격 명령 실행
+// ═══════════════════════════════════════════════════════════════════════
+
+fn remote_exec(cmd: str) -> str {
+    let ts_start = exec("date +%s").trim()
+    println("  [offload] executing on Ubuntu: " + cmd)
+
+    let result = ssh_cmd(cmd)
+
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+    println("  [offload] done in " + to_string(elapsed) + "s")
+    println(result)
+
+    // Log
+    let log_line = ts_start + "\texec\t" + cmd + "\t" + to_string(elapsed) + "s\n"
+    append_file(LOG_FILE, log_line)
+
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BENCH — 양쪽 성능 비교
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run_bench() -> str {
+    println("")
+    println("  offload bench — MacBook vs Ubuntu")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // CPU bench: pi calculation
+    let pi_cmd = "python3 -c \"import time; s=time.time(); sum(1/k for k in range(1,10000001)); print(f'{time.time()-s:.3f}s')\""
+
+    println("  [MacBook] CPU bench (10M sum)...")
+    let mac_result = exec(pi_cmd + " 2>&1").trim()
+    println("    MacBook: " + mac_result)
+
+    println("  [Ubuntu]  CPU bench (10M sum)...")
+    let ubu_result = ssh_cmd(pi_cmd)
+    println("    Ubuntu:  " + ubu_result)
+
+    // RAM bench
+    println("")
+    let ram_cmd = "python3 -c \"import time; s=time.time(); x=[i for i in range(5000000)]; print(f'{time.time()-s:.3f}s')\""
+
+    println("  [MacBook] RAM bench (5M list)...")
+    let mac_ram = exec(ram_cmd + " 2>&1").trim()
+    println("    MacBook: " + mac_ram)
+
+    println("  [Ubuntu]  RAM bench (5M list)...")
+    let ubu_ram = ssh_cmd(ram_cmd)
+    println("    Ubuntu:  " + ubu_ram)
+
+    // Network latency
+    println("")
+    let lat = exec("ping -c 5 192.168.50.119 2>/dev/null | tail -1").trim()
+    println("  network: " + lat)
+
+    println("")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Log
+    let ts = exec("date +%s").trim()
+    append_file(LOG_FILE, ts + "\tbench\tmac=" + mac_result + "\tubu=" + ubu_result + "\n")
+
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GENOME-REMOTE — Ubuntu 프로세스를 hexagon gate로 투영
+// ═══════════════════════════════════════════════════════════════════════
+
+fn genome_remote() -> str {
+    println("")
+    println("  offload genome-remote — Ubuntu process projection")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Get Ubuntu processes
+    let ps_data = ssh_quiet("ps -eo rss,%cpu,comm --sort=-rss | head -20")
+    let lines = ps_data.split("\n")
+    println("  top 20 processes on Ubuntu:")
+    println(ps_data)
+
+    // Total RAM
+    let mem_total = to_float(ssh_quiet("LANG=C free -m | grep Mem | awk '{print $2}'"))
+
+    // Simple 4-gate projection for Ubuntu
+    // gate 0: system (kernel, systemd)
+    // gate 1: runtime (python, node, java)
+    // gate 2: network (ssh, nginx)
+    // gate 3: other
+    let gc = [0.0, 0.0, 0.0, 0.0]
+    let gr = [0.0, 0.0, 0.0, 0.0]
+    let names = ["system", "runtime", "network", "other"]
+
+    let i = 1
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = line.split(" ")
+            // Simple classify
+            let gate = 3
+            if line.contains("kernel") { gate = 0 }
+            if line.contains("systemd") { gate = 0 }
+            if line.contains("kworker") { gate = 0 }
+            if line.contains("python") { gate = 1 }
+            if line.contains("node") { gate = 1 }
+            if line.contains("java") { gate = 1 }
+            if line.contains("cargo") { gate = 1 }
+            if line.contains("rustc") { gate = 1 }
+            if line.contains("ssh") { gate = 2 }
+            if line.contains("nginx") { gate = 2 }
+
+            // Extract first two numeric fields
+            let fields = []
+            let p = 0
+            while p < len(parts) {
+                let part = parts[p].trim()
+                if len(part) > 0 {
+                    fields = fields + [part]
+                }
+                p = p + 1
+            }
+            if len(fields) >= 2 {
+                let rss = to_float(fields[0]) / 1024.0
+                let cpu = to_float(fields[1])
+                gr[gate] = gr[gate] + rss
+                gc[gate] = gc[gate] + cpu
+            }
+        }
+        i = i + 1
+    }
+
+    println("")
+    println("  Ubuntu 4-gate projection:")
+    let g = 0
+    while g < 4 {
+        let ram_pct = gr[g] / mem_total * 100.0
+        println("    " + names[g] + "\t" + to_string(to_int(gr[g])) + "MB (" + to_string(to_int(ram_pct)) + "%)  CPU " + to_string(to_int(gc[g])) + "%")
+        g = g + 1
+    }
+
+    // Log
+    let ts = exec("date +%s").trim()
+    append_file(LOG_FILE, ts + "\tgenome-remote\tsystem=" + to_string(to_int(gr[0])) + "MB\truntime=" + to_string(to_int(gr[1])) + "MB\n")
+
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYNC — 결과 파일 동기화
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sync_results() -> str {
+    // Ensure remote dir
+    ssh_quiet("mkdir -p " + REMOTE_DIR)
+
+    println("  [sync] MacBook → Ubuntu: genomes.log")
+    exec("scp genomes.log " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+
+    println("  [sync] Ubuntu → MacBook: results")
+    exec("scp " + REMOTE + ":" + REMOTE_DIR + "/*.log . 2>/dev/null")
+
+    println("  [sync] done")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HEXA — hexa 스크립트를 Ubuntu에서 실행
+// ═══════════════════════════════════════════════════════════════════════
+
+fn remote_hexa(script_args: str) -> str {
+    // Ensure hexa binary exists on Ubuntu
+    let check = ssh_quiet("test -f /tmp/hexa-build/hexa-lang/target/release/hexa && echo ok")
+    if check != "ok" {
+        println("  [offload] hexa not built on Ubuntu. Building...")
+        let build = ssh_cmd("source ~/.cargo/env && mkdir -p /tmp/hexa-build && cd /tmp/hexa-build && git clone https://github.com/need-singularity/hexa-lang.git 2>/dev/null; cd hexa-lang && git pull && cargo build --release")
+        println(build)
+    }
+
+    // Sync the script to Ubuntu
+    let parts = script_args.split(" ")
+    let script = parts[0]
+    println("  [offload] syncing " + script + " → Ubuntu")
+    exec("scp " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+
+    // Sync hexa.toml and dependencies
+    exec("scp hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("ssh " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
+    exec("scp $HOME/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+
+    // Extract just the filename
+    let fname = script
+    if script.contains("/") {
+        let sparts = script.split("/")
+        fname = sparts[len(sparts) - 1]
+    }
+
+    // Run on Ubuntu
+    let ts_start = exec("date +%s").trim()
+    let remote_cmd = "cd " + REMOTE_DIR + " && /tmp/hexa-build/hexa-lang/target/release/hexa run " + fname
+    if len(parts) > 1 {
+        let i = 1
+        while i < len(parts) {
+            remote_cmd = remote_cmd + " " + parts[i]
+            i = i + 1
+        }
+    }
+    println("  [offload] running on Ubuntu: " + remote_cmd)
+    let result = ssh_cmd(remote_cmd)
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+    println(result)
+    println("  [offload] hexa done in " + to_string(elapsed) + "s")
+
+    append_file(LOG_FILE, ts_start + "\thexa\t" + script_args + "\t" + to_string(elapsed) + "s\n")
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PYTHON — python 스크립트를 Ubuntu에서 실행
+// ═══════════════════════════════════════════════════════════════════════
+
+fn remote_python(script_args: str) -> str {
+    let parts = script_args.split(" ")
+    let script = parts[0]
+
+    // Sync script
+    println("  [offload] syncing " + script + " → Ubuntu")
+    exec("ssh " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
+    exec("scp " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+
+    let fname = script
+    if script.contains("/") {
+        let sparts = script.split("/")
+        fname = sparts[len(sparts) - 1]
+    }
+
+    let ts_start = exec("date +%s").trim()
+    let remote_cmd = "cd " + REMOTE_DIR + " && python3 " + fname
+    if len(parts) > 1 {
+        let i = 1
+        while i < len(parts) {
+            remote_cmd = remote_cmd + " " + parts[i]
+            i = i + 1
+        }
+    }
+    println("  [offload] running on Ubuntu: " + remote_cmd)
+    let result = ssh_cmd(remote_cmd)
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+    println(result)
+    println("  [offload] python done in " + to_string(elapsed) + "s")
+
+    append_file(LOG_FILE, ts_start + "\tpython\t" + script_args + "\t" + to_string(elapsed) + "s\n")
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELP
+// ═══════════════════════════════════════════════════════════════════════
+
+fn offload_help() -> str {
+    println("offload v" + VERSION + " — Ubuntu resource bridge over SSH")
+    println("")
+    println("Usage: offload <command> [args]")
+    println("")
+    println("Commands:")
+    println("  status         — Ubuntu resource status (CPU/RAM/disk/load)")
+    println("  exec <cmd>     — run command on Ubuntu, return result")
+    println("  hexa <file>    — run .hexa script on Ubuntu (auto-sync + build)")
+    println("  python <file>  — run .py script on Ubuntu (auto-sync)")
+    println("  bench          — CPU/RAM benchmark: MacBook vs Ubuntu")
+    println("  genome-remote  — project Ubuntu processes through hexagon gate")
+    println("  sync           — sync genome logs between MacBook ↔ Ubuntu")
+    println("  help           — show this message")
+    println("")
+    println("Remote: " + REMOTE + " (192.168.50.119)")
+    println("Prime directive: observe only, never kill (both sides)")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let cmd = "status"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "help" { offload_help() }
+    if cmd == "status" { remote_status() }
+    if cmd == "bench" { run_bench() }
+    if cmd == "genome-remote" { genome_remote() }
+    if cmd == "sync" { sync_results() }
+    if cmd == "hexa" {
+        let hexa_args = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(hexa_args) > 0 { hexa_args = hexa_args + " " }
+                hexa_args = hexa_args + argv[i]
+                i = i + 1
+            }
+        }
+        if len(hexa_args) > 0 { remote_hexa(hexa_args) }
+        if len(hexa_args) == 0 { println("  [error] usage: offload hexa <script.hexa> [args]") }
+    }
+    if cmd == "python" {
+        let py_args = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(py_args) > 0 { py_args = py_args + " " }
+                py_args = py_args + argv[i]
+                i = i + 1
+            }
+        }
+        if len(py_args) > 0 { remote_python(py_args) }
+        if len(py_args) == 0 { println("  [error] usage: offload python <script.py> [args]") }
+    }
+    if cmd == "exec" {
+        let exec_cmd = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(exec_cmd) > 0 { exec_cmd = exec_cmd + " " }
+                exec_cmd = exec_cmd + argv[i]
+                i = i + 1
+            }
+        }
+        if len(exec_cmd) > 0 {
+            remote_exec(exec_cmd)
+        }
+        if len(exec_cmd) == 0 {
+            println("  [error] usage: offload exec <command>")
+        }
+    }
+
+    let known = cmd == "help"
+    if cmd == "status" { known = true }
+    if cmd == "bench" { known = true }
+    if cmd == "genome-remote" { known = true }
+    if cmd == "sync" { known = true }
+    if cmd == "exec" { known = true }
+    if cmd == "hexa" { known = true }
+    if cmd == "python" { known = true }
+    if known == false {
+        println("unknown command: " + cmd)
+        offload_help()
+    }
+}
+
+main()
