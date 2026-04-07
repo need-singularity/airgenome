@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": ".shared/hooks/block-forbidden-ext.sh"
+            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/airgenome/.claude/hooks/block-forbidden-ext.hexa"
           }
         ]
       }

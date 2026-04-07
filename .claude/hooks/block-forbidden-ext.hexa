@@ -1,0 +1,39 @@
+// block-forbidden-ext.hexa — .py/.rs/.sh 신규 작성 차단 (block-forbidden-ext.sh 대체)
+// HEXA-FIRST 규칙 적용. 기존 파일 편집은 허용, Write로 신규 작성만 차단.
+
+let stdin_data = read_stdin()
+
+// JSON에서 필드 추출
+fn json_field(json_text: str, field: str) -> str {
+    let key = "\"" + field + "\""
+    if json_text.contains(key) == false { return "" }
+    let parts = json_text.split(key)
+    if parts.len() < 2 { return "" }
+    let after = parts[1].trim()
+    if after.starts_with(":") == false { return "" }
+    let val_part = after.split(":")[1].trim()
+    if val_part.starts_with("\"") {
+        let inner = val_part.split("\"")
+        if inner.len() >= 2 { return inner[1] }
+    }
+    return ""
+}
+
+let tool = json_field(stdin_data, "tool_name")
+let file_path = json_field(stdin_data, "file_path")
+
+if len(file_path) == 0 { return }
+
+// Write (신규 파일 생성)만 차단, Edit (기존 파일 수정)은 허용
+if tool == "Write" {
+    let is_forbidden = file_path.ends_with(".py") || file_path.ends_with(".rs") || file_path.ends_with(".sh")
+    if is_forbidden {
+        // 기존 파일이면 허용 (덮어쓰기)
+        let exists = exec("test -f '" + file_path + "' && echo y || echo n").trim()
+        if exists == "y" { return }
+
+        // 신규 작성 차단
+        println("BLOCKED: " + file_path + " — .py/.rs/.sh 신규 작성 금지. .hexa로 작성하세요. (CLAUDE.md 규칙 0)")
+        exit(2)
+    }
+}
