@@ -1,0 +1,65 @@
+#!/bin/bash
+# hexa gate wrapper — 모든 hexa run을 Wi-Fi → Tailscale → 로컬 자동 전환
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOCAL_BIN="$SELF_DIR/hexa-bin-real"
+
+UBU_HOST="192.168.50.119"
+UBU_PORT="9900"
+UBU_SSH="ubu"
+UBU_DIR="/tmp/airgenome"
+TS_HOST=""
+CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
+
+if [ -f "$CFG" ]; then
+  _h=$(awk -F'"' '/"remote_host"/{print $8}' "$CFG" 2>/dev/null)
+  _p=$(awk -F'"' '/"remote_port"/{print $8}' "$CFG" 2>/dev/null)
+  _s=$(awk -F'"' '/"ssh_alias"/{print $8}' "$CFG" 2>/dev/null)
+  _d=$(awk -F'"' '/"remote_dir"/{print $8}' "$CFG" 2>/dev/null)
+  _t=$(awk -F'"' '/"tailscale_host"/{print $8}' "$CFG" 2>/dev/null)
+  [ -n "$_h" ] && UBU_HOST="$_h"
+  [ -n "$_p" ] && UBU_PORT="$_p"
+  [ -n "$_s" ] && UBU_SSH="$_s"
+  [ -n "$_d" ] && UBU_DIR="$_d"
+  [ -n "$_t" ] && TS_HOST="$_t"
+fi
+
+# Wi-Fi → Tailscale → 없음
+GATE_HOST=""
+if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
+  GATE_HOST="$UBU_HOST"
+elif [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null; then
+  GATE_HOST="$TS_HOST"
+fi
+
+# HEXA_LOCAL=1 강제 로컬
+if [ "$HEXA_LOCAL" = "1" ] || [ -z "$GATE_HOST" ]; then
+  exec "$LOCAL_BIN" "$@"
+fi
+
+# run이 아니면 로컬
+if [ "$1" != "run" ] || [ -z "$2" ]; then
+  exec "$LOCAL_BIN" "$@"
+fi
+
+SCRIPT="$2"
+BASENAME="$(basename "$SCRIPT")"
+shift 2
+
+# ── Ubuntu 오프로드 ──
+if [ -f "$SCRIPT" ]; then
+  ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+  scp -q "$SCRIPT" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
+  REMOTE_SCRIPT="$UBU_DIR/gate_files/$BASENAME"
+else
+  REMOTE_SCRIPT="$SCRIPT"
+fi
+
+ssh "$UBU_SSH" "mkdir -p $UBU_DIR/nexus/shared" 2>/dev/null
+for f in airgenome_gates.jsonl growth_bus.jsonl; do
+  [ -f "$HOME/Dev/nexus/shared/$f" ] && scp -q "$HOME/Dev/nexus/shared/$f" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null
+done
+
+REMOTE_HEXA="/tmp/hexa-build/hexa-lang/target/release/hexa"
+CMD="cd $UBU_DIR && $REMOTE_HEXA run $REMOTE_SCRIPT $*"
+echo "$CMD" | nc -w 600 "$GATE_HOST" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
