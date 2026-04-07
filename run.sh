@@ -264,12 +264,20 @@ THROTTLE_FILE="${TMPDIR:-/tmp}/airgenome-throttled.pids"
     : "${UBU_HOST:=192.168.50.119}" "${UBU_PORT:=9900}"
     if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
       GATE="online"
+      UBU_STATUS=$(echo "STATUS" | nc -w 2 "$UBU_HOST" "$UBU_PORT" 2>/dev/null)
+      UBU_LOAD=$(echo "$UBU_STATUS" | grep -o 'load=[^ ]*' | cut -d= -f2 | awk '{print $1}')
+      UBU_RAM_USED=$(echo "$UBU_STATUS" | grep -o 'ram=[^ ]*' | cut -d= -f2 | cut -d/ -f1)
+      UBU_RAM_TOTAL=$(echo "$UBU_STATUS" | grep -o 'ram=[^ ]*' | cut -d/ -f2 | sed 's/MB.*//')
+      UBU_RAM_AVAIL=$(echo "$UBU_STATUS" | grep -o 'avail=[^ ]*' | cut -d= -f2 | sed 's/MB.*//')
+      : "${UBU_LOAD:=0}" "${UBU_RAM_USED:=0}" "${UBU_RAM_TOTAL:=1}" "${UBU_RAM_AVAIL:=0}"
+      UBU_RAM_PCT=$((UBU_RAM_USED * 100 / (UBU_RAM_TOTAL > 0 ? UBU_RAM_TOTAL : 1)))
     else
       GATE="offline"
+      UBU_LOAD="0"; UBU_RAM_PCT=0; UBU_RAM_USED=0; UBU_RAM_TOTAL=0; UBU_RAM_AVAIL=0
     fi
 
     cat > "$STATE" <<EOF
-{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM,"gate":"$GATE"}
+{"active":true,"cpu":$CPU,"ram":$RAM,"swap":$SWAP,"free_mb":$FREE_MB,"load":$LOAD,"level":"$LEVEL","throttled":$THROTTLED,"cpu_ceil":$CPU_CEIL,"ram_ceil":$RAM_CEIL,"swap_ceil":$SWAP_CEIL,"save_cpu":$SAVE_CPU,"save_ram":$SAVE_RAM,"gate":"$GATE","ubu_load":"$UBU_LOAD","ubu_ram_pct":$UBU_RAM_PCT,"ubu_ram_used":$UBU_RAM_USED,"ubu_ram_total":$UBU_RAM_TOTAL,"ubu_ram_avail":$UBU_RAM_AVAIL}
 EOF
     sleep 5
   done
@@ -400,7 +408,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var saveRamBar = j.save_ram || 0;
     var saveTotalBar = Math.min(Math.round((saveCpuBar + saveRamBar) / 2), 99);
     var saveTag = saveTotalBar > 0 ? ' \u2193' + saveTotalBar + '%' : '';
-    var gateIcon = j.gate === 'online' ? ' \u25CF' : ' \u25CB';
+    var gateIcon = j.gate === 'online' ? ' \uD83D\uDFE2' : ' \uD83D\uDD34';
     statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag + saveTag + gateIcon);
 
     var bw = 16;
