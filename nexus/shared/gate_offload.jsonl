@@ -1,0 +1,5 @@
+{"script":"blowup.hexa","reason":"CPU-heavy breakthrough computation"}
+{"script":"gap_finder.hexa","reason":"CPU-heavy gap scanning"}
+{"script":"engine_anima.hexa","reason":"CPU-heavy anima tick/sprint"}
+{"script":"bench.hexa","reason":"benchmark computation"}
+{"script":"evo.hexa","reason":"CPU-heavy evolution"}

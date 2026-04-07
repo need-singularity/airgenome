@@ -408,7 +408,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var saveRamBar = j.save_ram || 0;
     var saveTotalBar = Math.min(Math.round((saveCpuBar + saveRamBar) / 2), 99);
     var saveTag = saveTotalBar > 0 ? ' \u2193' + saveTotalBar + '%' : '';
-    var gateIcon = j.gate === 'online' ? ' \uD83D\uDFE2' : ' \uD83D\uDD34';
+    var gateIcon = j.gate === 'online' ? ' \u25CF' : ' \u25CB';
     statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + swapTag + saveTag + gateIcon);
 
     var bw = 16;
@@ -438,7 +438,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var loadAvg = j.load || 0;
     var ramNote = freeMB < 512 ? ' [' + freeMB + 'MB free]' : '';
     if (lv === 'critical') {
-        safetyItem.title = $('\uD83D\uDD34 CRITICAL \u2014 RAM ' + freeMB + 'MB free' + swapNote);
+        safetyItem.title = $('\u25CB CRITICAL \u2014 RAM ' + freeMB + 'MB free' + swapNote);
     } else if (lv === 'danger') {
         safetyItem.title = $('\u26A0 THROTTLE active' + ramNote + swapNote);
     } else if (lv === 'warn') {
