@@ -1,0 +1,108 @@
+{
+  "Profiles": [
+    {
+      "Name": "void",
+      "Guid": "void-001",
+      "Badge Text": "Void",
+      "Shortcut": "7",
+      "Working Directory": "/Users/ghost/Dev/void",
+      "Custom Directory": "Yes",
+      "Background Color": {
+        "Red Component": 0.06,
+        "Green Component": 0.06,
+        "Blue Component": 0.07,
+        "Alpha Component": 1
+      },
+      "Foreground Color": {
+        "Red Component": 0.75,
+        "Green Component": 0.78,
+        "Blue Component": 0.8,
+        "Alpha Component": 1
+      },
+      "Bold Color": {
+        "Red Component": 0.88,
+        "Green Component": 0.9,
+        "Blue Component": 0.92,
+        "Alpha Component": 1
+      },
+      "Cursor Color": {
+        "Red Component": 0.75,
+        "Green Component": 0.78,
+        "Blue Component": 0.8,
+        "Alpha Component": 1
+      },
+      "Cursor Text Color": {
+        "Red Component": 0.06,
+        "Green Component": 0.06,
+        "Blue Component": 0.07,
+        "Alpha Component": 1
+      },
+      "Selection Color": {
+        "Red Component": 0.2,
+        "Green Component": 0.22,
+        "Blue Component": 0.25,
+        "Alpha Component": 1
+      },
+      "Selected Text Color": {
+        "Red Component": 0.92,
+        "Green Component": 0.92,
+        "Blue Component": 0.94,
+        "Alpha Component": 1
+      },
+      "Ansi 0 Color": {
+        "Red Component": 0.18,
+        "Green Component": 0.18,
+        "Blue Component": 0.2
+      },
+      "Ansi 1 Color": {
+        "Red Component": 0.78,
+        "Green Component": 0.38,
+        "Blue Component": 0.38
+      },
+      "Ansi 2 Color": {
+        "Red Component": 0.45,
+        "Green Component": 0.72,
+        "Blue Component": 0.5
+      },
+      "Ansi 3 Color": {
+        "Red Component": 0.78,
+        "Green Component": 0.68,
+        "Blue Component": 0.42
+      },
+      "Ansi 4 Color": {
+        "Red Component": 0.42,
+        "Green Component": 0.58,
+        "Blue Component": 0.78
+      },
+      "Ansi 5 Color": {
+        "Red Component": 0.65,
+        "Green Component": 0.48,
+        "Blue Component": 0.75
+      },
+      "Ansi 6 Color": {
+        "Red Component": 0.42,
+        "Green Component": 0.7,
+        "Blue Component": 0.7
+      },
+      "Ansi 7 Color": {
+        "Red Component": 0.8,
+        "Green Component": 0.8,
+        "Blue Component": 0.82
+      },
+      "Transparency": 0.0,
+      "Blur": false,
+      "Blur Radius": 0,
+      "Columns": 120,
+      "Rows": 35,
+      "Normal Font": "Menlo-Regular 12",
+      "Horizontal Spacing": 1.0,
+      "Vertical Spacing": 1.1,
+      "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/void && exec /Users/ghost/Dev/airgenome/cl'",
+      "Custom Command": "Yes",
+      "Allow Title Setting": false,
+      "Title Components": 32,
+      "Sync Title": false,
+      "Non-ASCII Font": "Menlo-Regular 12"
+    }
+  ]
+}
