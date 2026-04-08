@@ -41,4 +41,4 @@ kill-free 재해석 전용. 프로세스 패턴 추출 → 사용자 결정 (자
 > 모든 프로세스 KILL 없이 성능/자원 개선. 순수 데이터 재해석만.
 
 ## 할일 (todo)
-- "todo", "할일" → `hexa-bin-actual $HOME/Dev/nexus/mk2_hexa/native/todo.hexa airgenome` 실행 후 **결과를 마크다운 텍스트로 직접 출력** (렌더링되는 표로)
+- "todo", "할일" → `hexa-bin-actual $HOME/Dev/nexus/mk2_hexa/native/todo.hexa airgenome` 실행 후 **결과를 마크다운 텍스트로 그대로 출력** (재포맷 금지)
