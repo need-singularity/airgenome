@@ -175,7 +175,9 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         var jobsTag = uJobs > 0 ? '  \u2191' + uJobs + 'jobs' : '';
         gateItem.title = $('\u25CF Ubuntu  load=' + uLoad + jobsTag);
         uCpuItem.title = $('  CPU  ' + bar(uCpu, 100, bw) + '  ' + uCpu + '%');
+        uCpuItem.hidden = false;
         uRamItem.title = $('  RAM  ' + bar(uRamPct, 100, bw) + '  ' + uRamPct + '%  (' + uRamAvailG + 'G/' + uRamTotalG + 'G)');
+        uRamItem.hidden = false;
         if (uGpuName) {
             uGpuItem.title = $('  GPU  ' + bar(uGpuUtil, 100, bw) + '  ' + uGpuUtil + '%  VRAM ' + uGpuMem + '%  ' + uGpuName);
             uGpuItem.hidden = false;
