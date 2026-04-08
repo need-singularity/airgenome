@@ -3,7 +3,7 @@
     {
       "Name": "nexus",
       "Guid": "nexus-001",
-      "Badge Text": "Nexus",
+      "Badge Text": "",
       "Shortcut": "1",
       "Working Directory": "/Users/ghost/Dev/nexus",
       "Custom Directory": "Yes",

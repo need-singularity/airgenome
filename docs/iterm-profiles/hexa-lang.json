@@ -3,7 +3,7 @@
     {
       "Name": "hexa-lang",
       "Guid": "hexa-lang-compiler-001",
-      "Badge Text": "Hexa-Lang",
+      "Badge Text": "",
       "Shortcut": "9",
       "Working Directory": "/Users/ghost/Dev/hexa-lang",
       "Custom Directory": "Yes",

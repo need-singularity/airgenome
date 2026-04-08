@@ -3,7 +3,7 @@
     {
       "Name": "contribution",
       "Guid": "contribution-open-source-001",
-      "Badge Text": "Contribution",
+      "Badge Text": "",
       "Shortcut": "4",
       "Working Directory": "/Users/ghost/Dev/contribution",
       "Custom Directory": "Yes",

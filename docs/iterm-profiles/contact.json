@@ -3,7 +3,7 @@
     {
       "Name": "contact",
       "Guid": "contact-001",
-      "Badge Text": "Contact",
+      "Badge Text": "",
       "Working Directory": "/Users/ghost/Dev/contact",
       "Custom Directory": "Yes",
       "Background Color": {
