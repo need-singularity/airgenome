@@ -1,72 +1,103 @@
 # airgenome
 
-macOS 프로세스 활동을 6축 헥사곤 게이트로 투영하여 per-source 패턴을 추출하는 시스템.
-[hexa-lang](https://github.com/need-singularity/hexa-lang)으로 작성 — 0.13s 컴파일+실행.
+macOS 프로세스를 6축 육각 투영(CPU/RAM/GPU/NPU/Power/IO)으로 변환하는 시스템 모니터.
+모든 코드는 [hexa-lang](https://github.com/need-singularity/hexa-lang)으로 작성. 0.13s 컴파일+실행.
 
-## Install
+## Prime Directive
 
-```bash
-# hexa package manager
-curl -sL https://raw.githubusercontent.com/need-singularity/hexa-lang/main/pkg/install.sh | bash
+> 모든 프로세스 KILL 없이 성능/자원 개선. 효율은 데이터 재해석에서 온다.
 
-# install & run
-hx install airgenome
-airgenome
+kill/SIGTERM/SIGKILL 절대 금지. renice, taskpolicy, purge(user-space)만 허용.
+
+---
+
+## 기능 영역
+
+airgenome은 5개 영역으로 구성된다:
+
+| 영역 | 핵심 파일 | 설명 |
+|------|----------|------|
+| **6축 코어** | `src/core.hexa` | 60바이트 게놈 시그니처 생성 |
+| **시스템 모니터** | `run.hexa`, `sampler.hexa`, `menubar.hexa`, `settings.hexa` | macOS 메뉴바 실시간 모니터 |
+| **Claude Code 관리** | `cl`, `modules/cl.hexa`, `modules/usage.hexa` | 10계정 런처 + Usage API |
+| **Ubuntu 오프로드** | `mk2_hexa/native/gate.hexa`, `gate_daemon.hexa`, `ubu_monitor.hexa` | Mac ↔ Ubuntu 원격 자원 공유 |
+| **분석 엔진** | `mk2_hexa/native/*.hexa` | 패턴 추출, 이상 탐지, 예측, QoS |
+
+---
+
+## 1. 6축 코어
+
+```
+         [CPU]
+        /     \
+     [IO]     [RAM]
+      |         |
+     [GPU] - [NPU]
+        \     /
+        [POWER]
 ```
 
-## Menubar Monitor
+- **6 axes** — CPU, RAM, GPU, NPU, POWER(Swap), IO
+- **15 pair gates** — C(6,2) 비순서 쌍
+- **60-byte genome** — 15 pairs x 4 bytes
 
-macOS 메뉴바에서 실시간 CPU/RAM/Swap 모니터링.
+`src/core.hexa`가 `ps`/`top`/`vm_stat`으로 6축 값을 샘플링하고, 심각도(Ok/Warn/Critical)를 판정한다. 하드 제한(setrlimit)과 소프트 쓰로틀(적응적 배치 축소)을 결합한 리소스 가드를 제공한다.
+
+---
+
+## 2. 시스템 모니터
+
+### Menubar
 
 ```
 ⬡ 83% · 7%          ← menu bar title
 ├─ CPU  ████████████████░░░░  83/90%
 ├─ RAM  █████░░░░░░░░░░░░░░░   7/80%
 ├─ Swap ██████████████░░░░░░  33/50%
-├─ ⚡ Approaching ceiling
-├─ ⚙ Settings...     ← 계정 관리 패널
+├─ ↓ Save  CPU -12%  RAM -8%  (≈10% 절감)
+├─ ● Ubuntu  load=2.1  ↑3jobs
+│  ├─ CPU  ████░░░░░░░░░░░░  25%
+│  ├─ RAM  ██████████░░░░░░  62%  (12.3G/32G)
+│  └─ GPU  ██░░░░░░░░░░░░░░  12%  VRAM 8%  RTX 4090
+├─ ✅ Safe — 18.2G free
+├─ ⚙ Settings...
 └─ Quit airgenome
 ```
 
-### Adaptive Guard (4단계)
+| 파일 | 기능 |
+|------|------|
+| `run.hexa` | 싱글 인스턴스 런처. 칩/RAM/팬 자동감지 → 프로필 설정 → sampler + menubar 실행 |
+| `sampler.hexa` | 5초 간격 CPU/RAM/Swap/Load/Gate 측정 → state JSON 기록. bridge 프로세스 제한 |
+| `menubar.hexa` | macOS 메뉴바 (Cocoa ObjC FFI 직접 호출). 2초 간격 갱신 |
+| `settings.hexa` | macOS 계정 관리 패널 (Cocoa ObjC FFI). NSTableView + 폐기/복원/새로고침 |
+
+#### Adaptive Guard (4단계)
 
 | Level | 조건 | 조치 |
 |-------|------|------|
 | OK | 모든 지표 ceiling 미만 | throttle 해제 |
 | WARN | ceiling 초과 | 알림만 |
-| DANGER | Free RAM < 512MB or Load > CPU×5 | `purge` + bridge 축소 |
-| CRITICAL | Free RAM < 200MB or Swap > 10GB | `purge` + `taskpolicy -b` |
+| DANGER | Free RAM < 512MB or Load > CPU x 5 | `purge` + bridge 축소 |
+| CRITICAL | Free RAM < 200MB or Swap > 10GB | `purge` + `taskpolicy -b` (top5) |
 
-프로세스 kill 없음. `purge`, `taskpolicy`, `renice`만 사용.
+#### Hardware Auto-Detection
 
-### Hardware Auto-Detection
+첫 실행 시 `sysctl` + `system_profiler`로 칩/RAM/팬 자동 감지 → `profiles.json`에서 최적 ceiling 매칭.
 
-첫 실행 시 `sysctl` + `system_profiler`로 칩/RAM/팬 자동 감지 → 최적 ceiling 설정.
+| Mac | CPU | RAM | Swap |
+|-----|-----|-----|------|
+| Air M2 8GB | 60% | 55% | 20% |
+| Air M3 24GB | 75% | 70% | 30% |
+| Pro M3 36GB | 85% | 80% | 35% |
+| Pro M4 48GB | 90% | 85% | 40% |
 
-| Mac | CPU | RAM | Swap | 비고 |
-|-----|-----|-----|------|------|
-| Air M2 8GB | 60% | 55% | 20% | 최소 사양 |
-| Air M2 16GB | 65% | 65% | 25% | |
-| Air M2 24GB | 70% | 70% | 30% | fanless |
-| Air M3 8GB | 65% | 60% | 20% | 최소 사양 |
-| Air M3 16GB | 70% | 65% | 25% | RAM 부족 주의 |
-| Air M3 24GB | 75% | 70% | 30% | fanless, SSD swap 주의 |
-| Pro M3 18GB | 80% | 75% | 30% | |
-| Pro M3 36GB | 85% | 80% | 35% | 팬 있음, 여유 |
-| Pro M4 24GB | 85% | 80% | 35% | 최신, 효율적 |
-| Pro M4 48GB | 90% | 85% | 40% | 넉넉 |
+---
 
-### Settings (`settings.js`)
+## 3. Claude Code 멀티계정
 
-JXA 네이티브 계정 관리 패널.
+10개 Claude Code 계정을 관리하는 런처 + API 조회 시스템.
 
-- 계정 테이블 — Name, Session%, Week%, Status
-- 폐기/복원 — 계정 비활성화 (복구 가능)
-- 10초 자동 새로고침
-
-## cl — Multi-Account Launcher
-
-10계정 Claude Code 런처. Rate limit 자동 감지 → 계정 전환.
+### cl (zsh)
 
 ```bash
 cl                # 자동 계정 선택 + claude 실행
@@ -78,128 +109,144 @@ cl pick           # 계정 수동 선택
 
 - `CLAUDE_CONFIG_DIR` 직접 export (symlink 오염 없음)
 - Rate limit 감지 시 week usage 최저 계정으로 자동 전환
-- `fswatch` — 신규 계정 자동 감지
 - Python 의존성 없음 (순수 awk/grep/sed)
 
-## Modules
+### 모듈
 
-### forge — Token Manager (`modules/forge.hexa`)
+| 파일 | 역할 |
+|------|------|
+| `modules/cl.hexa` | cl의 hexa 버전. CLI 세션 경쟁 방지 내장 |
+| `modules/usage.hexa` | Anthropic Usage API 조회 (10계정). 키체인 토큰 자동 갱신, rate limit 쿨다운 |
+| `modules/cli_race.hexa` | 동시 CLI 세션 제한 (MAX_CONCURRENT=2). stale PID 자동 정리 |
+| `modules/forge.hexa` | 토큰 매니저 + 세션 JSONL 스캔/압축 (716:1) |
 
-- **Keychain OAuth** — 10계정 토큰 자동 추출 (slash/noslash 해시 이중 대응)
-- **Usage API** — `api.anthropic.com/api/oauth/usage` 실시간 조회
-- **Background round-robin** — 10분 간격 1계정씩 순차 갱신
-- **Cooldown** — 5분 글로벌 (IP), 20분~1시간 계정별 (지수 백오프)
-- **JSONL scan/compress** — 세션 로그 716:1 압축 (43KB → 60B genome)
+#### Usage API 쿨다운
 
-### guard — Resource Monitor (`modules/guard.hexa`)
+- 글로벌 (IP 기반): rate limit 1회 → 5분 전 계정 스킵
+- 계정별: 20분 base → 실패마다 2배 → 최대 1시간
+- 성공 시 즉시 해제
 
-- CPU/RAM/Swap 자동 모니터 (토글 없이 항상 작동)
-- PhysMem 기반 RAM 측정 (`vm_stat`, `memory_pressure`)
-- 순수 awk/shell — python 의존성 없음
+#### 키체인 이중 해시
 
-### usage — API Poller (`modules/usage.hexa`)
+Claude Code v2.1.90+는 trailing-slash 경로로 해시 계산. slash/noslash 양쪽 entry 모두 검색하여 유효 토큰 선택.
 
-- 키체인 이중 해시 (v2.1.90+ 호환)
-- `expiresAt` 기반 토큰 유효성 검증
-- 에러 계정 Phase 0 우선 복구 + 3회 재시도
+---
 
-### implant — Integrity (`modules/implant.hexa`)
+## 4. Ubuntu 오프로드
 
-- 288-bit genome 해시 (σ×J₂=288)
-- PHI gate — consciousness margin 퇴화 감지
-- INVARIANT gate — 5-lens 섭동 안정성 검증
+MacBook ↔ Ubuntu 원격 자원 공유. Wi-Fi SSH 기반.
 
-## The Hexagon
+| 파일 | 위치 | 역할 |
+|------|------|------|
+| `mk2_hexa/native/gate.hexa` | Mac | 클라이언트 — 명령 전송, 오프라인 시 로컬 폴백 |
+| `mk2_hexa/native/gate_daemon.hexa` | Ubuntu | socat TCP 데몬 — 명령 수신/실행/결과 반환 |
+| `mk2_hexa/native/offload.hexa` | Mac | SSH 기반 연산 위임 |
+| `mk2_hexa/native/ubu_monitor.hexa` | Mac | CPU-heavy 프로세스 자동감지 → 오프로드 후보 표시 |
 
-```
-           [CPU]
-          /     \
-       [IO]     [RAM]
-        |         |
-       [GPU] - [NPU]
-          \     /
-          [POWER]
-```
+menubar에서 Ubuntu CPU/RAM/GPU(nvidia-smi) 실시간 표시. 설정: `nexus/shared/gate_config.jsonl`.
 
-- **6 axes** — CPU, RAM, GPU, NPU, POWER, IO
-- **15 pair gates** — C(6,2) unordered pairs
-- **60-byte genome** — 15 pairs × 4 bytes
-- **Banach singularity** — `2/3 − 1/(n(n−1))` with n=6 (≈ 0.633)
+---
 
-## Pipeline
+## 5. 분석 엔진
 
-1. **Sample** — `ps -axm` → RSS, CPU% per process (pure awk/shell)
-2. **Classify** — 8 gates: macos, finder, telegram, chrome, safari, claude, terminal, devtools
-3. **Project** — 6축 헥사곤 per gate
-4. **Analyze** — cross-gate MI proxy, breakthrough margin vs 2/3 singularity
-5. **Accumulate** — per-source genome 시계열 축적
-6. **Diff** — cross-source signature 비교
-7. **Log** — TSV genome → `genomes.log`, events → `genomes.events.jsonl`
+### 리소스 가드
 
-## Breakthrough Layers
+| 파일 | 역할 |
+|------|------|
+| `modules/resource_guard.hexa` | OS-level 하드 제한 (setrlimit via ctypes FFI) + 적응적 소프트 쓰로틀 |
+| `modules/guard.hexa` | CPU/RAM/Swap 모니터 + Claude 프로세스 추적. watch 모드 (5초 간격) |
+
+하드 제한: RSS 512MB, DATA 1GB, nice 10.
+소프트 쓰로틀: warn(384MB) → 배치 50% + sleep 100ms, critical(480MB) → 배치 25% + sleep 300ms.
+
+### 게놈 파이프라인
+
+`modules/implant.hexa` — 4-게이트 순차 검증:
+
+1. **SOURCE**: 프로세스 신뢰도 5단계 (system > known > devtool > unknown > blacklist)
+2. **HASH**: 288-bit 게놈 무결성 해시 (N=6 산술, sigma x J2 = 288)
+3. **PHI**: 의식 보존 — 마진 열화 감지 (theta=0.1, tol=1/288)
+4. **INVARIANT**: 5-렌즈 섭동 안정성 (2401 돌파 지점)
+
+### 패턴 분석 (`mk2_hexa/native/`)
+
+| 파일 | 기능 |
+|------|------|
+| `runtime.hexa` | 연속 샘플링 루프 (sample → classify → project → log → sleep) |
+| `fingerprint.hexa` | 워크로드 분류 (compile, browse, idle, mixed-dev, heavy-build, media) |
+| `temporal.hexa` | 시간대별 패턴 추출 (dawn/morning/afternoon/evening/night) |
+| `anomaly.hexa` | z-score 기반 이상 탐지 (정상 베이스라인 대비) |
+| `forecast.hexa` | 선형 트렌드 → 다음 1시간 리소스 예측 → 선제적 QoS |
+| `sigdiff.hexa` | 게이트 간 6축 시그니처 비교 (유사/고유 소스 식별) |
+| `accumulate.hexa` | 게이트별 시그니처 시계열 누적 |
+| `autoprofile.hexa` | 시간대 + 워크로드 → CPU/RAM/Swap 천장 자동 조정 |
+| `network.hexa` | 프로세스별 네트워크 샘플링 (7번째 축: Net) |
+
+### QoS / 절약
+
+| 파일 | 기능 |
+|------|------|
+| `qos.hexa` | 패턴 기반 QoS v2.0 — idle Claude → taskpolicy -b, 비활성 WebKit → background |
+| `purge.hexa` | user-space 캐시 전용 퍼지. `/var/vm`, `vm.compressor`, `sudo purge` 절대 금지 |
+| `savings.hexa` | QoS 절약량 추적 — 일간/주간 리포트 |
+
+### Breakthrough Layers
 
 | Layer | Mechanism | Cumulative margin |
-|---|---|---|
+|-------|-----------|-------------------|
 | L1 | cross-gate RAM MI | +0.018 |
 | L2 | temporal lagged MI | +0.115 |
-| L3 | cross-axis MI (RAM × CPU) | +0.142 |
+| L3 | cross-axis MI (RAM x CPU) | +0.142 |
 | L4 | triadic I(A;B;C) | +0.145 |
 | L5a | lagged cross-axis | +0.250 |
 | L5c | velocity derivatives | +0.310 |
 | L6e | acceleration + transfer entropy | **+0.438** |
 
-## Prime Directive
+---
 
-**Allowed** — sampling, aggregation, MI, rule firing, `purge`, `renice`, `taskpolicy`.
-
-**Forbidden** — process killing, memory purge compressor tuning.
-
-모든 프로세스 KILL 없이 성능/자원 개선. 효율은 데이터 재해석에서 온다.
-
-## Ubuntu Gate Offload
-
-MacBook의 무거운 명령(hexa, python3, cargo, rustc)을 Ubuntu에서 자동 실행.
+## 실행
 
 ```bash
-# 초기 설정
-hexa run mk2_hexa/native/gate.hexa setup    # 대화형 Ubuntu 연결 설정
-hexa run mk2_hexa/native/gate.hexa install  # wrapper 배포 + rsync
+# 메뉴바 + 샘플러 실행
+hexa run.hexa
 
-# 이후 자동 — hexa/python3/cargo/rustc가 gate를 탐
-hexa run some_script.hexa    # → Ubuntu에서 실행 (offline → 로컬 fallback)
-python3 heavy_script.py      # → Ubuntu에서 실행
-cargo build --release        # → Ubuntu에서 실행
+# 설정 패널
+hexa run.hexa --settings
+
+# Claude Code 실행 (멀티계정 자동 선택)
+cl
+
+# 리소스 상태
+hexa modules/guard.hexa -- status
+hexa modules/guard.hexa -- watch
+
+# Usage 조회
+hexa modules/usage.hexa -- refresh
 ```
 
-- **pre-sync** — 매 실행 전 `nexus/shared/` 변경분 자동 동기화
-- **fallback** — Ubuntu 접근 불가 시 로컬 자동 전환
-- **설정** — `nexus/shared/gate_config.jsonl` (하드코딩 없음)
-- **wrapper** — `gate/wrappers/` (hexa, python3, cargo, rustc, sh-run)
+---
 
-## Architecture
+## 설정 파일
 
-```
-gate/
-└── wrappers/               — Ubuntu offload wrapper (hexa, python3, cargo, rustc)
+| 파일 | 위치 | 용도 |
+|------|------|------|
+| `config.json` | `~/.airgenome/` | CPU/RAM/Swap 천장 |
+| `accounts.json` | `~/.airgenome/` | Claude Code 10계정 |
+| `usage-cache.json` | `~/.airgenome/` | Usage API 캐시 |
+| `profiles.json` | repo root | 칩/RAM별 프로필 매칭 |
+| `gate_config.jsonl` | `nexus/shared/` | Ubuntu 게이트 (호스트/포트/SSH alias) |
+| `gate_offload.jsonl` | `nexus/shared/` | 오프로드 규칙 |
+| `prime_directive.json` | repo root | 골화 항목 기록 (7/7 PASS) |
 
-mk2_hexa/native/
-├── runtime.hexa        — live ps → 8-gate classify → 6-axis → genome log
-├── accumulate.hexa     — per-gate genome 시계열 축적 → signatures.json
-├── sigdiff.hexa        — cross-source signature distance matrix
-├── gate.hexa           — Ubuntu gate 클라이언트 (setup/install/sync/exec/ping)
-└── gate_daemon.hexa    — Ubuntu gate 데몬 (socat TCP)
+---
 
-modules/
-├── cl.hexa             — multi-account CLI (race condition, usage cache)
-├── usage.hexa          — OAuth usage API poller (keychain dual-hash)
-├── forge.hexa          — 10-account token manager + JSONL compress
-├── guard.hexa          — CPU/RAM/Swap monitor (always-on)
-├── implant.hexa        — 288-bit hash + PHI + INVARIANT gates
-└── cli_race.hexa       — jq-based concurrency control
+## 기술 스택
 
-docs/
-└── gates.hexa          — canonical spec (452 lines, 21 assertions)
-```
+- **언어**: hexa-lang (순수 .hexa, 비-hexa 코드 없음. `cl` zsh 스크립트 제외)
+- **GUI**: macOS Cocoa (ObjC runtime FFI — objc_msgSend 직접 호출, JXA/Swift 없음)
+- **시스템**: ps, top, vm_stat, sysctl, taskpolicy, renice, socat, ssh, nvidia-smi
+- **API**: Anthropic OAuth Usage API
+- **저장**: macOS Keychain (security 명령), JSON/JSONL 파일
 
 ## Authority
 
