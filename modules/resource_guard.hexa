@@ -1,0 +1,593 @@
+// ⛔ CORE — L0 불변식 (프로세스 모니터 코어. 수정 전 유저 승인 필수)
+// airgenome/modules/resource_guard.hexa — OS-level hard limits + adaptive soft throttle
+//
+// Port of src/resource_guard.rs → pure hexa with extern FFI syscalls.
+//
+// Hard limits (A): setrlimit + nice — OS가 강제하는 천장
+// Soft limits (B): 자가 모니터링 → 적응적 배치/깊이 축소
+// Combined  (C): init_guard() → 하드 제한 적용 + AdaptiveThrottle 반환
+//
+// Usage: ~/Dev/hexa-lang/hexa run modules/resource_guard.hexa <command>
+// Commands: init, status, check, watch, test, help
+//
+// Prime directive: observe + limit, never kill.
+
+let VERSION = "1.0.0"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  macOS RLIMIT CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════
+
+let RLIMIT_CPU  = 0
+let RLIMIT_DATA = 2
+let RLIMIT_RSS  = 5
+
+// setpriority constants
+let PRIO_PROCESS = 0
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EXTERN FFI — libSystem syscalls (macOS)
+// ═══════════════════════════════════════════════════════════════════════
+
+// setrlimit(resource: i32, rlim: *rlimit) -> i32
+// getrlimit(resource: i32, rlim: *rlimit) -> i32
+// setpriority(which: i32, who: u32, prio: i32) -> i32
+// getpriority(which: i32, who: u32) -> i32
+// getpid() -> i32
+//
+// Note: hexa extern FFI wraps C calls. For now we use exec("ulimit ...")
+// and shell wrappers for portability, matching the existing airgenome style.
+// When hexa extern stabilizes for struct-pointer FFI, these can be direct.
+
+// ═══════════════════════════════════════════════════════════════════════
+//  A. HARD LIMITS — OS-level ceiling via setrlimit + nice
+// ═══════════════════════════════════════════════════════════════════════
+
+// Guard: hard limits applied only once per process lifetime
+let mut HARD_LIMITS_APPLIED = false
+
+// HardLimits config
+fn hard_limits_default() -> auto {
+    return {
+        "max_rss_mb": 512,
+        "max_data_mb": 1024,
+        "nice_level": 10,
+        "max_cpu_seconds": 0
+    }
+}
+
+// Set a single rlimit via shell (soft=hard=value)
+fn set_rlimit(resource: int, value_bytes: int) -> str {
+    // Use python3 for ctypes setrlimit — direct syscall without libc crate
+    let resource_str = to_string(resource)
+    let value_str = to_string(value_bytes)
+    let result = exec("python3 -c \"" +
+        "import ctypes, ctypes.util;" +
+        "lib=ctypes.CDLL(ctypes.util.find_library('c'));" +
+        "class rlimit(ctypes.Structure): _fields_=[('cur',ctypes.c_uint64),('max',ctypes.c_uint64)];" +
+        "r=rlimit(" + value_str + "," + value_str + ");" +
+        "ret=lib.setrlimit(" + resource_str + ",ctypes.byref(r));" +
+        "print('ok' if ret==0 else 'err:'+str(ctypes.get_errno()))" +
+        "\" 2>&1").trim()
+    return result
+}
+
+// Get current rlimit (soft, hard) for a resource
+fn get_rlimit(resource: int) -> auto {
+    let resource_str = to_string(resource)
+    let result = exec("python3 -c \"" +
+        "import ctypes, ctypes.util;" +
+        "lib=ctypes.CDLL(ctypes.util.find_library('c'));" +
+        "class rlimit(ctypes.Structure): _fields_=[('cur',ctypes.c_uint64),('max',ctypes.c_uint64)];" +
+        "r=rlimit();" +
+        "lib.getrlimit(" + resource_str + ",ctypes.byref(r));" +
+        "print(str(r.cur)+','+str(r.max))" +
+        "\" 2>&1").trim()
+    let parts = result.split(",")
+    if len(parts) >= 2 {
+        let mut soft = 0
+        let mut hard = 0
+        try { soft = to_int(to_float(parts[0])) } catch e {}
+        try { hard = to_int(to_float(parts[1])) } catch e {}
+        return [soft, hard]
+    }
+    return [0, 0]
+}
+
+// Set nice level via renice on self
+fn set_nice(level: int) -> str {
+    let pid = exec("echo $$").trim()
+    let result = exec("renice " + to_string(level) + " -p " + pid + " 2>&1").trim()
+    if result.contains("denied") {
+        return "err: permission denied"
+    }
+    return "ok"
+}
+
+// Get current nice level
+fn get_nice() -> int {
+    let raw = exec("ps -o nice= -p $$ 2>/dev/null").trim()
+    let mut val = 0
+    try { val = to_int(to_float(raw)) } catch e {}
+    return val
+}
+
+// Apply hard limits — call once at process start. Idempotent.
+fn init_hard_limits(limits: auto) -> str {
+    if HARD_LIMITS_APPLIED {
+        return "ok"  // already applied
+    }
+    HARD_LIMITS_APPLIED = true
+
+    let max_rss = limits["max_rss_mb"]
+    let max_data = limits["max_data_mb"]
+    let nice = limits["nice_level"]
+    let max_cpu = limits["max_cpu_seconds"]
+
+    // setrlimit: RSS
+    if max_rss > 0 {
+        let bytes = max_rss * 1024 * 1024
+        let r = set_rlimit(RLIMIT_RSS, bytes)
+        if r.contains("err") {
+            return "err: rlimit RSS failed: " + r
+        }
+    }
+
+    // setrlimit: DATA
+    if max_data > 0 {
+        let bytes = max_data * 1024 * 1024
+        let r = set_rlimit(RLIMIT_DATA, bytes)
+        if r.contains("err") {
+            return "err: rlimit DATA failed: " + r
+        }
+    }
+
+    // setrlimit: CPU time
+    if max_cpu > 0 {
+        let r = set_rlimit(RLIMIT_CPU, max_cpu)
+        if r.contains("err") {
+            return "err: rlimit CPU failed: " + r
+        }
+    }
+
+    // nice (setpriority)
+    if nice >= 0 {
+        let r = set_nice(nice)
+        if r.contains("err") {
+            return "err: nice(" + to_string(nice) + ") failed: " + r
+        }
+    }
+
+    return "ok"
+}
+
+// Check if hard limits are active
+fn hard_limits_active() -> bool {
+    return HARD_LIMITS_APPLIED
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  B. ADAPTIVE SOFT THROTTLE — self-monitoring with level-based response
+// ═══════════════════════════════════════════════════════════════════════
+
+// SoftLimits config
+fn soft_limits_default() -> auto {
+    return {
+        "warn_rss_mb": 384,       // HardLimits 512의 75%
+        "critical_rss_mb": 480,   // HardLimits 512의 ~94%
+        "warn_cpu_pct": 80.0,
+        "throttle_sleep_ms": 100,
+        "batch_scale_factor": 0.5
+    }
+}
+
+// ThrottleLevel enum (string-based)
+// "normal"   — 제한 없음
+// "warn"     — 배치 축소 + 짧은 sleep
+// "critical" — 최소 배치 + 긴 sleep
+
+// AdaptiveThrottle state
+fn new_throttle(limits: auto) -> auto {
+    return {
+        "limits": limits,
+        "current_level": "normal",
+        "checks": 0,
+        "throttled_count": 0
+    }
+}
+
+// Query current process RSS in MB (macOS)
+fn current_rss_mb() -> int {
+    let pid = exec("echo $$").trim()
+    let raw = exec("ps -o rss= -p " + pid + " 2>/dev/null").trim()
+    let mut kb = 0
+    try { kb = to_int(to_float(raw)) } catch e {}
+    return kb / 1024
+}
+
+// Check and adapt — call every cycle
+// Returns: [level_str, batch_scale, sleep_ms, throttle_state]
+fn check_and_adapt(throttle: auto) -> auto {
+    throttle["checks"] = throttle["checks"] + 1
+    let rss = current_rss_mb()
+    let limits = throttle["limits"]
+
+    let mut level = "normal"
+    if rss >= limits["critical_rss_mb"] {
+        level = "critical"
+    } else if rss >= limits["warn_rss_mb"] {
+        level = "warn"
+    }
+
+    throttle["current_level"] = level
+
+    if level == "normal" {
+        return [level, 1.0, 0, throttle]
+    }
+    if level == "warn" {
+        throttle["throttled_count"] = throttle["throttled_count"] + 1
+        return [level, limits["batch_scale_factor"], limits["throttle_sleep_ms"], throttle]
+    }
+    // critical
+    throttle["throttled_count"] = throttle["throttled_count"] + 1
+    return [
+        level,
+        limits["batch_scale_factor"] * 0.5,    // 25% batch
+        limits["throttle_sleep_ms"] * 3,         // 300ms sleep
+        throttle
+    ]
+}
+
+// Sleep if needed (from check_and_adapt result)
+fn maybe_sleep(sleep_ms: int) -> str {
+    if sleep_ms > 0 {
+        let secs = to_float(sleep_ms) / 1000.0
+        exec("sleep " + to_string(secs))
+    }
+    return "ok"
+}
+
+// Status summary string
+fn throttle_status(throttle: auto) -> str {
+    let rss = current_rss_mb()
+    return "rss=" + to_string(rss) + "MB level=" + throttle["current_level"] + " checks=" + to_string(throttle["checks"]) + " throttled=" + to_string(throttle["throttled_count"])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  C. COMBINED GUARD — init hard + create soft throttle
+// ═══════════════════════════════════════════════════════════════════════
+
+// Init guard with custom limits. Returns [result_str, throttle_state].
+fn init_guard(hard: auto, soft: auto) -> auto {
+    let r = init_hard_limits(hard)
+    if r.contains("err") {
+        return [r, {}]
+    }
+    let throttle = new_throttle(soft)
+    return ["ok", throttle]
+}
+
+// Init guard with default limits
+fn init_default_guard() -> auto {
+    return init_guard(hard_limits_default(), soft_limits_default())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI — interactive commands
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_init() -> str {
+    println("")
+    println("  resource_guard — applying default hard limits...")
+    println("")
+
+    let result = init_default_guard()
+    let status = result[0]
+    let throttle = result[1]
+
+    if status.contains("err") {
+        println("  ERROR: " + status)
+        return "err"
+    }
+
+    let hard = hard_limits_default()
+    println("  hard limits applied:")
+    println("    RSS:  " + to_string(hard["max_rss_mb"]) + " MB")
+    println("    DATA: " + to_string(hard["max_data_mb"]) + " MB")
+    println("    nice: " + to_string(hard["nice_level"]))
+    if hard["max_cpu_seconds"] > 0 {
+        println("    CPU:  " + to_string(hard["max_cpu_seconds"]) + " seconds")
+    }
+    println("")
+    println("  soft throttle initialized:")
+    let soft = soft_limits_default()
+    println("    warn RSS:     " + to_string(soft["warn_rss_mb"]) + " MB")
+    println("    critical RSS: " + to_string(soft["critical_rss_mb"]) + " MB")
+    println("    warn CPU:     " + to_string(soft["warn_cpu_pct"]) + "%")
+    println("    throttle sleep: " + to_string(soft["throttle_sleep_ms"]) + " ms")
+    println("    batch scale:    " + to_string(soft["batch_scale_factor"]))
+    println("")
+    println("  status: " + throttle_status(throttle))
+    println("")
+    return "ok"
+}
+
+fn cmd_status() -> str {
+    println("")
+    println("  resource_guard status v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    // Current RSS
+    let rss = current_rss_mb()
+    println("  process RSS:  " + to_string(rss) + " MB")
+    println("  nice level:   " + to_string(get_nice()))
+    println("  hard applied: " + to_string(HARD_LIMITS_APPLIED))
+    println("")
+
+    // Current rlimits
+    let rl_rss = get_rlimit(RLIMIT_RSS)
+    let rl_data = get_rlimit(RLIMIT_DATA)
+    let rl_cpu = get_rlimit(RLIMIT_CPU)
+
+    println("  ── current rlimits ──")
+    println("    RSS:  soft=" + to_string(rl_rss[0]) + "  hard=" + to_string(rl_rss[1]))
+    println("    DATA: soft=" + to_string(rl_data[0]) + "  hard=" + to_string(rl_data[1]))
+    println("    CPU:  soft=" + to_string(rl_cpu[0]) + "  hard=" + to_string(rl_cpu[1]))
+    println("")
+
+    // Defaults for reference
+    let hard = hard_limits_default()
+    let soft = soft_limits_default()
+    println("  ── configured defaults ──")
+    println("    hard RSS:     " + to_string(hard["max_rss_mb"]) + " MB")
+    println("    hard DATA:    " + to_string(hard["max_data_mb"]) + " MB")
+    println("    hard nice:    " + to_string(hard["nice_level"]))
+    println("    soft warn:    " + to_string(soft["warn_rss_mb"]) + " MB")
+    println("    soft critical:" + to_string(soft["critical_rss_mb"]) + " MB")
+    println("")
+    return "ok"
+}
+
+fn cmd_check() -> str {
+    println("")
+    println("  resource_guard — single check cycle")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let throttle = new_throttle(soft_limits_default())
+    let result = check_and_adapt(throttle)
+    let level = result[0]
+    let batch_scale = result[1]
+    let sleep_ms = result[2]
+    let updated = result[3]
+
+    let mut icon = "🟢"
+    if level == "warn" { icon = "🟡" }
+    if level == "critical" { icon = "🔴" }
+
+    println("  " + icon + " level: " + level)
+    println("  batch scale: " + to_string(batch_scale))
+    println("  sleep ms:    " + to_string(sleep_ms))
+    println("  " + throttle_status(updated))
+    println("")
+    return "ok"
+}
+
+fn cmd_watch() -> str {
+    println("")
+    println("  resource_guard — continuous monitoring (3s interval, Ctrl+C to stop)")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let mut throttle = new_throttle(soft_limits_default())
+    let mut count = 0
+
+    while count < 999999 {
+        let result = check_and_adapt(throttle)
+        let level = result[0]
+        let batch_scale = result[1]
+        let sleep_ms = result[2]
+        throttle = result[3]
+
+        let ts = exec("date +%H:%M:%S").trim()
+        let rss = current_rss_mb()
+
+        let mut icon = "🟢"
+        if level == "warn" { icon = "🟡" }
+        if level == "critical" { icon = "🔴" }
+
+        println("  [" + ts + "] " + icon + " rss=" + to_string(rss) + "MB  level=" + level + "  scale=" + to_string(batch_scale) + "  sleep=" + to_string(sleep_ms) + "ms  checks=" + to_string(throttle["checks"]))
+
+        exec("sleep 3")
+        count = count + 1
+    }
+    return "ok"
+}
+
+fn cmd_test() -> str {
+    println("")
+    println("  resource_guard — self-test")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let mut pass = 0
+    let mut fail = 0
+
+    // Test 1: default hard limits are sane
+    let h = hard_limits_default()
+    if h["max_rss_mb"] == 512 {
+        println("  PASS: default max_rss_mb == 512")
+        pass = pass + 1
+    } else {
+        println("  FAIL: default max_rss_mb != 512")
+        fail = fail + 1
+    }
+    if h["nice_level"] == 10 {
+        println("  PASS: default nice_level == 10")
+        pass = pass + 1
+    } else {
+        println("  FAIL: default nice_level != 10")
+        fail = fail + 1
+    }
+
+    // Test 2: soft limits below hard
+    let s = soft_limits_default()
+    if s["warn_rss_mb"] < h["max_rss_mb"] {
+        println("  PASS: warn_rss < max_rss")
+        pass = pass + 1
+    } else {
+        println("  FAIL: warn_rss >= max_rss")
+        fail = fail + 1
+    }
+    if s["critical_rss_mb"] < h["max_rss_mb"] {
+        println("  PASS: critical_rss < max_rss")
+        pass = pass + 1
+    } else {
+        println("  FAIL: critical_rss >= max_rss")
+        fail = fail + 1
+    }
+    if s["critical_rss_mb"] > s["warn_rss_mb"] {
+        println("  PASS: critical_rss > warn_rss")
+        pass = pass + 1
+    } else {
+        println("  FAIL: critical_rss <= warn_rss")
+        fail = fail + 1
+    }
+
+    // Test 3: throttle level starts normal
+    let t = new_throttle(soft_limits_default())
+    if t["current_level"] == "normal" {
+        println("  PASS: initial level == normal")
+        pass = pass + 1
+    } else {
+        println("  FAIL: initial level != normal")
+        fail = fail + 1
+    }
+
+    // Test 4: check_and_adapt returns valid scale
+    let result = check_and_adapt(t)
+    let scale = result[1]
+    if scale > 0.0 {
+        if scale <= 1.0 {
+            println("  PASS: batch scale in (0, 1]")
+            pass = pass + 1
+        } else {
+            println("  FAIL: batch scale > 1.0")
+            fail = fail + 1
+        }
+    } else {
+        println("  FAIL: batch scale <= 0")
+        fail = fail + 1
+    }
+
+    // Test 5: check count incremented
+    let updated = result[3]
+    if updated["checks"] == 1 {
+        println("  PASS: checks == 1 after one call")
+        pass = pass + 1
+    } else {
+        println("  FAIL: checks != 1")
+        fail = fail + 1
+    }
+
+    // Test 6: status string contains expected fields
+    let stat = throttle_status(t)
+    if stat.contains("rss=") {
+        println("  PASS: status contains rss=")
+        pass = pass + 1
+    } else {
+        println("  FAIL: status missing rss=")
+        fail = fail + 1
+    }
+    if stat.contains("level=") {
+        println("  PASS: status contains level=")
+        pass = pass + 1
+    } else {
+        println("  FAIL: status missing level=")
+        fail = fail + 1
+    }
+
+    // Test 7: current_rss_mb does not panic
+    let rss = current_rss_mb()
+    println("  PASS: current_rss_mb returned " + to_string(rss) + " (no crash)")
+    pass = pass + 1
+
+    println("")
+    println("  results: " + to_string(pass) + " passed, " + to_string(fail) + " failed")
+    println("")
+    if fail > 0 { return "fail" }
+    return "ok"
+}
+
+fn cmd_help() -> str {
+    println("resource_guard v" + VERSION + " — OS-level hard limits + adaptive soft throttle")
+    println("")
+    println("Usage: resource_guard <command>")
+    println("")
+    println("Commands:")
+    println("  init    — apply default hard limits + create soft throttle")
+    println("  status  — show current rlimits, RSS, nice level")
+    println("  check   — single check_and_adapt cycle")
+    println("  watch   — continuous monitoring (3s interval)")
+    println("  test    — run self-tests (port of Rust unit tests)")
+    println("  help    — show this message")
+    println("")
+    println("API functions (for use from other .hexa modules):")
+    println("  hard_limits_default()       → default HardLimits config")
+    println("  soft_limits_default()       → default SoftLimits config")
+    println("  init_hard_limits(limits)    → apply OS hard limits (once)")
+    println("  hard_limits_active()        → bool")
+    println("  new_throttle(soft)          → create AdaptiveThrottle state")
+    println("  check_and_adapt(throttle)   → [level, scale, sleep_ms, state]")
+    println("  maybe_sleep(sleep_ms)       → sleep if needed")
+    println("  throttle_status(throttle)   → summary string")
+    println("  current_rss_mb()            → process RSS in MB")
+    println("  init_guard(hard, soft)      → [result, throttle]")
+    println("  init_default_guard()        → [result, throttle]")
+    println("  set_rlimit(resource, bytes) → set OS rlimit")
+    println("  get_rlimit(resource)        → [soft, hard]")
+    println("  set_nice(level)             → set process priority")
+    println("  get_nice()                  → current nice level")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK — args router
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness ResourceGuard {
+    // self-test assertions (matches Rust tests)
+    assert hard_limits_default()["max_rss_mb"] == 512
+    assert hard_limits_default()["nice_level"] == 10
+    assert soft_limits_default()["warn_rss_mb"] < hard_limits_default()["max_rss_mb"]
+    assert soft_limits_default()["critical_rss_mb"] > soft_limits_default()["warn_rss_mb"]
+
+    let argv = args()
+    let mut cmd = "help"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "init"   { cmd_init() }
+    if cmd == "status" { cmd_status() }
+    if cmd == "check"  { cmd_check() }
+    if cmd == "watch"  { cmd_watch() }
+    if cmd == "test"   { cmd_test() }
+    if cmd == "help"   { cmd_help() }
+
+    if cmd != "init" {
+        if cmd != "status" {
+            if cmd != "check" {
+                if cmd != "watch" {
+                    if cmd != "test" {
+                        if cmd != "help" {
+                            println("unknown command: " + cmd)
+                            cmd_help()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

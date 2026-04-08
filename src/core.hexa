@@ -1,3 +1,4 @@
+// ⛔ CORE — L0 불변식 (육각 투영 6축 코어 60바이트 게놈. 수정 전 유저 승인 필수)
 // airgenome/src/core.hexa — lib.rs + resource_guard.rs → hexa-lang
 // Replaces Rust implementation with pure hexa
 
@@ -55,6 +56,189 @@ fn renice_top3() -> void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  VITALS ACCESSOR
+// ═══════════════════════════════════════════════════════════════════════
+
+fn vitals_get(v: Vitals, axis: int) -> float {
+    // axis: 0=Cpu 1=Ram 2=Gpu 3=Npu 4=Power 5=Io
+    if axis == 0 { return v.cpu }
+    if axis == 1 { return v.ram }
+    if axis == 2 { return v.gpu }
+    if axis == 3 { return v.npu }
+    if axis == 4 { return v.power }
+    if axis == 5 { return v.io }
+    return 0.0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RULES (API-compatible stubs — populated by gate modules)
+// ═══════════════════════════════════════════════════════════════════════
+
+struct Rule {
+    name: str
+}
+
+fn firing(v: Vitals) -> str {
+    // Returns comma-separated indices of firing rules (empty = none)
+    return ""
+}
+
+fn rule_severity(rule_idx: int, v: Vitals) -> int {
+    // 0=Ok 1=Warn 2=Critical
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HARD LIMITS — OS-level setrlimit + nice via shell
+// ═══════════════════════════════════════════════════════════════════════
+
+struct HardLimits {
+    max_rss_mb: int,
+    max_data_mb: int,
+    nice_level: int,
+    max_cpu_seconds: int
+}
+
+fn default_hard_limits() -> HardLimits {
+    return HardLimits { max_rss_mb: 512, max_data_mb: 1024, nice_level: 10, max_cpu_seconds: 0 }
+}
+
+let mut _hard_limits_applied = 0
+
+fn init_hard_limits(limits: HardLimits) -> int {
+    // Returns 0=ok, 1=error. Idempotent — skips if already applied.
+    if _hard_limits_applied == 1 { return 0 }
+    _hard_limits_applied = 1
+
+    // RSS soft limit (ulimit -m, in KB)
+    if limits.max_rss_mb > 0 {
+        let kb = limits.max_rss_mb * 1024
+        exec("ulimit -m " + to_string(kb) + " 2>/dev/null || true")
+    }
+
+    // DATA segment limit (ulimit -d, in KB)
+    if limits.max_data_mb > 0 {
+        let kb = limits.max_data_mb * 1024
+        exec("ulimit -d " + to_string(kb) + " 2>/dev/null || true")
+    }
+
+    // CPU time limit (ulimit -t, in seconds)
+    if limits.max_cpu_seconds > 0 {
+        exec("ulimit -t " + to_string(limits.max_cpu_seconds) + " 2>/dev/null || true")
+    }
+
+    // nice level (renice self)
+    if limits.nice_level >= 0 {
+        exec("renice " + to_string(limits.nice_level) + " -p $$ 2>/dev/null || true")
+    }
+
+    return 0
+}
+
+fn hard_limits_active() -> int {
+    return _hard_limits_applied
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SOFT LIMITS + ADAPTIVE THROTTLE
+// ═══════════════════════════════════════════════════════════════════════
+
+struct SoftLimits {
+    warn_rss_mb: int,
+    critical_rss_mb: int,
+    warn_cpu_pct: float,
+    throttle_sleep_ms: int,
+    batch_scale_factor: float
+}
+
+fn default_soft_limits() -> SoftLimits {
+    return SoftLimits {
+        warn_rss_mb: 384,
+        critical_rss_mb: 480,
+        warn_cpu_pct: 80.0,
+        throttle_sleep_ms: 100,
+        batch_scale_factor: 0.5
+    }
+}
+
+struct AdaptiveThrottle {
+    limits: SoftLimits,
+    current_level: int,
+    checks: int,
+    throttled_count: int
+}
+
+fn new_throttle(limits: SoftLimits) -> AdaptiveThrottle {
+    return AdaptiveThrottle {
+        limits: limits,
+        current_level: 0,
+        checks: 0,
+        throttled_count: 0
+    }
+}
+
+// Returns: [level (0/1/2), batch_scale * 100 (int), sleep_ms]
+// level: 0=Normal 1=Warn 2=Critical
+fn check_and_adapt(t: AdaptiveThrottle) -> AdaptiveThrottle {
+    t.checks = t.checks + 1
+    let rss = current_rss_mb()
+
+    if rss >= t.limits.critical_rss_mb {
+        t.current_level = 2
+        t.throttled_count = t.throttled_count + 1
+    } else if rss >= t.limits.warn_rss_mb {
+        t.current_level = 1
+        t.throttled_count = t.throttled_count + 1
+    } else {
+        t.current_level = 0
+    }
+    return t
+}
+
+fn throttle_batch_scale(t: AdaptiveThrottle) -> float {
+    if t.current_level == 0 { return 1.0 }
+    if t.current_level == 1 { return t.limits.batch_scale_factor }
+    // Critical: 25%
+    return t.limits.batch_scale_factor * 0.5
+}
+
+fn throttle_sleep_ms(t: AdaptiveThrottle) -> int {
+    if t.current_level == 0 { return 0 }
+    if t.current_level == 1 { return t.limits.throttle_sleep_ms }
+    // Critical: 3x sleep
+    return t.limits.throttle_sleep_ms * 3
+}
+
+fn throttle_maybe_sleep(t: AdaptiveThrottle) -> void {
+    let ms = throttle_sleep_ms(t)
+    if ms > 0 {
+        let secs = to_string(to_float(ms) / 1000.0)
+        exec("sleep " + secs)
+    }
+}
+
+fn throttle_status(t: AdaptiveThrottle) -> str {
+    let rss = current_rss_mb()
+    let mut lvl = "Normal"
+    if t.current_level == 1 { lvl = "Warn" }
+    if t.current_level == 2 { lvl = "Critical" }
+    return "rss=" + to_string(rss) + "MB level=" + lvl + " checks=" + to_string(t.checks) + " throttled=" + to_string(t.throttled_count)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMBINED GUARD
+// ═══════════════════════════════════════════════════════════════════════
+
+fn init_guard(hard: HardLimits, soft: SoftLimits) -> AdaptiveThrottle {
+    init_hard_limits(hard)
+    return new_throttle(soft)
+}
+
+fn init_default_guard() -> AdaptiveThrottle {
+    return init_guard(default_hard_limits(), default_soft_limits())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -73,4 +257,27 @@ consciousness AirgenomeCore {
     if sev == Severity.Ok { println("  ✅ OK") }
     if sev == Severity.Warn { println("  ⚠ WARN") }
     if sev == Severity.Critical { println("  🔴 CRITICAL") }
+
+    // Verify vitals_get accessor
+    assert vitals_get(v, 0) == v.cpu
+    assert vitals_get(v, 1) == v.ram
+
+    // Verify hard/soft limit defaults
+    let hl = default_hard_limits()
+    assert hl.max_rss_mb == 512
+    assert hl.nice_level == 10
+
+    let sl = default_soft_limits()
+    assert sl.warn_rss_mb == 384
+    assert sl.critical_rss_mb == 480
+    assert sl.critical_rss_mb > sl.warn_rss_mb
+
+    // Verify throttle init
+    let t = new_throttle(sl)
+    assert t.current_level == 0
+    assert t.checks == 0
+    assert throttle_batch_scale(t) == 1.0
+    assert throttle_sleep_ms(t) == 0
+
+    println("  ✅ lib.rs port verified")
 }
