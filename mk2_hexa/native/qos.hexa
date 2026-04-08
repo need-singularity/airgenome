@@ -393,7 +393,15 @@ fn print_scan(candidates: auto, dry: int) -> str {
         }
 
         let short_comm = comm
-        if len(short_comm) > 25 { short_comm = short_comm[0:25] }
+        if len(short_comm) > 25 {
+            let _trunc = ""
+            let _ti = 0
+            while _ti < 25 {
+                _trunc = _trunc + short_comm.split("")[_ti]
+                _ti = _ti + 1
+            }
+            short_comm = _trunc
+        }
 
         println("  " + pid + "\t" + to_string(cpu) + "\t" + to_string(to_int(rss)) + "\t" + save_tag + "\t" + action + "\t" + short_comm)
         i = i + 1
@@ -537,7 +545,10 @@ fn main() {
             let t = tabs[ti]
             total = total + t[1]
             let tag = "ACTIVE"
-            if t[4] { tag = "INACTIVE → taskpolicy -b"; inactive_mb = inactive_mb + t[1] }
+            if t[4] {
+                tag = "INACTIVE → taskpolicy -b"
+                inactive_mb = inactive_mb + t[1]
+            }
             println("  pid=" + t[0] + "  " + to_string(to_int(t[1])) + "MB  cpu=" + to_string(t[2]) + "%  " + tag)
             ti = ti + 1
         }
