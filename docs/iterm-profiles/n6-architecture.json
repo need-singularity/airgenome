@@ -1,10 +1,11 @@
 {
   "Profiles": [
     {
-      "Name": "brainwire",
-      "Guid": "brainwire-neural-interface-001",
-      "Badge Text": "BrainWire",
-      "Working Directory": "/Users/ghost/Dev/brainwire",
+      "Name": "n6-architecture",
+      "Guid": "n6-architecture-001",
+      "Badge Text": "N6-architecture",
+      "Shortcut": "3",
+      "Working Directory": "/Users/ghost/Dev/n6-architecture",
       "Custom Directory": "Yes",
       "Background Color": {
         "Red Component": 0.06,
@@ -96,7 +97,7 @@
       "Normal Font": "Menlo-Regular 12",
       "Horizontal Spacing": 1.0,
       "Vertical Spacing": 1.1,
-      "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/brainwire && exec /Users/ghost/Dev/airgenome/cl'",
+      "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/n6-architecture && exec zsh'",
       "Custom Command": "Yes",
       "Allow Title Setting": false,
       "Title Components": 32,

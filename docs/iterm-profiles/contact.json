@@ -101,7 +101,8 @@
       "Allow Title Setting": false,
       "Title Components": 32,
       "Sync Title": false,
-      "Non-ASCII Font": "Menlo-Regular 12"
+      "Non-ASCII Font": "Menlo-Regular 12",
+      "Shortcut": "0"
     }
   ]
 }
