@@ -97,7 +97,7 @@
       "Normal Font": "Menlo-Regular 12",
       "Horizontal Spacing": 1.0,
       "Vertical Spacing": 1.1,
-      "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/nexus && exec zsh'",
+      "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/nexus && exec /Users/ghost/Dev/airgenome/cl'",
       "Custom Command": "Yes",
       "Allow Title Setting": false,
       "Title Components": 32,
