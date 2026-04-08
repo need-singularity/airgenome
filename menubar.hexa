@@ -1,0 +1,422 @@
+// menubar.hexa — airgenome macOS menu bar (pure hexa, menubar.js port)
+// Usage: hexa menubar.hexa [state_path] [config_path] [settings_hexa_path]
+//
+// ObjC runtime FFI — direct Cocoa calls via objc_msgSend
+// Requires: @symbol aliasing (G1 done), 0-10 arg extern (G6 done)
+// G3 (float args) done, G4 (callback trampolines) done
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ObjC Runtime externs
+// ═══════════════════════════════════════════════════════════════════════
+
+@link("objc")
+extern fn objc_getClass(name: *Byte) -> *Void
+
+@link("objc")
+extern fn sel_registerName(name: *Byte) -> *Void
+
+// objc_msgSend variants — same symbol, different arities
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg0(obj: *Void, sel: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg1(obj: *Void, sel: *Void, a1: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg2(obj: *Void, sel: *Void, a1: *Void, a2: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg3(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg4(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void, a4: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_int(obj: *Void, sel: *Void, a1: Int) -> *Void
+
+// Float-arg variant — CGFloat/NSTimeInterval go to SIMD d0 on ARM64
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_float(obj: *Void, sel: *Void, a1: Float) -> *Void
+
+// scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:
+// Args: Float(interval), *Void(target), *Void(selector), *Void(userInfo), Int(repeats)
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_timer(obj: *Void, sel: *Void, interval: Float, target: *Void, selector: *Void, info: *Void, repeats: Int) -> *Void
+
+// ObjC class registration (for MenuHandler subclass)
+@link("objc")
+extern fn objc_allocateClassPair(super_cls: *Void, name: *Byte, extra: Int) -> *Void
+
+@link("objc")
+extern fn objc_registerClassPair(cls: *Void)
+
+@link("objc")
+extern fn class_addMethod(cls: *Void, sel: *Void, imp: *Void, types: *Byte) -> Int
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+// Shorthand for class lookup
+fn cls(name: str) -> *Void {
+    return objc_getClass(cstring(name))
+}
+
+// Shorthand for selector registration
+fn sel(name: str) -> *Void {
+    return sel_registerName(cstring(name))
+}
+
+// Create NSString from hexa string
+fn nsstr(s: str) -> *Void {
+    let ns_cls = cls("NSString")
+    let ns_sel = sel("stringWithUTF8String:")
+    return msg1(ns_cls, ns_sel, cstring(s))
+}
+
+// Alloc + init shorthand
+fn alloc_init(class_name: str) -> *Void {
+    let c = cls(class_name)
+    let raw = msg0(c, sel("alloc"))
+    return msg0(raw, sel("init"))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Paths
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let TMPDIR = exec("echo ${TMPDIR:-/tmp/}").trim()
+
+let mut state_path = TMPDIR + "airgenome-state.json"
+let mut config_path = HOME + "/.airgenome/config.json"
+let mut settings_path = HOME + "/Dev/airgenome/settings.hexa"
+
+// CLI overrides: hexa menubar.hexa [state] [config] [settings]
+let argv = args()
+if argv.len() >= 3 { state_path = argv[2] }
+if argv.len() >= 4 { config_path = argv[3] }
+if argv.len() >= 5 { settings_path = argv[4] }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Init NSApplication
+// ═══════════════════════════════════════════════════════════════════════
+
+let NSApp_cls = cls("NSApplication")
+let app = msg0(NSApp_cls, sel("sharedApplication"))
+
+// NSApplicationActivationPolicyAccessory = 1
+msg_int(app, sel("setActivationPolicy:"), 1)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MenuHandler subclass (action target)
+// ═══════════════════════════════════════════════════════════════════════
+
+// openSettings: handler — launches settings JS via osascript
+fn open_settings_handler(self_ptr: *Void, sel_ptr: *Void, sender: *Void, _unused: *Void) {
+    exec("osascript -l JavaScript " + settings_path + " " + config_path)
+}
+
+let open_settings_imp = callback_create(open_settings_handler)
+
+let nsobject_cls = cls("NSObject")
+let handler_cls = objc_allocateClassPair(nsobject_cls, cstring("MenuHandler"), 0)
+
+class_addMethod(handler_cls, sel("openSettings:"), open_settings_imp, cstring("v@:@"))
+
+// timerFired: handler — called by NSTimer every 2 seconds
+fn timer_fired(self_ptr: *Void, sel_ptr: *Void, timer: *Void, _unused: *Void) {
+    update_display()
+}
+
+let timer_imp = callback_create(timer_fired)
+class_addMethod(handler_cls, sel("timerFired:"), timer_imp, cstring("v@:@"))
+
+objc_registerClassPair(handler_cls)
+let handler = msg0(msg0(handler_cls, sel("alloc")), sel("init"))
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Status Bar Item
+// ═══════════════════════════════════════════════════════════════════════
+
+let sb_cls = cls("NSStatusBar")
+let status_bar = msg0(sb_cls, sel("systemStatusBar"))
+
+// NSVariableStatusItemLength = -1.0  (CGFloat → double on ARM64)
+let status_item = msg_float(status_bar, sel("statusItemWithLength:"), -1.0)
+
+let button = msg0(status_item, sel("button"))
+msg1(button, sel("setTitle:"), nsstr("\u2B22 airgenome"))
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Menu Construction
+// ═══════════════════════════════════════════════════════════════════════
+
+let menu = alloc_init("NSMenu")
+
+// Helper: create a disabled menu item and add to menu
+fn add_disabled_item(menu: *Void, title: str) -> *Void {
+    let item_cls = cls("NSMenuItem")
+    let item = msg3(
+        msg0(item_cls, sel("alloc")),
+        sel("initWithTitle:action:keyEquivalent:"),
+        nsstr(title),
+        ptr_null(),
+        nsstr("")
+    )
+    msg_int(item, sel("setEnabled:"), 0)
+    msg1(menu, sel("addItem:"), item)
+    return item
+}
+
+// Helper: add separator
+fn add_separator(menu: *Void) {
+    let mi_cls = cls("NSMenuItem")
+    let sep = msg0(mi_cls, sel("separatorItem"))
+    msg1(menu, sel("addItem:"), sep)
+}
+
+// --- Resource items ---
+let cpu_item  = add_disabled_item(menu, "CPU  ...")
+let ram_item  = add_disabled_item(menu, "RAM  ...")
+let swap_item = add_disabled_item(menu, "Swap ...")
+let save_item = add_disabled_item(menu, "Save ...")
+
+add_separator(menu)
+
+// --- Gate (Ubuntu remote) items ---
+let gate_item  = add_disabled_item(menu, "Gate ...")
+let u_cpu_item = add_disabled_item(menu, "  CPU ...")
+let u_ram_item = add_disabled_item(menu, "  RAM ...")
+let u_gpu_item = add_disabled_item(menu, "  GPU ...")
+
+add_separator(menu)
+
+// --- Safety indicator ---
+let safety_item = add_disabled_item(menu, "\u2705 Safe")
+
+add_separator(menu)
+
+// --- Settings item ---
+let settings_item = msg3(
+    msg0(cls("NSMenuItem"), sel("alloc")),
+    sel("initWithTitle:action:keyEquivalent:"),
+    nsstr("\u2699 Settings..."),
+    sel("openSettings:"),
+    nsstr(",")
+)
+msg1(settings_item, sel("setTarget:"), handler)
+msg1(menu, sel("addItem:"), settings_item)
+
+add_separator(menu)
+
+// --- Quit item ---
+let quit_cls = cls("NSMenuItem")
+let quit_item = msg3(
+    msg0(quit_cls, sel("alloc")),
+    sel("initWithTitle:action:keyEquivalent:"),
+    nsstr("Quit airgenome"),
+    sel("terminate:"),
+    nsstr("q")
+)
+msg1(menu, sel("addItem:"), quit_item)
+
+// Attach menu to status item
+msg1(status_item, sel("setMenu:"), menu)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  State / Config readers (hexa built-in I/O — no NSString file ops)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_state() -> auto {
+    if file_exists(state_path) == false { return {} }
+    try {
+        return json_parse(read_file(state_path))
+    } catch e {
+        return {}
+    }
+}
+
+fn read_config() -> auto {
+    if file_exists(config_path) == false { return {} }
+    try {
+        return json_parse(read_file(config_path))
+    } catch e {
+        return {}
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Bar renderer (Unicode block bar)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn bar(val: int, ceil: int, w: int) -> str {
+    let effective_ceil = if ceil > 0 { ceil } else { 1 }
+    let mut pct = to_float(val) / to_float(effective_ceil)
+    if pct > 1.0 { pct = 1.0 }
+    let filled = to_int(pct * to_float(w) + 0.5)
+    let mut s = ""
+    let mut i = 0
+    while i < filled { s = s + "\u2588"; i = i + 1 }
+    while i < w { s = s + "\u2591"; i = i + 1 }
+    return s
+}
+
+fn level_icon(lv: str) -> str {
+    if lv == "danger" { return "\u26A0" }
+    if lv == "warn" { return "\u2B21" }
+    return "\u2B22"
+}
+
+fn min_int(a: int, b: int) -> int {
+    if a < b { return a }
+    return b
+}
+
+fn round_1(v: float) -> float {
+    return to_float(to_int(v * 10.0 + 0.5)) / 10.0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Update display (called by timer)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn update_display() {
+    let j = read_state()
+
+    // Check if state is empty / unreadable
+    if j == {} {
+        msg1(button, sel("setTitle:"), nsstr("\u26A0 airgenome"))
+        return
+    }
+
+    let cfg = read_config()
+    let cc = if cfg == {} { 90 } else { try { to_int(cfg["cpu_ceil"]) } catch e { 90 } }
+    let rc = if cfg == {} { 80 } else { try { to_int(cfg["ram_ceil"]) } catch e { 80 } }
+    let sc = if cfg == {} { 50 } else { try { to_int(cfg["swap_ceil"]) } catch e { 50 } }
+
+    let cpu_val = try { to_int(j["cpu"]) } catch e { 0 }
+    let ram_val = try { to_int(j["ram"]) } catch e { 0 }
+    let swap_val = try { to_int(j["swap"]) } catch e { 0 }
+    let free_mb = try { to_int(j["free_mb"]) } catch e { 0 }
+    let lv = try { j["level"] } catch e { "ok" }
+    let gate_status = try { j["gate"] } catch e { "offline" }
+
+    // --- Status bar title ---
+    let swap_high = swap_val >= sc
+    let swap_mid = swap_val >= (sc * 80 / 100)
+    let swap_tag = if swap_high { " \u26D4sw" } else { if swap_mid { " \u26A0sw" } else { "" } }
+
+    let save_cpu_v = try { to_int(j["save_cpu"]) } catch e { 0 }
+    let save_ram_v = try { to_int(j["save_ram"]) } catch e { 0 }
+    let save_total_bar = min_int(to_int(to_float(save_cpu_v + save_ram_v) / 2.0 + 0.5), 99)
+    let save_tag = if save_total_bar > 0 { " \u2193" + to_string(save_total_bar) + "%" } else { "" }
+    let gate_icon = if gate_status == "online" { " \u25CF" } else { " \u25CB" }
+
+    let title = level_icon(lv) + " " + to_string(cpu_val) + "% \u00B7 " + to_string(ram_val) + "%" + swap_tag + save_tag + gate_icon
+    msg1(button, sel("setTitle:"), nsstr(title))
+
+    // --- Menu item updates ---
+    let bw = 16
+
+    msg1(cpu_item, sel("setTitle:"), nsstr("CPU  " + bar(cpu_val, cc, bw) + "  " + to_string(cpu_val) + "/" + to_string(cc) + "%"))
+    msg1(ram_item, sel("setTitle:"), nsstr("RAM  " + bar(ram_val, rc, bw) + "  " + to_string(ram_val) + "/" + to_string(rc) + "%"))
+
+    let swap_icon_str = if swap_high { "\u26D4 " } else { if swap_mid { "\u26A0 " } else { "" } }
+    msg1(swap_item, sel("setTitle:"), nsstr(swap_icon_str + "Swap " + bar(swap_val, sc, bw) + "  " + to_string(swap_val) + "/" + to_string(sc) + "%"))
+
+    // Save item
+    let save_cpu = try { to_int(j["save_cpu"]) } catch e { 0 }
+    let save_ram = try { to_int(j["save_ram"]) } catch e { 0 }
+    let save_total = min_int(to_int(to_float(save_cpu + save_ram) / 2.0 + 0.5), 99)
+    let save_icon = if save_total > 0 { "\u2193" } else { "\u2500" }
+    msg1(save_item, sel("setTitle:"), nsstr(save_icon + " Save  CPU -" + to_string(save_cpu) + "%  RAM -" + to_string(save_ram) + "%  (\u2248" + to_string(save_total) + "% \uC808\uAC10)"))
+
+    // --- Gate (Ubuntu) section ---
+    if gate_status == "online" {
+        let u_load = try { j["ubu_load"] } catch e { "0" }
+        let u_ram_pct = try { to_int(j["ubu_ram_pct"]) } catch e { 0 }
+        let u_ram_avail = try { to_int(j["ubu_ram_avail"]) } catch e { 0 }
+        let u_ram_total = try { to_int(j["ubu_ram_total"]) } catch e { 0 }
+        let u_cpu = try { to_int(j["ubu_cpu"]) } catch e { 0 }
+        let u_jobs = try { to_int(j["ubu_jobs"]) } catch e { 0 }
+        let u_gpu_util = try { to_int(j["ubu_gpu_util"]) } catch e { 0 }
+        let u_gpu_mem = try { to_int(j["ubu_gpu_mem"]) } catch e { 0 }
+        let u_gpu_name = try { j["ubu_gpu_name"] } catch e { "" }
+
+        let jobs_tag = if u_jobs > 0 { "  \u2191" + to_string(u_jobs) + "jobs" } else { "" }
+        msg1(gate_item, sel("setTitle:"), nsstr("\u25CF Ubuntu  load=" + u_load + jobs_tag))
+
+        let u_ram_avail_g = round_1(to_float(u_ram_avail) / 1024.0)
+        let u_ram_total_g = round_1(to_float(u_ram_total) / 1024.0)
+
+        msg1(u_cpu_item, sel("setTitle:"), nsstr("  CPU  " + bar(u_cpu, 100, bw) + "  " + to_string(u_cpu) + "%"))
+        msg_int(u_cpu_item, sel("setHidden:"), 0)
+
+        msg1(u_ram_item, sel("setTitle:"), nsstr("  RAM  " + bar(u_ram_pct, 100, bw) + "  " + to_string(u_ram_pct) + "%  (" + to_string(u_ram_avail_g) + "G/" + to_string(u_ram_total_g) + "G)"))
+        msg_int(u_ram_item, sel("setHidden:"), 0)
+
+        if len(u_gpu_name) > 0 {
+            msg1(u_gpu_item, sel("setTitle:"), nsstr("  GPU  " + bar(u_gpu_util, 100, bw) + "  " + to_string(u_gpu_util) + "%  VRAM " + to_string(u_gpu_mem) + "%  " + u_gpu_name))
+        } else {
+            msg1(u_gpu_item, sel("setTitle:"), nsstr("  GPU  \u2014 driver not installed"))
+        }
+        msg_int(u_gpu_item, sel("setHidden:"), 0)
+    } else {
+        msg1(gate_item, sel("setTitle:"), nsstr("\u25CB Ubuntu \u2014 offline"))
+        msg1(u_cpu_item, sel("setTitle:"), nsstr(""))
+        msg1(u_ram_item, sel("setTitle:"), nsstr(""))
+        msg1(u_gpu_item, sel("setTitle:"), nsstr(""))
+        msg_int(u_cpu_item, sel("setHidden:"), 1)
+        msg_int(u_ram_item, sel("setHidden:"), 1)
+        msg_int(u_gpu_item, sel("setHidden:"), 1)
+    }
+
+    // --- Safety indicator ---
+    let swap_note = if swap_high { " [swap]" } else { if swap_mid { " [swap]" } else { "" } }
+    let ram_note = if free_mb < 512 { " [" + to_string(free_mb) + "MB free]" } else { "" }
+
+    if lv == "critical" {
+        msg1(safety_item, sel("setTitle:"), nsstr("\u25CB CRITICAL \u2014 RAM " + to_string(free_mb) + "MB free" + swap_note))
+    } else {
+        if lv == "danger" {
+            msg1(safety_item, sel("setTitle:"), nsstr("\u26A0 THROTTLE active" + ram_note + swap_note))
+        } else {
+            if lv == "warn" {
+                msg1(safety_item, sel("setTitle:"), nsstr("\u26A1 Approaching ceiling" + ram_note + swap_note))
+            } else {
+                let free_g = round_1(to_float(free_mb) / 1024.0)
+                msg1(safety_item, sel("setTitle:"), nsstr("\u2705 Safe \u2014 " + to_string(free_g) + "G free"))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Timer — periodic refresh
+// ═══════════════════════════════════════════════════════════════════════
+
+// Schedule repeating NSTimer — 2.0s interval, targeting handler's timerFired:
+msg_timer(
+    cls("NSTimer"),
+    sel("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:"),
+    2.0,
+    handler,
+    sel("timerFired:"),
+    ptr_null(),
+    1   // YES (repeats)
+)
+
+// Initial display update before timer fires
+update_display()
+
+// Enter the NSApplication run loop — handles events + timer callbacks properly
+msg0(app, sel("run"))

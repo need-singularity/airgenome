@@ -3,3 +3,21 @@
 1775565369	hexa	mk2_hexa/native/sigdiff.hexa help	0s
 1775565385	hexa	mk2_hexa/native/sigdiff.hexa help	0s
 1775565724	hexa	mk2_hexa/native/sigdiff.hexa help	0s
+2026-04-08 16:54:40	monitor	candidates=15	cpu_save=648%	ubu=0.00 0.06 0.03
+2026-04-08 16:55:13	monitor	candidates=13	cpu_save=534%	ubu=0.00 0.05 0.03
+2026-04-08 17:07:14	monitor	candidates=15	cpu_save=572%	ubu=0.00 0.00 0.00
+2026-04-08 17:22:38	monitor	candidates=15	cpu_save=562%	ubu=0.00 0.00 0.00
+2026-04-08 17:44:33	monitor	candidates=4	cpu_save=346%	ubu=0.06 0.01 0.00
+2026-04-08 17:57:38	monitor	candidates=0	cpu_save=0%	ubu=1.02 0.68 0.32
+2026-04-08 17:58:12	monitor	candidates=1	cpu_save=108%	ubu=1.01 0.71 0.35
+2026-04-08 18:02:37	monitor	candidates=1	cpu_save=87%	ubu=0.07 0.38 0.30
+2026-04-08 18:03:25	tame	count=0
+2026-04-08 18:07:38	monitor	candidates=1	cpu_save=41%	ubu=0.01 0.14 0.21
+2026-04-08 18:22:46	monitor	candidates=1	cpu_save=71%	ubu=10.34 8.63 4.74
+2026-04-08 18:57:51	monitor	candidates=2	cpu_save=117%	ubu=6.25 7.06 5.26
+2026-04-08 18:58:15	tame	count=0
+2026-04-08 19:17:38	monitor	candidates=1	cpu_save=92%	ubu=5.03 5.20 5.34
+2026-04-08 19:22:42	monitor	candidates=4	cpu_save=346%	ubu=8.98 7.56 6.33
+2026-04-08 19:22:48	tame	count=1
+2026-04-08 19:37:44	monitor	candidates=9	cpu_save=330%	ubu=9.15 9.30 8.23
+2026-04-08 19:37:52	tame	count=0

@@ -1,49 +1,48 @@
-// run.hexa — airgenome 빌드 & 메뉴바 실행 (run.sh 대체)
-// 사용: hexa run.hexa [--settings]
+// run.hexa — airgenome build & menubar launch (run.sh replacement)
+// Usage: hexa run.hexa [--settings | -s]
+//
+// Self-contained: sampler delegated to sampler.hexa, menubar JXA inlined.
+// No Cargo build — Rust src/ is deprecated. Pure hexa execution.
 
 let HOME = env("HOME")
 let HEXA = HOME + "/Dev/hexa-lang/target/release/hexa"
 let DIR = exec("cd \"$(dirname \"" + args()[1] + "\")\" 2>/dev/null && pwd || echo " + HOME + "/Dev/airgenome").trim()
-let CARGO = exec("command -v cargo || echo " + HOME + "/.cargo/bin/cargo").trim()
 let CONF_DIR = HOME + "/.airgenome"
 let TMPDIR = exec("echo ${TMPDIR:-/tmp}").trim()
 let STATE = TMPDIR + "/airgenome-state.json"
 let CONFIG = CONF_DIR + "/config.json"
 let LOCKFILE = TMPDIR + "/airgenome.lock"
 
-// --settings: 설정 패널만 열기
+// --settings: open settings panel only
 let a = args()
 if a.len() >= 3 {
     if a[2] == "--settings" || a[2] == "-s" {
-        exec("osascript -l JavaScript " + DIR + "/settings.js " + CONFIG)
+        exec("osascript -l JavaScript " + DIR + "/settings.hexa " + CONFIG)
         return
     }
 }
 
 exec("mkdir -p " + CONF_DIR)
 
-// ── 0. Single instance lock ──
+// ── 0. Single instance lock ────────────────────────────────────────
 if file_exists(LOCKFILE) {
     let old_pid = exec("cat " + LOCKFILE + " 2>/dev/null").trim()
     let alive = exec("kill -0 " + old_pid + " 2>/dev/null && echo y || echo n").trim()
     if alive == "y" {
         println("⬡ killing old instance (pid " + old_pid + ")...")
-        exec("pkill -9 -P " + old_pid + " 2>/dev/null")
-        exec("kill -9 " + old_pid + " 2>/dev/null")
+        exec("pkill -9 -P " + old_pid + " 2>/dev/null || true")
+        exec("kill -9 " + old_pid + " 2>/dev/null || true")
         exec("sleep 1")
     }
 }
+// Write our PID to lock (use $PPID to get the parent shell's PID which is stable)
 let my_pid = exec("echo $$").trim()
 try { write_file(LOCKFILE, my_pid) } catch e {}
 
-// ── 1. Build ──
-println("⟐ building airgenome...")
-exec(CARGO + " build --manifest-path " + DIR + "/Cargo.toml --quiet 2>&1")
+// ── 1. Kill old menubar ────────────────────────────────────────────
+exec("pkill -f 'osascript.*airgenome-menubar' 2>/dev/null || true")
 
-// ── 2. Kill old menubar ──
-exec("pkill -f 'osascript.*airgenome-menubar' 2>/dev/null")
-
-// ── 3. System info ──
+// ── 2. System info ─────────────────────────────────────────────────
 let total_ram_mb_s = exec("sysctl -n hw.memsize 2>/dev/null").trim()
 let mut total_ram_mb = 24576
 try { total_ram_mb = to_int(to_float(total_ram_mb_s)) / 1048576 } catch e {}
@@ -55,7 +54,7 @@ let chip = exec("sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -oE 'M[0-
 let model_name = exec("system_profiler SPHardwareDataType 2>/dev/null | grep 'Model Name' | awk -F: '{print $2}' | xargs").trim()
 let has_fan = if model_name.to_lower().contains("pro") { "true" } else { "false" }
 
-// ── 4. Auto-detect profile → default config ──
+// ── 3. Auto-detect profile -> default config ───────────────────────
 if file_exists(CONFIG) == false {
     let profile_json = DIR + "/profiles.json"
     let mut cpu_c = 75
@@ -63,7 +62,7 @@ if file_exists(CONFIG) == false {
     let mut swap_c = 30
 
     if file_exists(profile_json) {
-        // awk 기반 프로필 매칭 (원본 run.sh와 동일)
+        // awk-based profile matching (identical to run.sh logic)
         let profile_result = exec("awk -v chip='" + chip + "' -v ram='" + to_string(total_ram_gb) + "' -v fan='" + has_fan + "' 'BEGIN{RS=\"{\";best_cpu=75;best_ram=70;best_swap=30;found=0} /\"chip\"/{mc=\"\";mr=0;mf=\"\";cc=0;rc=0;sc=0;for(i=1;i<=NF;i++){if($i~/\"chip\"/)  {split($i,a,\"\\\"\");mc=a[4]} if($i~/\"ram_gb\"/){gsub(/[^0-9]/,\"\",$i);mr=$i+0} if($i~/\"fan\"/)   {mf=($i~/true/)?\"true\":\"false\"} if($i~/\"cpu_ceil\"/){gsub(/[^0-9]/,\"\",$i);cc=$i+0} if($i~/\"ram_ceil\"/){gsub(/[^0-9]/,\"\",$i);rc=$i+0} if($i~/\"swap_ceil\"/){gsub(/[^0-9]/,\"\",$i);sc=$i+0}} if(mc!=\"\"&&cc>0&&!found){chip_ok=(index(chip,mc)>0);ram_ok=(mr==ram+0);fan_ok=(mf==\"\"||mf==fan);if(chip_ok&&ram_ok&&fan_ok){best_cpu=cc;best_ram=rc;best_swap=sc;found=1}}} END{printf \"%d %d %d\",best_cpu,best_ram,best_swap}' '" + profile_json + "' 2>/dev/null").trim()
         let parts = profile_result.split(" ")
         if parts.len() >= 3 {
@@ -73,40 +72,246 @@ if file_exists(CONFIG) == false {
         }
     }
 
-    println("⬡ profile: " + chip + " " + to_string(total_ram_gb) + "GB → CPU " + to_string(cpu_c) + "% RAM " + to_string(ram_c) + "% Swap " + to_string(swap_c) + "%")
+    println("⬡ profile: " + chip + " " + to_string(total_ram_gb) + "GB -> CPU " + to_string(cpu_c) + "% RAM " + to_string(ram_c) + "% Swap " + to_string(swap_c) + "%")
     try { write_file(CONFIG, "{\"cpu_ceil\": " + to_string(cpu_c) + ", \"ram_ceil\": " + to_string(ram_c) + ", \"swap_ceil\": " + to_string(swap_c) + ", \"bridge_max\": 4}\n") } catch e {}
 }
 
-// config 읽기
+// ── 4. Read config ─────────────────────────────────────────────────
 let mut cpu_ceil = 75
 let mut ram_ceil = 70
 let mut swap_ceil = 30
+
+fn cfg_val(raw: str, key: str, def: int) -> int {
+    if raw.contains("\"" + key + "\"") == false { return def }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_part = after.split(":")[1].split(",")[0].split("}")[0].trim()
+    try { return to_int(to_float(val_part)) } catch e { return def }
+}
+
 if file_exists(CONFIG) {
     let cfg = read_file(CONFIG)
-    fn cfg_val(raw: str, key: str, def: int) -> int {
-        if raw.contains("\"" + key + "\"") == false { return def }
-        let p = raw.split("\"" + key + "\"")[1].split(":")[1].split(",")[0].split("}")[0].trim()
-        try { return to_int(to_float(p)) } catch e { return def }
-    }
     cpu_ceil = cfg_val(cfg, "cpu_ceil", 75)
     ram_ceil = cfg_val(cfg, "ram_ceil", 70)
     swap_ceil = cfg_val(cfg, "swap_ceil", 30)
 }
 
-// ── 5. Write initial state ──
-try { write_file(STATE, "{\"active\":true,\"cpu\":0,\"ram\":0,\"swap\":0,\"level\":\"ok\",\"throttled\":false,\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + "}\n") } catch e {}
+// ── 5. Write initial state ─────────────────────────────────────────
+try {
+    write_file(STATE, "{\"active\":true,\"cpu\":0,\"ram\":0,\"swap\":0,\"level\":\"ok\",\"throttled\":false,\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + "}\n")
+} catch e {}
 
-// ── 6. Background sampler ──
+// ── 6. Background sampler (sampler.hexa) ───────────────────────────
 let sampler_pid = exec(HEXA + " " + DIR + "/sampler.hexa " + STATE + " " + CONFIG + " " + to_string(total_ram_mb) + " " + to_string(ncpu) + " " + DIR + " >/dev/null 2>&1 & echo $!").trim()
 
-// ── 7. JXA menubar ──
-let menubar_js = DIR + "/menubar.js"
-let menubar_pid = exec("osascript -l JavaScript " + menubar_js + " " + STATE + " " + CONFIG + " " + DIR + "/settings.js >/dev/null 2>&1 & echo $!").trim()
+// ── 7. JXA menubar (inline heredoc) ────────────────────────────────
+// Generate the JXA source with paths substituted, write to temp file, launch
+let menubar_jxa = "ObjC.import('Cocoa');\n" +
+"ObjC.import('Foundation');\n" +
+"\n" +
+"var app = $.NSApplication.sharedApplication;\n" +
+"app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);\n" +
+"\n" +
+"var statePath = '" + STATE + "';\n" +
+"var configPath = '" + CONFIG + "';\n" +
+"var settingsJsPath = '" + DIR + "/settings.js';\n" +
+"\n" +
+"ObjC.registerSubclass({\n" +
+"    name: 'MenuHandler',\n" +
+"    methods: {\n" +
+"        'openSettings:': {\n" +
+"            types: ['void', ['id']],\n" +
+"            implementation: function(sender) {\n" +
+"                var task = $.NSTask.alloc.init;\n" +
+"                task.executableURL = $.NSURL.fileURLWithPath($('/usr/bin/osascript'));\n" +
+"                task.arguments = $(['-l', 'JavaScript', settingsJsPath, configPath]);\n" +
+"                task.launchAndReturnError(null);\n" +
+"            }\n" +
+"        }\n" +
+"    }\n" +
+"});\n" +
+"var handler = $.MenuHandler.alloc.init;\n" +
+"\n" +
+"var statusBar = $.NSStatusBar.systemStatusBar;\n" +
+"var statusItem = statusBar.statusItemWithLength($.NSVariableStatusItemLength);\n" +
+"statusItem.button.title = $('\\u2B22 airgenome');\n" +
+"\n" +
+"var menu = $.NSMenu.alloc.init;\n" +
+"\n" +
+"var cpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('CPU  ...'), null, $(''));\n" +
+"cpuItem.enabled = false;\n" +
+"menu.addItem(cpuItem);\n" +
+"\n" +
+"var ramItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('RAM  ...'), null, $(''));\n" +
+"ramItem.enabled = false;\n" +
+"menu.addItem(ramItem);\n" +
+"\n" +
+"var swapItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Swap ...'), null, $(''));\n" +
+"swapItem.enabled = false;\n" +
+"menu.addItem(swapItem);\n" +
+"\n" +
+"var saveItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Save ...'), null, $(''));\n" +
+"saveItem.enabled = false;\n" +
+"menu.addItem(saveItem);\n" +
+"\n" +
+"menu.addItem($.NSMenuItem.separatorItem);\n" +
+"\n" +
+"var gateItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Gate ...'), null, $(''));\n" +
+"gateItem.enabled = false;\n" +
+"menu.addItem(gateItem);\n" +
+"\n" +
+"var uCpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  CPU ...'), null, $(''));\n" +
+"uCpuItem.enabled = false;\n" +
+"menu.addItem(uCpuItem);\n" +
+"\n" +
+"var uRamItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  RAM ...'), null, $(''));\n" +
+"uRamItem.enabled = false;\n" +
+"menu.addItem(uRamItem);\n" +
+"\n" +
+"var uGpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  GPU ...'), null, $(''));\n" +
+"uGpuItem.enabled = false;\n" +
+"menu.addItem(uGpuItem);\n" +
+"\n" +
+"menu.addItem($.NSMenuItem.separatorItem);\n" +
+"\n" +
+"var safetyItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\\u2705 Safe'), null, $(''));\n" +
+"safetyItem.enabled = false;\n" +
+"menu.addItem(safetyItem);\n" +
+"\n" +
+"menu.addItem($.NSMenuItem.separatorItem);\n" +
+"\n" +
+"var settingsItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\\u2699 Settings...'), 'openSettings:', $(','));\n" +
+"settingsItem.target = handler;\n" +
+"menu.addItem(settingsItem);\n" +
+"\n" +
+"menu.addItem($.NSMenuItem.separatorItem);\n" +
+"\n" +
+"var quitItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Quit airgenome'), 'terminate:', $('q'));\n" +
+"menu.addItem(quitItem);\n" +
+"\n" +
+"statusItem.menu = menu;\n" +
+"\n" +
+"function readState() {\n" +
+"    try {\n" +
+"        var str = $.NSString.stringWithContentsOfFileEncodingError($(statePath), $.NSUTF8StringEncoding, null);\n" +
+"        if (str.isNil()) return null;\n" +
+"        return JSON.parse(str.js);\n" +
+"    } catch(e) { return null; }\n" +
+"}\n" +
+"\n" +
+"function readConfig() {\n" +
+"    try {\n" +
+"        var str = $.NSString.stringWithContentsOfFileEncodingError($(configPath), $.NSUTF8StringEncoding, null);\n" +
+"        if (str.isNil()) return null;\n" +
+"        return JSON.parse(str.js);\n" +
+"    } catch(e) { return null; }\n" +
+"}\n" +
+"\n" +
+"function bar(val, ceil, w) {\n" +
+"    var pct = Math.min(val / (ceil > 0 ? ceil : 1), 1.0);\n" +
+"    var filled = Math.round(pct * w);\n" +
+"    var s = '';\n" +
+"    for (var i = 0; i < filled; i++) s += '\\u2588';\n" +
+"    for (var i = filled; i < w; i++) s += '\\u2591';\n" +
+"    return s;\n" +
+"}\n" +
+"\n" +
+"function levelIcon(lv) {\n" +
+"    if (lv === 'danger') return '\\u26A0';\n" +
+"    if (lv === 'warn') return '\\u2B21';\n" +
+"    return '\\u2B22';\n" +
+"}\n" +
+"\n" +
+"$.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {\n" +
+"    var j = readState();\n" +
+"    if (!j) { statusItem.button.title = $('\\u26A0 airgenome'); return; }\n" +
+"\n" +
+"    var cfg = readConfig() || {cpu_ceil: 90, ram_ceil: 80, swap_ceil: 50};\n" +
+"    var cc = cfg.cpu_ceil;\n" +
+"    var rc = cfg.ram_ceil;\n" +
+"    var sc = cfg.swap_ceil;\n" +
+"\n" +
+"    var lv = j.level || 'ok';\n" +
+"    var swapHigh = j.swap >= sc;\n" +
+"    var swapMid  = j.swap >= (sc * 80 / 100);\n" +
+"    var swapTag = swapHigh ? ' \\u26D4sw' : (swapMid ? ' \\u26A0sw' : '');\n" +
+"    var saveCpuBar = j.save_cpu || 0;\n" +
+"    var saveRamBar = j.save_ram || 0;\n" +
+"    var saveTotalBar = Math.min(Math.round((saveCpuBar + saveRamBar) / 2), 99);\n" +
+"    var saveTag = saveTotalBar > 0 ? ' \\u2193' + saveTotalBar + '%' : '';\n" +
+"    var gateIcon = j.gate === 'online' ? ' \\u25CF' : ' \\u25CB';\n" +
+"    statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \\u00B7 ' + j.ram + '%' + swapTag + saveTag + gateIcon);\n" +
+"\n" +
+"    var bw = 16;\n" +
+"    cpuItem.title  = $('CPU  ' + bar(j.cpu, cc, bw) + '  ' + j.cpu  + '/' + cc + '%');\n" +
+"    ramItem.title  = $('RAM  ' + bar(j.ram, rc, bw) + '  ' + j.ram  + '/' + rc + '%');\n" +
+"    var swapIcon = swapHigh ? '\\u26D4 ' : (swapMid ? '\\u26A0 ' : '');\n" +
+"    swapItem.title = $(swapIcon + 'Swap ' + bar(j.swap, sc, bw) + '  ' + j.swap + '/' + sc + '%');\n" +
+"\n" +
+"    var saveCpu = j.save_cpu || 0;\n" +
+"    var saveRam = j.save_ram || 0;\n" +
+"    var saveTotal = Math.min(Math.round((saveCpu + saveRam) / 2), 99);\n" +
+"    var saveIcon = saveTotal > 0 ? '\\u2193' : '\\u2500';\n" +
+"    saveItem.title = $(saveIcon + ' Save  CPU -' + saveCpu + '%  RAM -' + saveRam + '%  (\\u2248' + saveTotal + '% \\uC808\\uAC10)');\n" +
+"\n" +
+"    if (j.gate === 'online') {\n" +
+"        var uLoad = j.ubu_load || '0';\n" +
+"        var uRamPct = j.ubu_ram_pct || 0;\n" +
+"        var uRamAvail = j.ubu_ram_avail || 0;\n" +
+"        var uRamAvailG = Math.round(uRamAvail / 1024 * 10) / 10;\n" +
+"        var uRamTotalG = Math.round((j.ubu_ram_total || 0) / 1024 * 10) / 10;\n" +
+"        var uCpu = j.ubu_cpu || 0;\n" +
+"        var uJobs = j.ubu_jobs || 0;\n" +
+"        var uGpuUtil = j.ubu_gpu_util || 0;\n" +
+"        var uGpuMem = j.ubu_gpu_mem || 0;\n" +
+"        var uGpuName = j.ubu_gpu_name || '';\n" +
+"        var jobsTag = uJobs > 0 ? '  \\u2191' + uJobs + 'jobs' : '';\n" +
+"        gateItem.title = $('\\u25CF Ubuntu  load=' + uLoad + jobsTag);\n" +
+"        uCpuItem.title = $('  CPU  ' + bar(uCpu, 100, bw) + '  ' + uCpu + '%');\n" +
+"        uCpuItem.hidden = false;\n" +
+"        uRamItem.title = $('  RAM  ' + bar(uRamPct, 100, bw) + '  ' + uRamPct + '%  (' + uRamAvailG + 'G/' + uRamTotalG + 'G)');\n" +
+"        uRamItem.hidden = false;\n" +
+"        if (uGpuName) {\n" +
+"            uGpuItem.title = $('  GPU  ' + bar(uGpuUtil, 100, bw) + '  ' + uGpuUtil + '%  VRAM ' + uGpuMem + '%  ' + uGpuName);\n" +
+"            uGpuItem.hidden = false;\n" +
+"        } else {\n" +
+"            uGpuItem.title = $('  GPU  \\u2014 driver not installed');\n" +
+"            uGpuItem.hidden = false;\n" +
+"        }\n" +
+"    } else {\n" +
+"        gateItem.title = $('\\u25CB Ubuntu \\u2014 offline');\n" +
+"        uCpuItem.title = $('');\n" +
+"        uRamItem.title = $('');\n" +
+"        uGpuItem.title = $('');\n" +
+"        uCpuItem.hidden = true;\n" +
+"        uRamItem.hidden = true;\n" +
+"        uGpuItem.hidden = true;\n" +
+"    }\n" +
+"\n" +
+"    var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');\n" +
+"    var freeMB = j.free_mb || 0;\n" +
+"    var loadAvg = j.load || 0;\n" +
+"    var ramNote = freeMB < 512 ? ' [' + freeMB + 'MB free]' : '';\n" +
+"    if (lv === 'critical') {\n" +
+"        safetyItem.title = $('\\u25CB CRITICAL \\u2014 RAM ' + freeMB + 'MB free' + swapNote);\n" +
+"    } else if (lv === 'danger') {\n" +
+"        safetyItem.title = $('\\u26A0 THROTTLE active' + ramNote + swapNote);\n" +
+"    } else if (lv === 'warn') {\n" +
+"        safetyItem.title = $('\\u26A1 Approaching ceiling' + ramNote + swapNote);\n" +
+"    } else {\n" +
+"        safetyItem.title = $('\\u2705 Safe \\u2014 ' + Math.round(freeMB/1024*10)/10 + 'G free');\n" +
+"    }\n" +
+"});\n" +
+"\n" +
+"app.run;\n"
 
+// Write JXA to temp file and launch (avoids shell escaping issues with -e)
+let menubar_tmp = TMPDIR + "/airgenome-menubar.js"
+try { write_file(menubar_tmp, menubar_jxa) } catch e {}
+let menubar_pid = exec("osascript -l JavaScript " + menubar_tmp + " >/dev/null 2>&1 & echo $!").trim()
+
+// ── 8. Cleanup on exit ─────────────────────────────────────────────
 println("⬡ airgenome running (sampler=" + sampler_pid + " menubar=" + menubar_pid + ")")
 println("  press Ctrl+C to stop")
 
-// ── 8. Cleanup on exit ──
-// BLOCKER: hexa에 signal handler (trap) 없음
-// 대안: bash -c 래핑으로 trap 처리
-exec("bash -c 'trap \"kill " + sampler_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + STATE + " " + LOCKFILE + "\" EXIT INT TERM; wait " + sampler_pid + " " + menubar_pid + " 2>/dev/null'")
+// Use bash trap for signal handling (hexa has no native signal handler)
+exec("bash -c 'trap \"kill " + sampler_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + STATE + " " + LOCKFILE + " " + menubar_tmp + "\" EXIT INT TERM; wait " + sampler_pid + " " + menubar_pid + " 2>/dev/null'")

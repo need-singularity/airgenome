@@ -1,0 +1,580 @@
+// settings.hexa — airgenome 계정 관리 패널 (pure hexa, Cocoa FFI)
+// Usage: hexa settings.hexa [config_path]
+//
+// Ports settings.js (243 lines JXA) to pure hexa using ObjC runtime FFI.
+// File I/O uses hexa built-in read_file/write_file instead of NSString methods.
+//
+// FFI status:
+//   G1 @symbol aliasing  — DONE (used below)
+//   G2 struct packing    — DONE (struct_rect/struct_free)
+//   G3 float args        — DONE (: Float type annotation)
+//   G4 callback trampoline — DONE (callback_create/callback_free)
+//   G5 ptr_alloc/write   — DONE (used for struct packing fallback)
+//   G6 0-10 arg extern   — DONE (used below)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ObjC Runtime — extern declarations
+// ═══════════════════════════════════════════════════════════════════════
+
+@link("objc")
+@symbol("objc_getClass")
+extern fn cls(name: *Byte) -> *Void
+
+@symbol("sel_registerName")
+extern fn sel(name: *Byte) -> *Void
+
+// objc_msgSend — arity aliases (all resolve to same symbol via @symbol)
+@symbol("objc_msgSend")
+extern fn msg0(obj: *Void, sel: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg1(obj: *Void, sel: *Void, a1: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg2(obj: *Void, sel: *Void, a1: *Void, a2: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg3(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg4(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void, a4: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg5(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void, a4: *Void, a5: *Void) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg6(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void, a4: *Void, a5: *Void, a6: *Void) -> *Void
+
+// Integer-typed arg variants (for setActivationPolicy:, setEnabled:, style masks, etc.)
+@symbol("objc_msgSend")
+extern fn msg_int(obj: *Void, sel: *Void, a1: Int) -> *Void
+
+@symbol("objc_msgSend")
+extern fn msg_int2(obj: *Void, sel: *Void, a1: Int, a2: Int) -> *Void
+
+// Float-typed arg variants (G3 — CGFloat params passed in SIMD d0-d7)
+@symbol("objc_msgSend")
+extern fn msg_f(obj: *Void, sel: *Void, a1: Float) -> *Void
+
+// NSRect as 4x CGFloat (ARM64 HFA: d0-d3) + int args for window init
+@symbol("objc_msgSend")
+extern fn msg_rect_iii(obj: *Void, sel: *Void, x: Float, y: Float, w: Float, h: Float, style: Int, backing: Int, defer: Int) -> *Void
+
+// NSRect as 4x CGFloat for initWithFrame:
+@symbol("objc_msgSend")
+extern fn msg_rect(obj: *Void, sel: *Void, x: Float, y: Float, w: Float, h: Float) -> *Void
+
+// Subclass registration
+@symbol("objc_allocateClassPair")
+extern fn alloc_class(super_cls: *Void, name: *Byte, extra: Int) -> *Void
+
+@symbol("objc_registerClassPair")
+extern fn register_class(new_cls: *Void)
+
+@symbol("class_addMethod")
+extern fn add_method(new_cls: *Void, sel: *Void, imp: *Void, types: *Byte) -> Int
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Create an NSString from a hexa string
+fn nsstr(s: str) -> *Void {
+    let ns_cls = cls(cstring("NSString"))
+    let ns_sel = sel(cstring("stringWithUTF8String:"))
+    return msg1(ns_cls, ns_sel, cstring(s))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Paths
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let CONF_DIR = HOME + "/.airgenome"
+let ACCOUNTS_PATH = CONF_DIR + "/accounts.json"
+let USAGE_CACHE_PATH = CONF_DIR + "/usage-cache.json"
+
+let a = args()
+let CONFIG_PATH = if a.len() > 2 { a[2] } else { CONF_DIR + "/config.json" }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Data I/O — uses hexa built-in file ops (not NSString)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_config() -> str {
+    if file_exists(CONFIG_PATH) == false { return "{}" }
+    try { return read_file(CONFIG_PATH) } catch e { return "{}" }
+}
+
+fn read_accounts_raw() -> str {
+    if file_exists(ACCOUNTS_PATH) == false { return "[]" }
+    try {
+        let raw = read_file(ACCOUNTS_PATH)
+        // Extract "accounts" array — simple parse
+        if raw.contains("\"accounts\"") {
+            let after = raw.split("\"accounts\"")[1]
+            let arr_start = after.split("[")[1]
+            let arr_body = arr_start.split("]")[0]
+            return "[" + arr_body + "]"
+        }
+        return "[]"
+    } catch e { return "[]" }
+}
+
+fn read_usage_cache_raw() -> str {
+    if file_exists(USAGE_CACHE_PATH) == false { return "{}" }
+    try { return read_file(USAGE_CACHE_PATH) } catch e { return "{}" }
+}
+
+/// Parse account names from the accounts JSON array
+/// Returns a list of account name strings
+fn parse_account_names(raw: str) -> [str] {
+    let mut names: [str] = []
+    if raw.contains("\"name\"") == false { return names }
+    let parts = raw.split("\"name\"")
+    let mut i = 1
+    while i < parts.len() {
+        let after = parts[i]
+        // Extract: "name" : "value"
+        let val_part = after.split("\"")[1]
+        if val_part.len() > 0 {
+            names = names + [val_part]
+        }
+        i = i + 1
+    }
+    return names
+}
+
+/// Check if account at index is marked "removed"
+fn is_account_removed(raw: str, name: str) -> bool {
+    // Find the account block containing this name and check "removed": true
+    if raw.contains("\"" + name + "\"") == false { return false }
+    let after = raw.split("\"" + name + "\"")[1]
+    // Look within the next ~200 chars for "removed": true
+    let chunk = if after.len() > 200 { after.split("}")[0] } else { after }
+    return chunk.contains("\"removed\"") && chunk.contains("true")
+}
+
+/// Get usage value from cache for a given account and key
+fn get_usage_val(cache_raw: str, account: str, key: str) -> str {
+    if cache_raw.contains("\"" + account + "\"") == false { return "-" }
+    let after = cache_raw.split("\"" + account + "\"")[1]
+    let block = after.split("}")[0]
+    if block.contains("\"" + key + "\"") == false { return "-" }
+    let val_after = block.split("\"" + key + "\"")[1]
+    let val = val_after.split(":")[1].split(",")[0].split("}")[0].trim()
+    return val
+}
+
+/// Write accounts back — wraps array in {"accounts": [...]}
+fn write_accounts_file(accounts_json: str) {
+    let json = "{\"accounts\": " + accounts_json + "}"
+    try { write_file(ACCOUNTS_PATH, json) } catch e {
+        println("ERROR: failed to write accounts: " + to_string(e))
+    }
+}
+
+/// Toggle "removed" field for an account by name
+fn set_account_removed(name: str, removed: bool) {
+    if file_exists(ACCOUNTS_PATH) == false { return }
+    let raw = read_file(ACCOUNTS_PATH)
+    let removed_str = if removed { "true" } else { "false" }
+
+    // Simple in-place replacement within the account's block
+    // Find the block for this account name and set removed
+    let mut result = raw
+    if raw.contains("\"" + name + "\"") {
+        // If "removed" key exists for this account, replace its value
+        if raw.contains("\"removed\"") {
+            // Replace the nearest "removed": <bool> after the account name
+            let before_name = raw.split("\"" + name + "\"")[0]
+            let after_name = raw.split("\"" + name + "\"")[1]
+            if after_name.contains("\"removed\"") {
+                let before_removed = after_name.split("\"removed\"")[0]
+                let after_removed = after_name.split("\"removed\"")[1]
+                // after_removed starts with : true/false
+                let after_colon = after_removed.split(":")[1]
+                let old_val = after_colon.split(",")[0].split("}")[0].trim()
+                let rest = after_removed.split(old_val)
+                if rest.len() > 1 {
+                    result = before_name + "\"" + name + "\"" + before_removed + "\"removed\": " + removed_str + rest[1]
+                }
+            }
+        }
+    }
+    try { write_file(ACCOUNTS_PATH, result) } catch e {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Account status computation
+// ═══════════════════════════════════════════════════════════════════════
+
+fn compute_status(name: str, week_str: str, removed: bool) -> str {
+    if removed { return "폐기됨" }
+    if week_str == "-" { return "\u2713 OK" }
+    let mut week_val = 0
+    try { week_val = to_int(to_float(week_str)) } catch e { return "\u2713 OK" }
+    if week_val >= 100 { return "\u2717 EXHAUSTED" }
+    if week_val >= 80 { return "\u26A0 HIGH" }
+    if week_val >= 50 { return "\u25B3 MID" }
+    return "\u2713 OK"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NSApplication init
+// ═══════════════════════════════════════════════════════════════════════
+
+let NSApp_cls = cls(cstring("NSApplication"))
+let app = msg0(NSApp_cls, sel(cstring("sharedApplication")))
+// NSApplicationActivationPolicyAccessory = 1
+msg_int(app, sel(cstring("setActivationPolicy:")), 1)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NSWindow — 계정 관리 창
+// ═══════════════════════════════════════════════════════════════════════
+
+let win_cls = cls(cstring("NSWindow"))
+let win_alloc = msg0(win_cls, sel(cstring("alloc")))
+
+// initWithContentRect:styleMask:backing:defer:
+// NSRect as 4x CGFloat (HFA: d0-d3) + styleMask + backing + defer as ints
+// NSWindowStyleMaskTitled | NSWindowStyleMaskClosable = 3
+// NSBackingStoreBuffered = 2
+let win = msg_rect_iii(
+    win_alloc,
+    sel(cstring("initWithContentRect:styleMask:backing:defer:")),
+    0.0, 0.0, 420.0, 500.0,  // NSRect{x, y, w, h}
+    3,    // styleMask: titled | closable
+    2,    // backing: buffered
+    0     // defer: NO
+)
+
+msg1(win, sel(cstring("setTitle:")), nsstr("airgenome \u2014 \uACC4\uC815 \uAD00\uB9AC"))
+// NSFloatingWindowLevel = 3
+msg_int(win, sel(cstring("setLevel:")), 3)
+msg0(win, sel(cstring("center")))
+
+let cv = msg0(win, sel(cstring("contentView")))
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Title label
+// ═══════════════════════════════════════════════════════════════════════
+
+let title_cls = cls(cstring("NSTextField"))
+let title_alloc = msg0(title_cls, sel(cstring("alloc")))
+let acc_title = msg_rect(title_alloc, sel(cstring("initWithFrame:")), 20.0, 450.0, 360.0, 22.0)
+msg1(acc_title, sel(cstring("setStringValue:")), nsstr("Claude Code \uACC4\uC815 \uAD00\uB9AC"))
+msg_int(acc_title, sel(cstring("setBordered:")), 0)
+msg_int(acc_title, sel(cstring("setEditable:")), 0)
+msg_int(acc_title, sel(cstring("setDrawsBackground:")), 0)
+
+let font_cls = cls(cstring("NSFont"))
+let bold_font = msg_f(font_cls, sel(cstring("boldSystemFontOfSize:")), 16.0)
+msg1(acc_title, sel(cstring("setFont:")), bold_font)
+
+msg1(cv, sel(cstring("addSubview:")), acc_title)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Scroll view + Table view
+// ═══════════════════════════════════════════════════════════════════════
+
+let scroll_cls = cls(cstring("NSScrollView"))
+let scroll_alloc = msg0(scroll_cls, sel(cstring("alloc")))
+let scroll_view = msg_rect(scroll_alloc, sel(cstring("initWithFrame:")), 20.0, 80.0, 380.0, 360.0)
+msg_int(scroll_view, sel(cstring("setHasVerticalScroller:")), 1)
+msg_int(scroll_view, sel(cstring("setAutohidesScrollers:")), 1)
+// NSBezelBorder = 2
+msg_int(scroll_view, sel(cstring("setBorderType:")), 2)
+
+let table_cls = cls(cstring("NSTableView"))
+let table_alloc = msg0(table_cls, sel(cstring("alloc")))
+let table_view = msg_rect(table_alloc, sel(cstring("initWithFrame:")), 0.0, 0.0, 360.0, 360.0)
+msg_int(table_view, sel(cstring("setUsesAlternatingRowBackgroundColors:")), 1)
+msg_f(table_view, sel(cstring("setRowHeight:")), 28.0)
+
+// ── Table columns ──
+
+fn add_table_column(table: *Void, identifier: str, header: str, width: Float) -> *Void {
+    let col_cls = cls(cstring("NSTableColumn"))
+    let col_alloc = msg0(col_cls, sel(cstring("alloc")))
+    let col = msg1(col_alloc, sel(cstring("initWithIdentifier:")), nsstr(identifier))
+    let header_cell = msg0(col, sel(cstring("headerCell")))
+    msg1(header_cell, sel(cstring("setStringValue:")), nsstr(header))
+    msg_f(col, sel(cstring("setWidth:")), width)
+    msg1(table, sel(cstring("addTableColumn:")), col)
+    return col
+}
+
+let col_name = add_table_column(table_view, "name", "\uACC4\uC815", 80.0)
+let col_session = add_table_column(table_view, "session", "\uC138\uC158%", 60.0)
+let col_week = add_table_column(table_view, "week", "\uC8FC\uAC04%", 60.0)
+let col_status = add_table_column(table_view, "status", "\uC0C1\uD0DC", 140.0)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Data source / delegate
+// ═══════════════════════════════════════════════════════════════════════
+
+// Account data — refreshed from disk
+let mut account_names: [str] = []
+let mut account_sessions: [str] = []
+let mut account_weeks: [str] = []
+let mut account_statuses: [str] = []
+let mut account_removed: [bool] = []
+
+fn refresh_account_data() {
+    let raw = read_accounts_raw()
+    let cache_raw = read_usage_cache_raw()
+    account_names = parse_account_names(raw)
+    account_sessions = []
+    account_weeks = []
+    account_statuses = []
+    account_removed = []
+
+    let mut i = 0
+    while i < account_names.len() {
+        let name = account_names[i]
+        let session = get_usage_val(cache_raw, name, "session_pct")
+        let week = get_usage_val(cache_raw, name, "week_all_pct")
+        let removed = is_account_removed(raw, name)
+        let status = compute_status(name, week, removed)
+
+        account_sessions = account_sessions + [session]
+        account_weeks = account_weeks + [week]
+        account_statuses = account_statuses + [status]
+        account_removed = account_removed + [removed]
+        i = i + 1
+    }
+}
+
+refresh_account_data()
+
+// Data source — ObjC subclass with callback trampolines (G4)
+// G4 trampoline provides 4 int64_t args: (self, _cmd, arg1, arg2)
+// numberOfRowsInTableView:(tv) fits in 4 args: (self, _cmd, tv, _)
+// tableView:objectValueForTableColumn:row: needs 5: (self, _cmd, tv, col, row)
+//   — row (5th arg, x4) exceeds the 4-arg trampoline window.
+//   Workaround: use an internal row counter that increments per cell request.
+//   NSTableView calls objectValueForTableColumn:row: in order (row 0..N-1)
+//   for each column, left to right. We track position via a counter.
+
+let mut ds_row_counter = 0
+let mut ds_col_counter = 0
+let ds_num_cols = 4  // name, session, week, status
+
+let ds_super = cls(cstring("NSObject"))
+let ds_cls = alloc_class(ds_super, cstring("AccountTableDS"), 0)
+
+fn ds_row_count(self_arg, cmd_arg, tv_arg, unused_arg) {
+    // Reset counter on each full reload query
+    ds_row_counter = 0
+    ds_col_counter = 0
+    return account_names.len()
+}
+let row_count_imp = callback_create(ds_row_count)
+add_method(ds_cls, sel(cstring("numberOfRowsInTableView:")),
+           row_count_imp, cstring("l@:@"))
+
+fn ds_cell_value(self_arg, cmd_arg, tv_arg, col_arg) {
+    // Derive row/col from sequential call order since row arg is inaccessible
+    let row = ds_row_counter
+    let col_idx = ds_col_counter
+
+    // Advance counters
+    ds_col_counter = ds_col_counter + 1
+    if ds_col_counter >= ds_num_cols {
+        ds_col_counter = 0
+        ds_row_counter = ds_row_counter + 1
+    }
+
+    if row >= account_names.len() { return nsstr("") }
+    if col_idx == 0 { return nsstr(account_names[row]) }
+    if col_idx == 1 { return nsstr(account_sessions[row]) }
+    if col_idx == 2 { return nsstr(account_weeks[row]) }
+    if col_idx == 3 { return nsstr(account_statuses[row]) }
+    return nsstr("")
+}
+let cell_value_imp = callback_create(ds_cell_value)
+add_method(ds_cls, sel(cstring("tableView:objectValueForTableColumn:row:")),
+           cell_value_imp, cstring("@@:@@l"))
+
+register_class(ds_cls)
+let table_ds = msg0(msg0(ds_cls, sel(cstring("alloc"))), sel(cstring("init")))
+msg1(table_view, sel(cstring("setDataSource:")), table_ds)
+msg1(table_view, sel(cstring("setDelegate:")), table_ds)
+
+msg1(scroll_view, sel(cstring("setDocumentView:")), table_view)
+msg1(cv, sel(cstring("addSubview:")), scroll_view)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Action handlers — 폐기 / 복원 / 새로고침
+// ═══════════════════════════════════════════════════════════════════════
+
+// Button action handlers — ObjC subclass with callback trampolines (G4)
+// Trampoline args for action methods: (self, _cmd, sender, _) — fits 4-arg window
+let action_super = cls(cstring("NSObject"))
+let action_cls = alloc_class(action_super, cstring("AccountActions"), 0)
+
+fn do_reload_table() {
+    ds_row_counter = 0
+    ds_col_counter = 0
+    msg0(table_view, sel(cstring("reloadData")))
+}
+
+fn action_remove(self_arg, cmd_arg, sender_arg, unused_arg) {
+    let row = ptr_addr(msg0(table_view, sel(cstring("selectedRow"))))
+    if row < 0 { return }
+    if row >= account_names.len() { return }
+    if account_removed[row] { return }
+
+    // Show confirmation alert
+    let alert_cls = cls(cstring("NSAlert"))
+    let alert = msg0(msg0(alert_cls, sel(cstring("alloc"))), sel(cstring("init")))
+    msg1(alert, sel(cstring("setMessageText:")),
+         nsstr("\uACC4\uC815 \uD3D0\uAE30"))
+    msg1(alert, sel(cstring("setInformativeText:")),
+         nsstr("\"" + account_names[row] + "\" \uACC4\uC815\uC744 \uD3D0\uAE30\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?\n(\uBCF5\uC6D0 \uAC00\uB2A5: accounts.json\uC5D0\uC11C removed\uB97C false\uB85C \uBCC0\uACBD)"))
+    msg1(alert, sel(cstring("addButtonWithTitle:")), nsstr("\uD3D0\uAE30"))
+    msg1(alert, sel(cstring("addButtonWithTitle:")), nsstr("\uCDE8\uC18C"))
+    // NSAlertStyleWarning = 0
+    msg_int(alert, sel(cstring("setAlertStyle:")), 0)
+
+    let result = msg0(alert, sel(cstring("runModal")))
+    // NSAlertFirstButtonReturn = 1000
+    if ptr_addr(result) == 1000 {
+        set_account_removed(account_names[row], true)
+        refresh_account_data()
+        do_reload_table()
+    }
+}
+let remove_imp = callback_create(action_remove)
+add_method(action_cls, sel(cstring("removeAccount:")),
+           remove_imp, cstring("v@:@"))
+
+fn action_restore(self_arg, cmd_arg, sender_arg, unused_arg) {
+    let row = ptr_addr(msg0(table_view, sel(cstring("selectedRow"))))
+    if row < 0 { return }
+    if row >= account_names.len() { return }
+    if account_removed[row] == false { return }
+    set_account_removed(account_names[row], false)
+    refresh_account_data()
+    do_reload_table()
+}
+let restore_imp = callback_create(action_restore)
+add_method(action_cls, sel(cstring("restoreAccount:")),
+           restore_imp, cstring("v@:@"))
+
+fn action_refresh(self_arg, cmd_arg, sender_arg, unused_arg) {
+    refresh_account_data()
+    do_reload_table()
+}
+let refresh_imp = callback_create(action_refresh)
+add_method(action_cls, sel(cstring("refreshTable:")),
+           refresh_imp, cstring("v@:@"))
+
+register_class(action_cls)
+let acc_actions = msg0(msg0(action_cls, sel(cstring("alloc"))), sel(cstring("init")))
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Buttons — 폐기 / 복원 / 새로고침
+// ═══════════════════════════════════════════════════════════════════════
+
+fn make_button(x: Float, y: Float, w: Float, h: Float, title: str) -> *Void {
+    let btn_cls = cls(cstring("NSButton"))
+    let btn_alloc = msg0(btn_cls, sel(cstring("alloc")))
+    let btn = msg_rect(btn_alloc, sel(cstring("initWithFrame:")), x, y, w, h)
+    msg1(btn, sel(cstring("setTitle:")), nsstr(title))
+    // NSBezelStyleRounded = 1
+    msg_int(btn, sel(cstring("setBezelStyle:")), 1)
+    return btn
+}
+
+let remove_btn = make_button(20.0, 40.0, 100.0, 28.0, "\uD3D0\uAE30")
+msg1(remove_btn, sel(cstring("setTarget:")), acc_actions)
+msg1(remove_btn, sel(cstring("setAction:")), sel(cstring("removeAccount:")))
+msg1(cv, sel(cstring("addSubview:")), remove_btn)
+
+let restore_btn = make_button(130.0, 40.0, 100.0, 28.0, "\uBCF5\uC6D0")
+msg1(restore_btn, sel(cstring("setTarget:")), acc_actions)
+msg1(restore_btn, sel(cstring("setAction:")), sel(cstring("restoreAccount:")))
+msg1(cv, sel(cstring("addSubview:")), restore_btn)
+
+let refresh_btn = make_button(240.0, 40.0, 100.0, 28.0, "\u21BB \uC0C8\uB85C\uACE0\uCE68")
+msg1(refresh_btn, sel(cstring("setTarget:")), acc_actions)
+msg1(refresh_btn, sel(cstring("setAction:")), sel(cstring("refreshTable:")))
+msg1(cv, sel(cstring("addSubview:")), refresh_btn)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Hint label
+// ═══════════════════════════════════════════════════════════════════════
+
+let hint_cls = cls(cstring("NSTextField"))
+let hint_alloc = msg0(hint_cls, sel(cstring("alloc")))
+let hint_label = msg_rect(hint_alloc, sel(cstring("initWithFrame:")), 20.0, 10.0, 360.0, 22.0)
+msg1(hint_label, sel(cstring("setStringValue:")),
+     nsstr("\uACC4\uC815 \uC120\uD0DD \uD6C4 \uD3D0\uAE30/\uBCF5\uC6D0. /login\uC740 \uC790\uB3D9 \uAC10\uC9C0\uB429\uB2C8\uB2E4."))
+msg_int(hint_label, sel(cstring("setBordered:")), 0)
+msg_int(hint_label, sel(cstring("setEditable:")), 0)
+msg_int(hint_label, sel(cstring("setDrawsBackground:")), 0)
+
+let small_font = msg_f(font_cls, sel(cstring("systemFontOfSize:")), 11.0)
+msg1(hint_label, sel(cstring("setFont:")), small_font)
+
+let color_cls = cls(cstring("NSColor"))
+let sec_color = msg0(color_cls, sel(cstring("secondaryLabelColor")))
+msg1(hint_label, sel(cstring("setTextColor:")), sec_color)
+
+msg1(cv, sel(cstring("addSubview:")), hint_label)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Show window + run
+// ═══════════════════════════════════════════════════════════════════════
+
+msg1(win, sel(cstring("makeKeyAndOrderFront:")), ptr_null())
+msg_int(app, sel(cstring("activateIgnoringOtherApps:")), 1)
+
+// Auto-refresh timer (10s interval) — G3 (float) + G4 (callback trampoline)
+// Use scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:
+// which sends the action selector to a target object (avoids ObjC blocks).
+let timer_cls_name = cls(cstring("NSObject"))
+let timer_target_cls = alloc_class(timer_cls_name, cstring("TimerTarget"), 0)
+
+fn timer_fire(self_arg, cmd_arg, timer_arg, unused_arg) {
+    refresh_account_data()
+    do_reload_table()
+}
+let timer_fire_imp = callback_create(timer_fire)
+add_method(timer_target_cls, sel(cstring("onTimer:")),
+           timer_fire_imp, cstring("v@:@"))
+
+register_class(timer_target_cls)
+let timer_target = msg0(msg0(timer_target_cls, sel(cstring("alloc"))), sel(cstring("init")))
+
+// Float-typed msgSend for scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:
+// Args: (cls, sel, interval: Float, target, selector, userInfo, repeats: Int)
+@symbol("objc_msgSend")
+extern fn msg_timer(obj: *Void, sel: *Void, interval: Float, target: *Void, action: *Void, info: *Void, repeats: Int) -> *Void
+
+let timer_cls = cls(cstring("NSTimer"))
+msg_timer(
+    timer_cls,
+    sel(cstring("scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:")),
+    10.0,                         // 10 second interval
+    timer_target,                 // target
+    sel(cstring("onTimer:")),     // selector
+    ptr_null(),                   // userInfo: nil
+    1                             // repeats: YES
+)
+
+// Run the application event loop
+msg0(app, sel(cstring("run")))
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Cleanup — free callback trampolines
+// ═══════════════════════════════════════════════════════════════════════
+// Note: app.run() blocks until quit, so cleanup runs after window closes
+callback_free(row_count_imp)
+callback_free(cell_value_imp)
+callback_free(remove_imp)
+callback_free(restore_imp)
+callback_free(refresh_imp)
+callback_free(timer_fire_imp)

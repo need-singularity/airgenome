@@ -20,7 +20,7 @@
 [ -f ~/.zshrc ] && source ~/.zshrc
 
 ORIG_DIR="$(pwd)"
-HEXA=~/Dev/hexa-lang/hexa
+HEXA=~/Dev/hexa-lang/target/release/hexa-bin-actual
 AIRGENOME=~/Dev/airgenome
 ACCOUNTS_FILE=~/.airgenome/accounts.json
 STATE_FILE=~/.airgenome/cl-state.json
