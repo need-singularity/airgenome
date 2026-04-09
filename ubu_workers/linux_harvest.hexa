@@ -24,7 +24,8 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 let BASE_DIR = env("AG3_BASE")
-let BASE = if len(BASE_DIR) > 0 { BASE_DIR } else { env("HOME") + "/airgenome" }
+let mut BASE = if len(BASE_DIR) > 0 { BASE_DIR } else { env("AIRGENOME_HOME") }
+if BASE == "" { BASE = env("HOME") + "/Dev/airgenome" }
 
 let HARVEST_CFG = env("AG3_CONFIG")
 let CFG_PATH = if len(HARVEST_CFG) > 0 { HARVEST_CFG } else { BASE + "/nexus/shared/genome_harvest.jsonl" }
@@ -96,7 +97,7 @@ fn cfg_str(cfg: auto, key: str, default_val: str) -> str {
 fn read_total_ram_kb() -> int {
     let out = exec("awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null").trim()
     try { return to_int(to_float(out)) } catch e {}
-    return 16777216  // fallback 16GB
+    return 16777216  // fallback estimate: 16GB (16777216 KB)
 }
 
 fn read_net_totals() -> int {
@@ -350,7 +351,7 @@ fn ring_append(ring_path: str, pid: str, comm: str, genome_hex: str) -> bool {
     if file_exists(ring_path) == false { return false }
     let safe_comm = comm.replace("'", "").replace("\"", "").replace(" ", "_")
     let py = "python3 -c 'import struct,os,sys,time,zlib; p,pid,name,gh=sys.argv[1],int(sys.argv[2]),sys.argv[3],sys.argv[4]; g=bytes.fromhex(gh); assert len(g)==60; HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"; f=open(p,\"r+b\"); hdr=f.read(64); _,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr); idx=wi%sc; off=64+idx*ss; nh=zlib.crc32(name.encode(\"utf-8\"))&0xffffffff; f.seek(off); f.write(struct.pack(SLOT,time.time(),pid,nh,g,0,0)); nwi=(wi+1)%sc; nwc=wc+(1 if nwi==0 else 0); f.seek(0); f.write(struct.pack(HDR,b\"AG3R\",ver,ss,sc,nwi,nwc)); f.flush(); os.fsync(f.fileno()); f.close(); print(\"ok\")' " + ring_path + " " + pid + " " + safe_comm + " " + genome_hex
-    let out = exec(py + " 2>/dev/null").trim()
+    let out = exec("timeout 10 " + py + " 2>/dev/null").trim()
     return out == "ok"
 }
 

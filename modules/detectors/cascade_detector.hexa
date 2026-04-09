@@ -22,7 +22,9 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 let VERSION = "0.1.0"
-let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let CONFIG_PATH = AG_HOME + "/nexus/shared/detectors.jsonl"
 
 // ── config loader (동일 패턴: detectors.jsonl key/value) ────────────────
 fn load_cfg(key: str, fallback: str) -> str {

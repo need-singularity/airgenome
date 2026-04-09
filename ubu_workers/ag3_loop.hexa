@@ -6,14 +6,20 @@
 // Usage: hexa run ubu_workers/ag3_loop.hexa
 // Runs on Ubuntu where nvidia-smi is available.
 
-let CONFIG_PATH = env("AG3_CONFIG")
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let mut NEXUS_HOME = env("NEXUS_HOME")
+if NEXUS_HOME == "" { NEXUS_HOME = env("HOME") + "/Dev/nexus" }
+let mut HEXA_BIN = env("HEXA")
+if HEXA_BIN == "" { HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
+
+let mut CONFIG_PATH = env("AG3_CONFIG")
 if len(CONFIG_PATH) == 0 {
-    CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+    CONFIG_PATH = AG_HOME + "/nexus/shared/gate_config.jsonl"
 }
 
-let GROWTH_BUS = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
-let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
-let RING_IO = env("HOME") + "/Dev/airgenome/modules/ring_io.hexa"
+let GROWTH_BUS = NEXUS_HOME + "/shared/growth_bus.jsonl"
+let RING_IO = AG_HOME + "/modules/ring_io.hexa"
 
 // ── CONFIG (동적 로드, 하드코딩 금지) ───────────────────────────────────
 fn load_cfg() -> auto {
@@ -78,8 +84,8 @@ fn append_growth(event: auto) {
 fn trigger_blowup(cfg: auto, domain: str) -> bool {
     let hexa = cfg_str(cfg, "ubu_hexa_bin", HEXA_BIN)
     let blowup = cfg_str(cfg, "ubu_blowup_hexa", env("HOME") + "/Dev/nexus/mk2_hexa/native/blowup.hexa")
-    // fire-and-forget via & background
-    let cmd = hexa + " " + blowup + " " + domain + " 3 --no-graph >/dev/null 2>&1 &"
+    // R17: fire-and-forget — nohup+disown ensures blowup detaches fully
+    let cmd = "nohup " + hexa + " " + blowup + " " + domain + " 3 --no-graph >/dev/null 2>&1 & disown"
     exec(cmd)
     return true
 }

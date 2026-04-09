@@ -15,11 +15,10 @@
 // hexa 는 라우팅 루프, 각 요청 response 를 IN_FIFO → nc → 클라이언트.
 // 하드코딩 금지: 경로/포트는 env → 상대경로.
 
-let home = exec("echo $HOME").trim()
-let ag_home_env = exec("echo ${AIRGENOME_HOME:-}").trim()
-let AG_HOME = if ag_home_env == "" { home + "/Dev/airgenome" } else { ag_home_env }
-let port_env = exec("echo ${AIRGENOME_API_PORT:-}").trim()
-let PORT = if port_env == "" { "17777" } else { port_env }
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let mut PORT = env("AIRGENOME_API_PORT")
+if PORT == "" { PORT = "17777" }
 
 let FORGE_DIR = AG_HOME + "/forge"
 let GENOMES_DIR = FORGE_DIR + "/genomes"
@@ -130,6 +129,10 @@ let RESP_FILE = tmp + "/airgenome-api-resp." + PORT + ".bin"
 
 exec("rm -f '" + IN_FIFO + "' '" + REQ_FIFO + "' '" + RESP_FILE + "' 2>/dev/null; mkfifo '" + IN_FIFO + "'; mkfifo '" + REQ_FIFO + "'")
 
+// R17: 이전 세션의 API 서버 프로세스 그룹 정리 (startup cleanup 패턴)
+let old_pid_file = tmp + "/airgenome-api-" + PORT + ".pid"
+exec("test -f '" + old_pid_file + "' && kill -- -$(cat '" + old_pid_file + "') 2>/dev/null; rm -f '" + old_pid_file + "'")
+
 // 스테일 임시 파일 정리 (1시간 이상 된 이전 세션 잔여물)
 exec("find " + tmp + " -name 'airgenome-api-req.*' -mmin +60 -delete 2>/dev/null")
 exec("find " + tmp + " -name 'airgenome-api-in.*' -mmin +60 -delete 2>/dev/null")
@@ -143,9 +146,10 @@ exec("find " + tmp + " -name 'airgenome-api-resp.*' -mmin +60 -delete 2>/dev/nul
 // trap 'kill 0' EXIT → bash 종료 시 nc/parser 전체 프로세스 그룹 정리 (고아 방지)
 let boot = "nohup bash -c \"trap 'kill 0' EXIT; exec 8<>'" + IN_FIFO + "'; nc -k -l " + PORT + " <&8 | while IFS= read -r line; do case \\\"\\$line\\\" in GET*|POST*|PUT*|DELETE*|HEAD*|OPTIONS*|PATCH*) printf '%s\\n' \\\"\\$line\\\" > '" + REQ_FIFO + "';; esac; done\" >/dev/null 2>&1 &"
 exec(boot)
-// 부트 PID 기록 + hexa 종료 시 정리 트랩
+// 부트 PID 기록 (R17: exec() 내 shell trap 은 hexa 프로세스에 무효 → 다음 기동 시 정리 패턴)
 let boot_pid = exec("lsof -iTCP:" + PORT + " -sTCP:LISTEN -t 2>/dev/null || true").trim()
-exec("trap 'kill -- -" + boot_pid + " 2>/dev/null; rm -f \"" + IN_FIFO + "\" \"" + REQ_FIFO + "\" \"" + RESP_FILE + "\"' EXIT 2>/dev/null || true")
+let pid_file = tmp + "/airgenome-api-" + PORT + ".pid"
+exec("echo " + boot_pid + " > '" + pid_file + "'")
 
 // 포트 LISTEN 확인
 exec("timeout 10 sh -c 'while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done' 2>/dev/null")

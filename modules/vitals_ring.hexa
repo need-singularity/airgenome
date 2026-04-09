@@ -15,7 +15,9 @@
 // Prime Directive safe — pure read/write of JSONL files.
 
 let VERSION = "0.1.0"
-let CFG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/vitals_ring.jsonl"
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let CFG_PATH = AG_HOME + "/nexus/shared/vitals_ring.jsonl"
 let NUM_AXES = 6
 
 // ── config loader ───────────────────────────────────────────────────────
@@ -328,7 +330,7 @@ fn merge_state(cfg: auto, stats_json: str) -> int {
     write_file(tmp + ".b", base)
     write_file(tmp + ".v", stats_json)
     let py = "python3 -c \"import json,sys; b=json.load(open('" + tmp + ".b')); v=json.load(open('" + tmp + ".v')); b['vitals']=v; open('" + out_path + "','w').write(json.dumps(b,indent=2))\""
-    exec(py)
+    exec("timeout 10 " + py)
     exec("rm -f " + tmp + ".b " + tmp + ".v")
     return 1
 }

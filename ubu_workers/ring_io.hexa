@@ -4,7 +4,8 @@
 // 모든 로직은 modules/ring_io.hexa 에 구현됨.
 // Usage: hexa run ubu_workers/ring_io.hexa <cmd> [opts]
 
-let base = env("HOME") + "/Dev/airgenome"
+let mut base = env("AIRGENOME_HOME")
+if base == "" { base = env("HOME") + "/Dev/airgenome" }
 let argv = args()
 let cmd_parts = ""
 let i = 0
@@ -24,5 +25,5 @@ let hexa = env("HEXA")
 if len(hexa) == 0 { hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
 
 let full = hexa + " run " + base + "/modules/ring_io.hexa " + cmd_parts
-let out = exec(full)
+let out = exec("timeout 30 " + full)
 if len(out) > 0 { print(out) }
