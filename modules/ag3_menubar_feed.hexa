@@ -146,11 +146,11 @@ while true {
         let cutoff_iso = safe_exec("date -u -r " + to_string(cutoff) + " +%Y-%m-%dT%H:%M 2>/dev/null")
         if len(cutoff_iso) > 0 {
             // ISO 문자열 비교로 10분 필터 (date -r epoch → ISO, 문자열 비교 가능)
-            let fb_s = safe_exec("timeout 5 tail -500 " + GROWTH_BUS + " | awk -F'\"' '/\"type\":\"fallback\"/ && /\"phase\":\"ag3\"/ { for(i=1;i<NF;i++) if($i==\"ts\" || $i==\"timestamp\") { v=$(i+2); if(v>=\"" + cutoff_iso + "\") c++ } } END{print c+0}'")
+            let fb_s = safe_exec("tail -500 " + GROWTH_BUS + " | awk -F'\"' '/\"type\":\"fallback\"/ && /\"phase\":\"ag3\"/ { for(i=1;i<NF;i++) if($i==\"ts\" || $i==\"timestamp\") { v=$(i+2); if(v>=\"" + cutoff_iso + "\") c++ } } END{print c+0}'")
             try { fb = to_int(to_float(fb_s)) } catch e {}
         } else {
             // fallback: 타임스탬프 필터 없이 전체 카운트
-            let fb_s = safe_exec("timeout 5 tail -500 " + GROWTH_BUS + " | grep '\"type\":\"fallback\"' | grep '\"phase\":\"ag3\"' | wc -l | tr -d ' '")
+            let fb_s = safe_exec("tail -500 " + GROWTH_BUS + " | grep '\"type\":\"fallback\"' | grep '\"phase\":\"ag3\"' | wc -l | tr -d ' '")
             try { fb = to_int(to_float(fb_s)) } catch e {}
         }
     }

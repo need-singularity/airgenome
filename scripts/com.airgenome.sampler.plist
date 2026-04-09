@@ -10,22 +10,22 @@
     <string>com.airgenome.sampler</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
-        <string>__HOME__/Dev/airgenome/sampler.hexa</string>
-        <string>__TMPDIR__/airgenome-state.json</string>
-        <string>__HOME__/.airgenome/config.json</string>
-        <string>__RAM_MB__</string>
-        <string>__NCPU__</string>
-        <string>__HOME__/Dev/airgenome</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>export AIRGENOME_SAMPLER_ONCE=1 HOME=__HOME__; exec __HOME__/.hx/bin/hexa __HOME__/Dev/airgenome/sampler.hexa __TMPDIR__/airgenome-state.json __HOME__/.airgenome/config.json __RAM_MB__ __NCPU__ __HOME__/Dev/airgenome</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <false/>
+    <key>StartInterval</key>
+    <integer>15</integer>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
         <string>__HOME__</string>
+        <key>AIRGENOME_SAMPLER_ONCE</key>
+        <string>1</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
     </dict>

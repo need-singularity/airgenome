@@ -59,6 +59,9 @@ let mut last_l5c_alert_ts = 0
 let mut last_l6e_alert_ts = 0
 let ALERT_COOLDOWN = 300
 
+// --once 모드: 1회 실행 후 exit (LaunchAgent StartInterval 호환)
+let ONCE_MODE = env("AIRGENOME_SAMPLER_ONCE") == "1"
+
 while true {
     // ── ADAPTIVE SCAN ── (lite_scan: ok 레벨 시 heavy exec 스킵, 첫 사이클은 항상 full)
     let lite_scan = (prev_level == "ok" && cycle > 0)
@@ -66,12 +69,12 @@ while true {
 
     // ── MEASURE ── (정밀도 <1%: 단일 top 호출 + vm_stat 페이지 단위)
 
-    // CPU — top -l2 평균(첫 샘플은 부팅 이래 누적이라 부정확), 소수 1자리 유지
+    // CPU — top -l1 (첫 샘플은 부팅 이래 누적이라 부정확), 소수 1자리 유지
     let mut cpu_str = ""
     let mut cpu = 0
     let mut cpu_f = 0.0
     if lite_scan == false {
-        cpu_str = try { exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim() } catch e { "0" }
+        cpu_str = try { exec("top -l1 -n0 -s0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); printf \"%.1f\",u+s}'").trim() } catch e { "0" }
         try { cpu_f = to_float(cpu_str) } catch e {}
     }
     // ps -A -o %cpu= 캐시 (savings + fallback 공용, 중복 호출 제거)
@@ -401,7 +404,12 @@ while true {
     let vr_net = to_string(net_kbps_f / 1024.0)
     let vr_disk = to_string(disk_mbps_f)
     let vr_gpu = gpu_local_f_str
-    try { exec("$HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu) } catch e { println("[warn] sampler: vitals_ring tick failed — " + e) }
+    let HEXA_BIN = env("HOME") + "/.hx/bin/hexa"
+    let VR_MOD = env("HOME") + "/Dev/airgenome/modules/vitals_ring.hexa"
+    let vr_cmd = HEXA_BIN + " " + VR_MOD + " tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu
+    try { exec(vr_cmd + " >> /tmp/airgenome-vr-tick.log 2>&1") } catch e {
+        try { exec("echo '[ERR] " + e + "' >> /tmp/airgenome-vr-tick.log") } catch e2 {}
+    }
 
     // ── L5c/L6e ALERT → growth_bus ──
     // vitals_ring tick이 forge/state.json에 병합 → 읽어서 임계값 확인
@@ -496,5 +504,6 @@ while true {
     if level == "ok" { sleep_sec = scan_ok_sec }
     if level == "warn" { sleep_sec = scan_warn_sec }
     if level == "critical" || level == "danger" { sleep_sec = scan_critical_sec }
+    if ONCE_MODE { return }
     try { exec("sleep " + to_string(sleep_sec)) } catch e {}
 }

@@ -388,7 +388,7 @@ fn merge_state(cfg: auto, stats_json: str) -> int {
     write_file(tmp + ".b", base)
     write_file(tmp + ".v", stats_json)
     let py = "python3 -c \"import json,sys; b=json.load(open('" + tmp + ".b')); v=json.load(open('" + tmp + ".v')); b['vitals']=v; open('" + out_path + "','w').write(json.dumps(b,indent=2))\""
-    try { exec("timeout 10 " + py) } catch e { println("[warn] vitals_ring: merge failed — " + e) }
+    try { exec(py) } catch e { println("[warn] vitals_ring: merge failed — " + e) }
     try { exec("rm -f " + tmp + ".b " + tmp + ".v") } catch e {}
     return 1
 }
