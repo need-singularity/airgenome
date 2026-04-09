@@ -398,14 +398,18 @@ fn main() {
     let cfg = load_cfg()
     let argv = args()
     let cmd = "help"
-    if len(argv) > 3 { cmd = argv[3] }
+    if len(argv) > 2 { cmd = argv[2] }
+    // fallback: argv[3] 위치에도 cmd가 올 수 있음 (consciousness 래퍼)
+    if cmd == "help" && len(argv) > 3 { cmd = argv[3] }
 
     if cmd == "push" {
-        if len(argv) < 10 {
+        // push 인자: argv에서 cmd 위치 이후 6개 float
+        let off = if argv[2] == "push" { 3 } else { 4 }
+        if len(argv) < off + 6 {
             println("usage: push <c> <r> <s> <n> <d> <g>")
             return
         }
-        let axes = [to_float(argv[4]), to_float(argv[5]), to_float(argv[6]), to_float(argv[7]), to_float(argv[8]), to_float(argv[9])]
+        let axes = [to_float(argv[off]), to_float(argv[off+1]), to_float(argv[off+2]), to_float(argv[off+3]), to_float(argv[off+4]), to_float(argv[off+5])]
         let n = ring_push(cfg["state_path"], to_int(cfg["size"]), axes)
         println("ring_n=" + to_string(n))
         return
@@ -443,11 +447,12 @@ fn main() {
     }
 
     if cmd == "tick" {
-        if len(argv) < 10 {
+        let off = if len(argv) > 2 && argv[2] == "tick" { 3 } else { 4 }
+        if len(argv) < off + 6 {
             println("usage: tick <c> <r> <s> <n> <d> <g>")
             return
         }
-        let axes = [to_float(argv[4]), to_float(argv[5]), to_float(argv[6]), to_float(argv[7]), to_float(argv[8]), to_float(argv[9])]
+        let axes = [to_float(argv[off]), to_float(argv[off+1]), to_float(argv[off+2]), to_float(argv[off+3]), to_float(argv[off+4]), to_float(argv[off+5])]
         ring_push(cfg["state_path"], to_int(cfg["size"]), axes)
         let j = compute_stats_json(cfg)
         merge_state(cfg, j)
