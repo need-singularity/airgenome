@@ -253,6 +253,12 @@ while true {
         level = "warn"
     }
 
+    // ── GHOST AUTO-KILL — orphan 프로세스 정리 (Prime Directive 예외: PPID=1 orphan은 죽은 프로세스) ──
+    if ghost_sh + ghost_grep > 0 {
+        try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) print $4}' | xargs kill 2>/dev/null") } catch e {}
+        try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) print $4}' | xargs kill 2>/dev/null") } catch e {}
+    }
+
     // ── GATE STATUS ──
     let gate_cfg = DIR + "/nexus/shared/gate_config.jsonl"
     let mut ubu_host = "192.168.50.119"

@@ -111,6 +111,29 @@ menu.addItem(ag3ApiItem);
 
 menu.addItem($.NSMenuItem.separatorItem);
 
+// ─── Infrastructure ───
+var infraHeaderItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2501\u2501\u2501 Infrastructure \u2501\u2501\u2501'), null, $(''));
+infraHeaderItem.enabled = false;
+menu.addItem(infraHeaderItem);
+
+var infraHtzItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\uD83D\uDDA5 htz ...'), null, $(''));
+infraHtzItem.enabled = false;
+menu.addItem(infraHtzItem);
+
+var infraVastItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\uD83C\uDFAE vast ...'), null, $(''));
+infraVastItem.enabled = false;
+menu.addItem(infraVastItem);
+
+var infraRecoItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\uD83D\uDCCA reco ...'), null, $(''));
+infraRecoItem.enabled = false;
+menu.addItem(infraRecoItem);
+
+var infraProbeItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\uD83D\uDCCA probe ...'), null, $(''));
+infraProbeItem.enabled = false;
+menu.addItem(infraProbeItem);
+
+menu.addItem($.NSMenuItem.separatorItem);
+
 var safetyItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2705 Safe'), null, $(''));
 safetyItem.enabled = false;
 menu.addItem(safetyItem);
@@ -167,6 +190,23 @@ function readConfig() {
         var str = $.NSString.stringWithContentsOfFileEncodingError($(configPath), $.NSUTF8StringEncoding, null);
         if (str.isNil()) return null;
         return JSON.parse(str.js);
+    } catch(e) { return null; }
+}
+
+var infraPath = ($.NSString.stringWithString($('~/Dev/nexus/shared/infra_state.json')).stringByExpandingTildeInPath).js;
+
+function readInfra() {
+    try {
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(infraPath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return null;
+        var obj = JSON.parse(str.js);
+        // stale check: >5 min = stale
+        if (obj.ts) {
+            var tsDate = new Date(obj.ts);
+            var now = new Date();
+            if ((now - tsDate) > 5 * 60 * 1000) { obj._stale = true; }
+        }
+        return obj;
     } catch(e) { return null; }
 }
 
@@ -319,6 +359,49 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     } else {
         ag3ApiItem.title = $('\u25CB API :17777 \u2014 offline');
         ag3ApiItem.hidden = false;
+    }
+
+    // ─── Infrastructure section ───
+    var infra = readInfra();
+    if (infra && !infra._stale && infra.hosts) {
+        var h = infra.hosts;
+        // htz
+        if (h.htz) {
+            var hz = h.htz;
+            var hzStatus = hz.status === 'active' ? '\u2705' : '\u274C';
+            var hzRamUsedG = Math.round(hz.ram_used_mb / 1024 * 10) / 10;
+            var hzRamTotalG = Math.round(hz.ram_total_mb / 1024 * 10) / 10;
+            var hzThreads = hz.cpu_threads || '';
+            infraHtzItem.title = $('\uD83D\uDDA5 htz  load=' + (hz.load || '?') + '  RAM ' + hzRamUsedG + '/' + hzRamTotalG + 'GB  ' + hzThreads + 'T  ' + hzStatus);
+        } else {
+            infraHtzItem.title = $('\uD83D\uDDA5 htz  \u2014 no data');
+        }
+        // vast
+        if (h.vast) {
+            var v = h.vast;
+            var vStatus = v.status === 'active' ? '\u2705' : '\u274C';
+            var vGpu = v.gpu || '';
+            var vVram = v.vram_gb ? v.vram_gb + 'GB' : '';
+            var vPrice = v.price_hr || '';
+            infraVastItem.title = $('\uD83C\uDFAE vast ' + vGpu + ' ' + vVram + '  ' + vPrice + '/hr  ' + vStatus);
+        } else {
+            infraVastItem.title = $('\uD83C\uDFAE vast  \u2014 no data');
+        }
+        // recommendation
+        var reco = infra.recommendation;
+        if (reco) {
+            infraRecoItem.title = $('\u2192 gpu\u2192' + (reco.gpu_task || '?') + '  cpu\u2192' + (reco.cpu_task || '?') + '  avoid=' + (reco.avoid || '?'));
+            infraRecoItem.hidden = false;
+        } else {
+            infraRecoItem.title = $(''); infraRecoItem.hidden = true;
+        }
+        infraProbeItem.title = $('\uD83D\uDCCA probe: ' + (infra.ts || '?'));
+    } else {
+        var staleTag = (infra && infra._stale) ? '\u26A0 stale' : '\u26A0 probe needed';
+        infraHtzItem.title = $('\uD83D\uDDA5 htz  \u2014 ' + staleTag);
+        infraVastItem.title = $('\uD83C\uDFAE vast  \u2014 ' + staleTag);
+        infraRecoItem.title = $(''); infraRecoItem.hidden = true;
+        infraProbeItem.title = $('\uD83D\uDCCA ' + staleTag);
     }
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');

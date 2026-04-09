@@ -61,16 +61,28 @@ fn ts_iso() -> str {
 //  Infra config loader (infrastructure.json → vast ip/port/gpu/price)
 // ═══════════════════════════════════════════════════════════════════════
 
-fn load_infra_str(key: str, fallback: str) -> str {
-    if file_exists(INFRA_JSON) == false { return fallback }
+// Extract the vast active_instance block from infrastructure.json
+// (naive top-level search would hit mac/ubu fields first)
+fn load_vast_block() -> str {
+    if file_exists(INFRA_JSON) == false { return "" }
     let raw = read_file(INFRA_JSON)
-    return read_json_str(raw, key, fallback)
+    if raw.contains("\"active_instance\"") == false { return "" }
+    let after = raw.split("\"active_instance\"")[1]
+    // active_instance is a flat object — split to first '{' then to first '}'
+    let inner = after.split("{")[1].split("}")[0]
+    return "{" + inner + "}"
+}
+
+fn load_infra_str(key: str, fallback: str) -> str {
+    let block = load_vast_block()
+    if len(block) == 0 { return fallback }
+    return read_json_str(block, key, fallback)
 }
 
 fn load_infra_int(key: str, fallback: int) -> int {
-    if file_exists(INFRA_JSON) == false { return fallback }
-    let raw = read_file(INFRA_JSON)
-    return read_json_int(raw, key, fallback)
+    let block = load_vast_block()
+    if len(block) == 0 { return fallback }
+    return read_json_int(block, key, fallback)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

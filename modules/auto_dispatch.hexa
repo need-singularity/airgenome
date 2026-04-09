@@ -6,6 +6,7 @@
 // 설정 (nexus/shared/gate_config.jsonl):
 //   offload_cpu_threshold  — Mac CPU% 임계치 (default 80)
 //   offload_ubu_max_cpu    — Ubuntu CPU% 상한 (default 70)
+//   offload_htz_max_cpu    — Hetzner CPU% 상한 (default 70)
 //   offload_patterns       — 오프로드 대상 패턴 (comma-sep, default "hexa,python3,node,cargo,gcc,clang")
 //   offload_scan_interval  — watch 모드 폴링 초 (default 10)
 //   offload_top_n          — CPU hog 상위 N개 (default 3)
@@ -17,12 +18,13 @@
 //
 // 출력: JSON (stdout) + forge/dispatch.log (JSONL append)
 
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"
 let HOME = env("HOME")
 let DIR = HOME + "/Dev/airgenome"
 let CONFIG_PATH = DIR + "/nexus/shared/gate_config.jsonl"
 let DISPATCH_LOG = DIR + "/forge/dispatch.log"
 let GROWTH_BUS = HOME + "/Dev/nexus/shared/growth_bus.jsonl"
+let INFRA_STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
 
 // ── SYSTEM EXCLUDE (PID < 200 또는 시스템 데몬) ──────────────────────────
 // Prime Directive: 시스템 프로세스는 관찰 대상에서 제외
@@ -148,7 +150,35 @@ fn check_once(state_path: str) -> str {
         return "{\"ts\":\"" + ts + "\",\"status\":\"gate_offline\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"gate\":\"" + gate + "\",\"reason\":\"ubuntu gate not online\"}"
     }
     if ubu_cpu > ubu_max {
-        return "{\"ts\":\"" + ts + "\",\"status\":\"ubu_busy\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_max\":" + to_string(ubu_max) + ",\"reason\":\"ubuntu cpu too high\"}"
+        // ── htz fallback: ubu busy → Hetzner 확인 ──
+        let htz_max = load_cfg_int("offload_htz_max_cpu", 70)
+        let mut htz_cpu = 100
+        let mut htz_status = "unknown"
+
+        // infra_state.json 에서 htz 상태 읽기
+        if file_exists(INFRA_STATE_PATH) {
+            let infra_raw = read_file(INFRA_STATE_PATH).trim()
+            if len(infra_raw) > 10 {
+                htz_status = read_json_str(infra_raw, "htz_status", "unknown")
+                htz_cpu = read_json_int(infra_raw, "htz_cpu_used", 100)
+            }
+        }
+
+        // infra_state 없거나 stale → SSH probe fallback
+        if htz_status == "unknown" {
+            let probe = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner \"awk '{printf \\\"%d\\\", \\$1*100/(\\$1+\\$4)}' /proc/stat 2>/dev/null || echo 100\" 2>/dev/null").trim()
+            try {
+                htz_cpu = to_int(to_float(probe))
+                if htz_cpu >= 0 && htz_cpu <= 100 { htz_status = "active" }
+            } catch e {}
+        }
+
+        if htz_status == "active" && htz_cpu <= htz_max {
+            return "{\"ts\":\"" + ts + "\",\"status\":\"offload_htz\",\"host\":\"htz\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"reason\":\"ubu busy, htz available\"}"
+        }
+
+        // htz도 불가 → 원래 ubu_busy 반환
+        return "{\"ts\":\"" + ts + "\",\"status\":\"ubu_busy\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_max\":" + to_string(ubu_max) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"htz_status\":\"" + htz_status + "\",\"reason\":\"ubuntu cpu too high, htz unavailable\"}"
     }
 
     // ── 조건 충족: top N hog 탐색 ──

@@ -1,0 +1,157 @@
+// airgenome/modules/htz_dispatch.hexa — Hetzner SSH dispatch (heavy CPU offload)
+//
+// Mac은 디스패치 전용, CPU-heavy 작업(blowup, cargo build 등)은 htz에서 실행.
+// 하드코딩 금지: ssh alias / 경로는 gate_config.jsonl 에서 동적 로드.
+// Prime Directive 준수 (프로세스 kill 없음).
+//
+// Commands:
+//   hexa run modules/htz_dispatch.hexa blowup <domain> [depth]
+//   hexa run modules/htz_dispatch.hexa build <project>
+//   hexa run modules/htz_dispatch.hexa exec <cmd>
+//   hexa run modules/htz_dispatch.hexa status
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let LOG_FILE = env("HOME") + "/Dev/airgenome/dispatch.log"
+let SSH_OPTS = "-o ConnectTimeout=5 -o BatchMode=yes"
+
+// ── CONFIG ──────────────────────────────────────────────────────────────
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let HTZ          = load_cfg("htz_ssh_alias",    "hetzner")
+let HTZ_HEXA     = load_cfg("htz_hexa_bin",     "~/Dev/hexa-lang/target/release/hexa")
+let HTZ_NEXUS    = load_cfg("htz_nexus_dir",    "~/Dev/nexus")
+let HTZ_HEXA_DIR = load_cfg("htz_hexa_lang_dir","~/Dev/hexa-lang")
+
+// ── SSH wrapper ─────────────────────────────────────────────────────────
+
+fn ssh_run(cmd: str) -> str {
+    let full = "ssh " + SSH_OPTS + " " + HTZ + " \"" + cmd + "\" 2>&1"
+    let result = exec(full)
+    return to_string(result).trim()
+}
+
+fn log_event(action: str, detail: str) -> void {
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    append_file(LOG_FILE, ts + "\thtz_dispatch\t" + action + "\t" + detail + "\n")
+    return
+}
+
+// ── blowup ──────────────────────────────────────────────────────────────
+
+fn cmd_blowup(domain: str, depth: str) -> void {
+    print("[HTZ] blowup " + domain + " depth=" + depth)
+    let cmd = "cd " + HTZ_NEXUS + " && " + HTZ_HEXA + " mk2_hexa/native/blowup.hexa " + domain + " " + depth + " --no-graph"
+    let out = ssh_run(cmd)
+    if out.contains("error") || out.contains("refused") || out.contains("timed out") {
+        print("[HTZ] ERROR: " + out)
+        log_event("blowup_fail", domain)
+        return
+    }
+    print(out)
+    log_event("blowup_ok", domain + " depth=" + depth)
+    return
+}
+
+// ── build ───────────────────────────────────────────────────────────────
+
+fn cmd_build(project: str) -> void {
+    print("[HTZ] build " + project)
+    let dir = HTZ_HEXA_DIR
+    if project != "hexa-lang" {
+        dir = "~/Dev/" + project
+    }
+    let cmd = "cd " + dir + " && cargo build --release 2>&1 | tail -5"
+    let out = ssh_run(cmd)
+    if out.contains("error") {
+        print("[HTZ] BUILD ERROR:\n" + out)
+        log_event("build_fail", project)
+        return
+    }
+    print(out)
+    log_event("build_ok", project)
+    return
+}
+
+// ── exec ────────────────────────────────────────────────────────────────
+
+fn cmd_exec(raw: str) -> void {
+    let out = ssh_run(raw)
+    print(out)
+    log_event("exec", raw)
+    return
+}
+
+// ── status ──────────────────────────────────────────────────────────────
+
+fn cmd_status() -> void {
+    let ping = ssh_run("echo ok")
+    if ping.contains("ok") == false {
+        print("[HTZ] OFFLINE — " + ping)
+        log_event("status", "offline")
+        return
+    }
+    let load = ssh_run("uptime && free -h | head -2 && df -h / | tail -1")
+    print("[HTZ] ONLINE\n" + load)
+    log_event("status", "online")
+    return
+}
+
+// ── MAIN ────────────────────────────────────────────────────────────────
+
+fn main() {
+    let args = argv()
+    if len(args) < 2 {
+        print("Usage: hexa run modules/htz_dispatch.hexa <blowup|build|exec|status> [args...]")
+        return
+    }
+    let cmd = args[1]
+    if cmd == "blowup" {
+        if len(args) < 3 {
+            print("Usage: htz_dispatch blowup <domain> [depth]")
+            return
+        }
+        let depth = "3"
+        if len(args) >= 4 { depth = args[3] }
+        cmd_blowup(args[2], depth)
+    } else if cmd == "build" {
+        let project = "hexa-lang"
+        if len(args) >= 3 { project = args[2] }
+        cmd_build(project)
+    } else if cmd == "exec" {
+        if len(args) < 3 {
+            print("Usage: htz_dispatch exec <command>")
+            return
+        }
+        // join remaining args
+        let parts = []
+        let i = 2
+        while i < len(args) {
+            parts = parts + [args[i]]
+            i = i + 1
+        }
+        cmd_exec(join(parts, " "))
+    } else if cmd == "status" {
+        cmd_status()
+    } else {
+        print("[HTZ] unknown command: " + cmd)
+    }
+    return
+}
+
+main()

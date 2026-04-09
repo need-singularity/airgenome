@@ -17,6 +17,7 @@
 {"key":"log_rotate_path","value":"$HOME/Dev/airgenome/dispatch.log","desc":"rotation 대상 로그 경로"}
 {"key":"offload_cpu_threshold","value":"80","desc":"Mac CPU% 이상이면 오프로드 후보 탐색"}
 {"key":"offload_ubu_max_cpu","value":"70","desc":"Ubuntu CPU% 이하일 때만 오프로드 권장"}
+{"key":"offload_htz_max_cpu","value":"70","desc":"Hetzner CPU% 이하일 때만 오프로드 권장 (ubu busy fallback)"}
 {"key":"offload_patterns","value":"hexa,python3,node,cargo,gcc,clang","desc":"오프로드 대상 프로세스 패턴 (comma-sep)"}
 {"key":"offload_scan_interval","value":"10","desc":"watch 모드 폴링 간격 (초)"}
 {"key":"offload_top_n","value":"3","desc":"CPU hog 상위 N개 검사"}
@@ -26,3 +27,7 @@
 {"key":"resource_priority_p0","value":"anima","desc":"P0 최우선 자원 할당 프로젝트"}
 {"key":"resource_priority_p1","value":"nexus,airgenome","desc":"P1 자원 할당 프로젝트"}
 {"key":"resource_priority_p2","value":"hexa-lang","desc":"P2 자원 할당 프로젝트"}
+{"key":"htz_ssh_alias","value":"hetzner","desc":"Hetzner SSH config alias"}
+{"key":"htz_hexa_bin","value":"~/Dev/hexa-lang/target/release/hexa","desc":"Hetzner hexa 바이너리 경로"}
+{"key":"htz_nexus_dir","value":"~/Dev/nexus","desc":"Hetzner nexus 작업 디렉토리"}
+{"key":"htz_hexa_lang_dir","value":"~/Dev/hexa-lang","desc":"Hetzner hexa-lang 소스 디렉토리"}
