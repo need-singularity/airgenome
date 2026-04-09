@@ -1,11 +1,16 @@
-{"type":"pattern","match":"*.hexa","cpu_threshold":30,"desc":"hexa 프로세스 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"cargo *|rustc *|cc *|gcc *|g++ *|clang *|clang++ *|ld *|ar *","cpu_threshold":30,"desc":"Rust/C/C++ 빌드 전체 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"make *|cmake *|ninja *|meson *","cpu_threshold":30,"desc":"빌드 시스템 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"python3 *|python *|pip *","cpu_threshold":30,"desc":"Python 프로세스 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"bash *|sh *|zsh *","cpu_threshold":30,"desc":"Shell 스크립트 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"node *|npm *|npx *|tsc *|esbuild *|vite *|webpack *","cpu_threshold":30,"desc":"Node/JS 빌드 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"swift *|swiftc *|xcodebuild *","cpu_threshold":30,"desc":"Swift 빌드 CPU 30%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"go build *|go test *|go run *","cpu_threshold":30,"desc":"Go 빌드 CPU 30%+ → Ubuntu 오프로드"}
+{"type":"policy","key":"default_target","value":"ubu","desc":"기본 연산 대상: Ubuntu (Mac은 UI/모니터만)"}
+{"type":"policy","key":"gpu_target","value":"ubu","desc":"GPU 연산: Ubuntu RTX 5070 전용"}
+{"type":"policy","key":"mac_max_load","value":"20","desc":"Mac load 20 초과 시 신규 연산 Ubuntu 강제"}
+{"type":"pattern","match":"*.hexa","cpu_threshold":15,"desc":"hexa 프로세스 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"cargo *|rustc *|cc *|gcc *|g++ *|clang *|clang++ *|ld *|ar *","cpu_threshold":15,"desc":"Rust/C/C++ 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"make *|cmake *|ninja *|meson *","cpu_threshold":15,"desc":"빌드 시스템 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"python3 *|python *|pip *","cpu_threshold":15,"desc":"Python 프로세스 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"bash *|sh *|zsh *","cpu_threshold":20,"desc":"Shell 스크립트 CPU 20%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"node *|npm *|npx *|tsc *|esbuild *|vite *|webpack *","cpu_threshold":15,"desc":"Node/JS 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"swift *|swiftc *|xcodebuild *","cpu_threshold":15,"desc":"Swift 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"go build *|go test *|go run *","cpu_threshold":15,"desc":"Go 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"gpu","match":"torch *|cuda *|tensorflow *|pytorch *","target":"ubu","desc":"GPU 연산 무조건 Ubuntu RTX 5070"}
+{"type":"ram","match":"*","threshold_mb":512,"desc":"RAM 512MB+ 프로세스 → Ubuntu 오프로드 후보"}
 {"type":"exclude","match":"cl.hexa","reason":"cl 런처 Mac 전용 (Prime Directive 보호)"}
 {"type":"exclude","match":"sampler.hexa","reason":"로컬 모니터링 전용"}
 {"type":"exclude","match":"menubar.js","reason":"Mac UI 전용"}
@@ -17,6 +22,13 @@
 {"type":"exclude","match":"WindowServer","reason":"macOS 시스템 프로세스"}
 {"type":"exclude","match":"kernel_task","reason":"macOS 커널"}
 {"type":"exclude","match":"ubu_monitor","reason":"모니터링 자체는 Mac 실행"}
+{"type":"exclude","match":"dispatch","reason":"디스패처 자체는 Mac 실행"}
+{"type":"exclude","match":"infinite_evolution","reason":"오케스트레이터 — Mac SSH로 Ubuntu 워커 호출"}
+{"type":"exclude","match":"ouroboros","reason":"진화 오케스트레이터 — Mac SSH 필요"}
 {"type":"exclude","match":"hook.hexa","reason":"Claude Code hook — Mac 전용 즉시 실행"}
-{"type":"config","key":"detect_cmd","value":"ps axo pid,pcpu,comm | awk '$2>=30'","desc":"Mac CPU 30%+ 프로세스 전체 탐지"}
-{"type":"config","key":"max_concurrent_ubu","value":"10","desc":"Ubuntu 동시 오프로드 상한"}
+{"type":"config","key":"detect_cmd","value":"ps axo pid,pcpu,rss,comm | awk '$2>=15 || $3>=524288'","desc":"Mac CPU 15%+ 또는 RAM 512MB+ 탐지"}
+{"type":"config","key":"max_concurrent_ubu","value":"20","desc":"Ubuntu 동시 오프로드 상한 (12코어 활용)"}
+{"type":"config","key":"ubu_gpu","value":"RTX 5070 12GB","desc":"Ubuntu GPU 스펙"}
+{"type":"config","key":"ubu_ram_total","value":"31196","desc":"Ubuntu RAM 총량 MB"}
+{"type":"config","key":"drain_interval","value":"60","desc":"자동 drain 주기 (초)"}
+{"type":"config","key":"ubu_first_policy","value":"enforce","desc":"AG3: heavy compute(6축/유사도/forge/LLM)는 ubu 우선. fallback만 local 허용"}
