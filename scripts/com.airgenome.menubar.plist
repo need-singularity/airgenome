@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome menubar — SwiftBar/메뉴바 앱 런처
+  Template: __HOME__ is replaced with $HOME by scripts/install_core_agents.hexa
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.menubar</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec __HOME__/.hx/bin/airgenome</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome.err</string>
+</dict>
+</plist>

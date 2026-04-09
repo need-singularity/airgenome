@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome growth-bus-sync — 30초 간격 동기화
+  Template: __HOME__ is replaced with $HOME by scripts/install_core_agents.hexa
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.growth-bus-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec __HOME__/Dev/hexa-lang/target/release/hexa __HOME__/Dev/airgenome/modules/growth_bus_sync.hexa</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev/airgenome</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/growth-bus-sync.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/growth-bus-sync.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

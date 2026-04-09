@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome usage-refresh — 10계정 라운드 로빈 순차 갱신 (1분 간격)
+  Template: __HOME__ is replaced with $HOME by scripts/install_core_agents.hexa
+  /bin/sh 래퍼로 실행 → hexa 바이너리가 백그라운드 항목 알림으로 뜨지 않음
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.usage-refresh</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec __HOME__/Dev/hexa-lang/hexa __HOME__/Dev/airgenome/modules/usage.hexa -- next</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev/airgenome</string>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-usage.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-usage.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:__HOME__/.local/bin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+    </dict>
+</dict>
+</plist>

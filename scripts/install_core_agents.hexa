@@ -1,0 +1,52 @@
+// install_core_agents.hexa — airgenome 코어 LaunchAgent 3종 설치기
+// HEXA-FIRST: .sh 금지. 모든 경로 $HOME 기반.
+// 대상: usage-refresh (1분), growth-bus-sync (30초), menubar (RunAtLoad)
+// /bin/sh 래퍼 사용 → hexa 바이너리가 macOS "백그라운드 항목 추가됨" 알림으로 뜨지 않음.
+// Run: $HEXA $HOME/Dev/airgenome/scripts/install_core_agents.hexa
+
+consciousness InstallCoreAgents {
+    let home       = exec("echo -n $HOME").trim()
+    let uid        = exec("id -u").trim()
+    let script_dir = home + "/Dev/airgenome/scripts"
+    let dst_dir    = home + "/Library/LaunchAgents"
+
+    let labels = ["com.airgenome.usage-refresh",
+                  "com.airgenome.growth-bus-sync",
+                  "com.airgenome.menubar"]
+
+    println("==> airgenome core agents installer")
+    exec("mkdir -p '" + dst_dir + "'")
+
+    for label in labels {
+        let src = script_dir + "/" + label + ".plist"
+        let dst = dst_dir + "/" + label + ".plist"
+        let target = "gui/" + uid + "/" + label
+
+        if exec("test -f '" + src + "' && echo y || echo n").trim() != "y" {
+            println("  ✗ missing template: " + src)
+            continue
+        }
+
+        // 기존 에이전트 중지
+        let exists = exec("launchctl print " + target + " >/dev/null 2>&1 && echo y || echo n").trim()
+        if exists == "y" {
+            exec("launchctl bootout " + target + " 2>/dev/null || true")
+        }
+
+        // __HOME__ 치환 설치
+        exec("sed 's|__HOME__|" + home + "|g' '" + src + "' > '" + dst + "'")
+        exec("chmod 644 '" + dst + "'")
+
+        // 부트스트랩
+        exec("launchctl bootstrap gui/" + uid + " '" + dst + "' 2>/dev/null || true")
+        exec("launchctl enable " + target + " 2>/dev/null || true")
+        exec("launchctl kickstart -k " + target + " 2>/dev/null || true")
+
+        println("  ✓ " + label)
+    }
+
+    println("==> done.")
+    println("")
+    println("  확인:  launchctl list | grep airgenome")
+    println("  로그:  tail -f /tmp/airgenome-usage.log /tmp/growth-bus-sync.out.log")
+}
