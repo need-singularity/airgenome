@@ -23,3 +23,6 @@
 {"key":"scan_ok_sec","value":"15","desc":"ok 레벨 스캔 간격 (초)"}
 {"key":"scan_warn_sec","value":"5","desc":"warn 레벨 스캔 간격 (초)"}
 {"key":"scan_critical_sec","value":"3","desc":"critical/danger 레벨 스캔 간격 (초)"}
+{"key":"resource_priority_p0","value":"anima","desc":"P0 최우선 자원 할당 프로젝트"}
+{"key":"resource_priority_p1","value":"nexus,airgenome","desc":"P1 자원 할당 프로젝트"}
+{"key":"resource_priority_p2","value":"hexa-lang","desc":"P2 자원 할당 프로젝트"}

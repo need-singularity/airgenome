@@ -1,0 +1,462 @@
+// airgenome/modules/resource_request.hexa — 프로젝트 자원 요청 프로토콜
+//
+// 프로젝트(anima 등)가 compute 자원을 요청하면 airgenome이 할당 계획을 수립.
+// Prime Directive 준수: 프로세스 kill 없음. 관찰+할당 권장만.
+//
+// 설정 (nexus/shared/gate_config.jsonl):
+//   resource_priority_p0  — P0 최우선 프로젝트 (default "anima")
+//   resource_priority_p1  — P1 프로젝트 (default "nexus,airgenome")
+//   resource_priority_p2  — P2 프로젝트 (default "hexa-lang")
+//   (미등록 = P3)
+//
+// 데이터:
+//   nexus/shared/resource_requests.jsonl — 요청 큐 (JSONL)
+//   nexus/shared/infra_state.json       — 인프라 상태 (infra_probe 기록)
+//
+// Usage:
+//   hexa modules/resource_request.hexa request <project> <type> "<details>"
+//   hexa modules/resource_request.hexa check <project>
+//   hexa modules/resource_request.hexa allocate
+//   hexa modules/resource_request.hexa status
+//
+// R2: env paths | R17: timeout on exec | HEXA-FIRST
+
+let VERSION = "0.2.0"
+let HOME = env("HOME")
+let DIR = HOME + "/Dev/airgenome"
+let CONFIG_PATH = DIR + "/nexus/shared/gate_config.jsonl"
+let REQUESTS_PATH = HOME + "/Dev/nexus/shared/resource_requests.jsonl"
+let INFRA_STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
+let GROWTH_BUS = HOME + "/Dev/nexus/shared/growth_bus.jsonl"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Config loader (ag3_loop.hexa 동일 패턴)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Timestamp
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ts_epoch() -> str {
+    return exec("date +%s").trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Priority system — gate_config.jsonl 에서 동적 로드
+// ═══════════════════════════════════════════════════════════════════════
+
+fn get_priority(project: str) -> int {
+    let p0 = load_cfg("resource_priority_p0", "anima")
+    let p1 = load_cfg("resource_priority_p1", "nexus,airgenome")
+    let p2 = load_cfg("resource_priority_p2", "hexa-lang")
+
+    // P0 체크
+    let p0_list = p0.split(",")
+    let i = 0
+    while i < p0_list.len() {
+        if p0_list[i].trim() == project { return 0 }
+        i = i + 1
+    }
+
+    // P1 체크
+    let p1_list = p1.split(",")
+    let j = 0
+    while j < p1_list.len() {
+        if p1_list[j].trim() == project { return 1 }
+        j = j + 1
+    }
+
+    // P2 체크
+    let p2_list = p2.split(",")
+    let k = 0
+    while k < p2_list.len() {
+        if p2_list[k].trim() == project { return 2 }
+        k = k + 1
+    }
+
+    return 3
+}
+
+fn priority_label(p: int) -> str {
+    if p == 0 { return "P0_CRITICAL" }
+    if p == 1 { return "P1_HIGH" }
+    if p == 2 { return "P2_NORMAL" }
+    return "P3_LOW"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Parse detail string: "vram=48,hours=8,reason=consciousness training"
+// ═══════════════════════════════════════════════════════════════════════
+
+fn parse_detail(details: str, key: str, fallback: str) -> str {
+    let parts = details.split(",")
+    let i = 0
+    while i < parts.len() {
+        let part = parts[i].trim()
+        if part.contains(key + "=") {
+            let kv = part.split("=")
+            if kv.len() >= 2 { return kv[1].trim() }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSON helper: 간단한 key-value 읽기 (infra_state.json 파싱용)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_json_str(raw: str, key: str, fallback: str) -> str {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let colon_parts = after.split(":")
+    if colon_parts.len() < 2 { return fallback }
+    let val_raw = colon_parts[1].split(",")[0].split("}")[0].trim()
+    return val_raw.replace("\"", "")
+}
+
+fn read_json_int(raw: str, key: str, fallback: int) -> int {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fallback }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CMD: request <project> <type> "<details>"
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_request(project: str, res_type: str, details: str) -> void {
+    let ts = ts_iso()
+    let priority = get_priority(project)
+    let p_label = priority_label(priority)
+
+    let vram = parse_detail(details, "vram", "0")
+    let hours = parse_detail(details, "hours", "1")
+    let reason = parse_detail(details, "reason", "unspecified")
+    let cpus = parse_detail(details, "cpus", "0")
+    let ram_gb = parse_detail(details, "ram", "0")
+
+    let mut entry = "{\"ts\":\"" + ts + "\",\"project\":\"" + project + "\",\"type\":\"" + res_type + "\""
+    entry = entry + ",\"priority\":" + to_string(priority) + ",\"priority_label\":\"" + p_label + "\""
+
+    if res_type == "gpu" {
+        entry = entry + ",\"vram_min_gb\":" + vram + ",\"duration_hr\":" + hours
+    } else if res_type == "cpu" {
+        entry = entry + ",\"cpus\":" + cpus + ",\"ram_gb\":" + ram_gb + ",\"duration_hr\":" + hours
+    } else if res_type == "ram" {
+        entry = entry + ",\"ram_gb\":" + ram_gb + ",\"duration_hr\":" + hours
+    }
+
+    entry = entry + ",\"reason\":\"" + reason + "\",\"status\":\"pending\"}"
+
+    append_file(REQUESTS_PATH, entry + "\n")
+
+    println("{\"ok\":true,\"action\":\"request_created\",\"project\":\"" + project + "\",\"type\":\"" + res_type + "\",\"priority\":\"" + p_label + "\",\"reason\":\"" + reason + "\"}")
+
+    // growth_bus 기록
+    let gb = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/resource_request\",\"event\":\"resource_request\",\"domain\":\"airgenome\",\"type\":\"resource\",\"phase\":\"request\",\"id\":\"req_" + ts_epoch() + "\",\"value\":1,\"grade\":\"INFO\",\"project\":\"" + project + "\",\"res_type\":\"" + res_type + "\",\"priority\":\"" + p_label + "\",\"timestamp\":\"" + ts + "\"}"
+    try { append_file(GROWTH_BUS, gb + "\n") } catch e {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CMD: check <project> — 가용 자원 확인
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_check(project: str) -> void {
+    let ts = ts_iso()
+    let priority = get_priority(project)
+    let p_label = priority_label(priority)
+
+    // infra_state.json 읽기 시도
+    let mut has_infra = false
+    let mut infra_raw = ""
+    if file_exists(INFRA_STATE_PATH) {
+        infra_raw = read_file(INFRA_STATE_PATH).trim()
+        if len(infra_raw) > 10 { has_infra = true }
+    }
+
+    // ── GPU 자원 확인 ──
+    // vast: 4×RTX 4090 96GB VRAM
+    let mut vast_status = "unknown"
+    let mut vast_gpu_free = 96
+    // ubu: RTX 5070 12GB
+    let mut ubu_status = "unknown"
+    let mut ubu_gpu_free = 12
+
+    if has_infra {
+        vast_status = read_json_str(infra_raw, "vast_status", "unknown")
+        ubu_status = read_json_str(infra_raw, "ubu_status", "unknown")
+        let vast_used = read_json_int(infra_raw, "vast_gpu_used_gb", 0)
+        vast_gpu_free = 96 - vast_used
+        let ubu_used = read_json_int(infra_raw, "ubu_gpu_used_gb", 0)
+        ubu_gpu_free = 12 - ubu_used
+    } else {
+        // infra_state 없을 시 SSH 프로브 (R17: timeout)
+        let ubu_probe = exec("ssh -o ConnectTimeout=3 ubu 'nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null || echo -1'").trim()
+        try {
+            let free_mb = to_int(to_float(ubu_probe))
+            if free_mb > 0 {
+                ubu_gpu_free = to_int(to_float(to_string(free_mb)) / 1024.0)
+                ubu_status = "online"
+            }
+        } catch e {}
+    }
+
+    // ── CPU 자원 확인 ──
+    // htz: EPYC 7950X3D 32T 124GB
+    let mut htz_status = "unknown"
+    let mut htz_cpu_free = 32
+    let mut htz_ram_free = 124
+
+    if has_infra {
+        htz_status = read_json_str(infra_raw, "htz_status", "unknown")
+        let htz_cpu_used = read_json_int(infra_raw, "htz_cpu_used", 0)
+        htz_cpu_free = 32 - htz_cpu_used
+        let htz_ram_used = read_json_int(infra_raw, "htz_ram_used_gb", 0)
+        htz_ram_free = 124 - htz_ram_used
+    }
+
+    // ── 추천 로직 ──
+    let mut gpu_rec_host = "none"
+    let mut gpu_rec_detail = ""
+    let mut gpu_available = false
+
+    if vast_gpu_free >= 24 {
+        gpu_rec_host = "vast"
+        gpu_rec_detail = "4x RTX 4090, " + to_string(vast_gpu_free) + "GB free"
+        gpu_available = true
+    } else if ubu_gpu_free >= 4 {
+        gpu_rec_host = "ubu"
+        gpu_rec_detail = "RTX 5070, " + to_string(ubu_gpu_free) + "GB free"
+        gpu_available = true
+    }
+
+    let mut cpu_rec_host = "none"
+    let mut cpu_rec_detail = ""
+    let mut cpu_available = false
+
+    if htz_cpu_free >= 4 {
+        cpu_rec_host = "htz"
+        cpu_rec_detail = "EPYC 7950X3D, " + to_string(htz_cpu_free) + "T free, " + to_string(htz_ram_free) + "GB RAM free"
+        cpu_available = true
+    }
+
+    // ── 출력 JSON ──
+    let mut out = "{\"ts\":\"" + ts + "\",\"project\":\"" + project + "\",\"priority\":\"" + p_label + "\""
+    out = out + ",\"infra_state_available\":" + to_string(has_infra)
+    out = out + ",\"gpu\":{\"available\":" + to_string(gpu_available) + ",\"recommend_host\":\"" + gpu_rec_host + "\",\"detail\":\"" + gpu_rec_detail + "\""
+    out = out + ",\"vast\":{\"status\":\"" + vast_status + "\",\"vram_free_gb\":" + to_string(vast_gpu_free) + ",\"spec\":\"4x RTX 4090 96GB\"}"
+    out = out + ",\"ubu\":{\"status\":\"" + ubu_status + "\",\"vram_free_gb\":" + to_string(ubu_gpu_free) + ",\"spec\":\"RTX 5070 12GB\"}}"
+    out = out + ",\"cpu\":{\"available\":" + to_string(cpu_available) + ",\"recommend_host\":\"" + cpu_rec_host + "\",\"detail\":\"" + cpu_rec_detail + "\""
+    out = out + ",\"htz\":{\"status\":\"" + htz_status + "\",\"threads_free\":" + to_string(htz_cpu_free) + ",\"ram_free_gb\":" + to_string(htz_ram_free) + ",\"spec\":\"EPYC 7950X3D 32T 124GB\"}"
+    out = out + ",\"ubu\":{\"status\":\"" + ubu_status + "\",\"spec\":\"RTX 5070 host CPU\"}}}"
+
+    println(out)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CMD: allocate — 대기 중 요청 처리, 우선순위 기반 할당 계획 출력
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_allocate() -> void {
+    let ts = ts_iso()
+
+    if file_exists(REQUESTS_PATH) == false {
+        println("{\"ts\":\"" + ts + "\",\"status\":\"no_requests\",\"reason\":\"request file not found\"}")
+        return
+    }
+
+    let content = read_file(REQUESTS_PATH).trim()
+    if len(content) < 5 {
+        println("{\"ts\":\"" + ts + "\",\"status\":\"no_requests\",\"reason\":\"request file empty\"}")
+        return
+    }
+
+    let lines = content.split("\n")
+
+    // 대기 중 요청 수집 + 우선순위 정렬 (0=최우선)
+    // 간단 버블 정렬: priority 기준
+    let mut pending_lines: [str] = []
+    let mut pending_prios: [int] = []
+    let i = 0
+    while i < lines.len() {
+        let line = lines[i].trim()
+        if len(line) > 2 && line.contains("\"pending\"") {
+            let parsed = json_parse(line)
+            let prio = to_int(to_float(parsed["priority"]))
+            pending_lines = pending_lines + [line]
+            pending_prios = pending_prios + [prio]
+        }
+        i = i + 1
+    }
+
+    if pending_lines.len() == 0 {
+        println("{\"ts\":\"" + ts + "\",\"status\":\"no_pending\",\"total_lines\":" + to_string(lines.len()) + "}")
+        return
+    }
+
+    // 버블 정렬 (priority ASC)
+    let n = pending_lines.len()
+    let a = 0
+    while a < n {
+        let b = 0
+        while b < n - 1 - a {
+            if pending_prios[b] > pending_prios[b + 1] {
+                let tmp_l = pending_lines[b]
+                let tmp_p = pending_prios[b]
+                pending_lines[b] = pending_lines[b + 1]
+                pending_prios[b] = pending_prios[b + 1]
+                pending_lines[b + 1] = tmp_l
+                pending_prios[b + 1] = tmp_p
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+
+    // 할당 계획 생성
+    let mut plans = ""
+    let mut plan_count = 0
+    let c = 0
+    while c < pending_lines.len() {
+        let req = json_parse(pending_lines[c])
+        let project = req["project"]
+        let res_type = req["type"]
+        let prio = to_int(to_float(req["priority"]))
+        let p_label = priority_label(prio)
+
+        let mut host = "none"
+        let mut detail = ""
+
+        if res_type == "gpu" {
+            let vram_min = to_int(to_float(req["vram_min_gb"]))
+            if vram_min > 12 {
+                host = "vast"
+                detail = "4x RTX 4090 96GB VRAM"
+            } else {
+                host = "ubu"
+                detail = "RTX 5070 12GB"
+            }
+        } else if res_type == "cpu" {
+            host = "htz"
+            detail = "EPYC 7950X3D 32T 124GB"
+        } else if res_type == "ram" {
+            host = "htz"
+            detail = "124GB available"
+        }
+
+        if plan_count > 0 { plans = plans + "," }
+        plans = plans + "{\"project\":\"" + project + "\",\"type\":\"" + res_type + "\",\"priority\":\"" + p_label + "\",\"host\":\"" + host + "\",\"detail\":\"" + detail + "\",\"reason\":\"" + req["reason"] + "\"}"
+        plan_count = plan_count + 1
+
+        c = c + 1
+    }
+
+    println("{\"ts\":\"" + ts + "\",\"status\":\"allocation_plan\",\"pending\":" + to_string(plan_count) + ",\"plan\":[" + plans + "]}")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CMD: status — 전체 요청 현황
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_status() -> void {
+    let ts = ts_iso()
+
+    if file_exists(REQUESTS_PATH) == false {
+        println("{\"ts\":\"" + ts + "\",\"status\":\"empty\",\"total\":0,\"pending\":0}")
+        return
+    }
+
+    let content = read_file(REQUESTS_PATH).trim()
+    if len(content) < 5 {
+        println("{\"ts\":\"" + ts + "\",\"status\":\"empty\",\"total\":0,\"pending\":0}")
+        return
+    }
+
+    let lines = content.split("\n")
+    let mut total = 0
+    let mut pending = 0
+    let mut entries = ""
+
+    let i = 0
+    while i < lines.len() {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            total = total + 1
+            if line.contains("\"pending\"") { pending = pending + 1 }
+            if total > 1 { entries = entries + "," }
+            entries = entries + line
+        }
+        i = i + 1
+    }
+
+    println("{\"ts\":\"" + ts + "\",\"total\":" + to_string(total) + ",\"pending\":" + to_string(pending) + ",\"requests\":[" + entries + "]}")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let a = args()
+    if a.len() < 3 {
+        println("Usage:")
+        println("  hexa modules/resource_request.hexa request <project> <type> \"<details>\"")
+        println("  hexa modules/resource_request.hexa check <project>")
+        println("  hexa modules/resource_request.hexa allocate")
+        println("  hexa modules/resource_request.hexa status")
+        println("")
+        println("Types: gpu, cpu, ram")
+        println("Details: vram=48,hours=8,reason=consciousness training")
+        println("Priority: P0=anima, P1=nexus/airgenome, P2=hexa-lang, P3=others")
+        exit(1)
+    }
+
+    let cmd = a[2]
+
+    if cmd == "request" {
+        if a.len() < 6 {
+            println("Usage: hexa modules/resource_request.hexa request <project> <type> \"<details>\"")
+            println("  e.g.: hexa modules/resource_request.hexa request anima gpu \"vram=48,hours=8,reason=training\"")
+            exit(1)
+        }
+        cmd_request(a[3], a[4], a[5])
+    } else if cmd == "check" {
+        if a.len() < 4 {
+            println("Usage: hexa modules/resource_request.hexa check <project>")
+            exit(1)
+        }
+        cmd_check(a[3])
+    } else if cmd == "allocate" {
+        cmd_allocate()
+    } else if cmd == "status" {
+        cmd_status()
+    } else {
+        println("Unknown command: " + cmd)
+        println("Available: request, check, allocate, status")
+        exit(1)
+    }
+}
+
+main()
