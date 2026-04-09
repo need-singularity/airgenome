@@ -289,14 +289,18 @@ fn round_1(v: float) -> float {
 //  Update display (called by timer)
 // ═══════════════════════════════════════════════════════════════════════
 
-fn update_display() {
-    let j = read_state()
+let mut _last_valid_state = {}
 
-    // Check if state is empty / unreadable
+fn update_display() {
+    let mut j = read_state()
+
+    // 캐시 fallback: read 실패 시 직전 유효 데이터 사용 (골화)
+    if j == {} && _last_valid_state != {} { j = _last_valid_state }
     if j == {} {
         msg1(button, sel("setTitle:"), nsstr("\u26A0 airgenome"))
         return
     }
+    _last_valid_state = j
 
     let cfg = read_config()
     let cc = if cfg == {} { 90 } else { try { to_int(cfg["cpu_ceil"]) } catch e { 90 } }

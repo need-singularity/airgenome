@@ -137,4 +137,5 @@ println("⬡ airgenome running (sampler=" + sampler_pid + " ag3_feed=" + ag3_fee
 println("  press Ctrl+C to stop")
 
 // Poll children; cleanup on exit or signal
-exec("bash -c 'trap \"kill " + sampler_pid + " " + ag3_feed_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + STATE + " " + LOCKFILE + " " + menubar_tmp + "\" EXIT INT TERM; while kill -0 " + sampler_pid + " 2>/dev/null || kill -0 " + menubar_pid + " 2>/dev/null; do sleep 2; done'")
+// state 파일은 삭제하지 않음 — menubar가 마지막 유효 데이터를 표시할 수 있도록 (골화)
+exec("bash -c 'trap \"kill " + sampler_pid + " " + ag3_feed_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + LOCKFILE + " " + menubar_tmp + "\" EXIT INT TERM; while kill -0 " + sampler_pid + " 2>/dev/null || kill -0 " + menubar_pid + " 2>/dev/null; do sleep 2; done'")

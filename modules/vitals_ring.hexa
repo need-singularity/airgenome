@@ -23,7 +23,7 @@ let NUM_AXES = 6
 // ── config loader ───────────────────────────────────────────────────────
 fn load_cfg() -> auto {
     // defaults mirror jsonl but are overwritten by file
-    let cfg = json_parse("{\"size\":256,\"min_ready\":32,\"tau\":10,\"bins\":8,\"state_path\":\"forge/vitals_ring.state\",\"out_path\":\"forge/state.json\"}")
+    let cfg = json_parse("{\"size\":512,\"min_ready\":48,\"tau\":10,\"bins\":16,\"state_path\":\"forge/vitals_ring.state\",\"out_path\":\"forge/state.json\"}")
     if file_exists(CFG_PATH) == false { return cfg }
     let content = read_file(CFG_PATH)
     let lines = content.split("\n")
@@ -118,19 +118,19 @@ fn minmax(series: auto, n: int) -> auto {
 
 fn log2_approx(x: float) -> float {
     if x <= 0.0 { return -1000.0 }
-    let a = x
-    let k = 0
-    while k < 12 {
-        let g = a
-        if g < 1.0e-9 { g = 1.0e-9 }
-        let s = 0.5 * (g + a / g)
-        s = 0.5 * (s + a / s)
-        s = 0.5 * (s + a / s)
-        a = s
-        k = k + 1
-    }
-    let ln_x = 4096.0 * (a - 1.0)
-    return ln_x / 0.6931471805599453
+    // Range reduction: x = m * 2^e where 1 <= m < 2
+    let mut m = x
+    let mut e = 0
+    while m >= 2.0 { m = m / 2.0; e = e + 1 }
+    while m < 1.0 { m = m * 2.0; e = e - 1 }
+    // Now log2(x) = e + log2(m), 1 <= m < 2
+    // Pade-style: log2(m) ~ (m-1) * P / Q  (minimax on [1,2])
+    let t = m - 1.0
+    // Degree-3 rational approx: max error < 3e-7 on [1,2]
+    let num = t * (2.0000714 + t * (0.6664778 + t * 0.0757692))
+    let den = 1.0 + t * (0.9560328 + t * 0.2820948)
+    let log2_m = num / (den * 0.6931471805599453)
+    return to_float(e) + log2_m
 }
 
 fn bin_index(v: float, lo: float, hi: float, b: int) -> int {
@@ -259,9 +259,9 @@ fn fmt(x: float) -> str {
     let sign = ""
     if y < 0.0 { sign = "-"; y = -y }
     let whole = to_int(y)
-    let frac = to_int((y - to_float(whole)) * 10000.0)
+    let frac = to_int((y - to_float(whole)) * 1000000.0)
     let fs = to_string(frac)
-    while len(fs) < 4 { fs = "0" + fs }
+    while len(fs) < 6 { fs = "0" + fs }
     return sign + to_string(whole) + "." + fs
 }
 

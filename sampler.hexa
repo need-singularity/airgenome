@@ -50,7 +50,7 @@ while true {
     let mut cpu = 0
     let mut cpu_f = 0.0
     if lite_scan == false {
-        cpu_str = exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
+        cpu_str = exec("timeout 10 top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
         try { cpu_f = to_float(cpu_str) } catch e {}
     }
     if cpu_f <= 0.0 {
@@ -261,7 +261,7 @@ while true {
 
     // ── GATE STATUS ──
     let gate_cfg = DIR + "/nexus/shared/gate_config.jsonl"
-    let mut ubu_host = "192.168.50.119"
+    let mut ubu_host = ""
     let mut ubu_port = "9900"
     if file_exists(gate_cfg) {
         let gh = exec("awk -F'\"' '/\"remote_host\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim()
@@ -269,6 +269,7 @@ while true {
         if len(gh) > 0 { ubu_host = gh }
         if len(gp) > 0 { ubu_port = gp }
     }
+    if len(ubu_host) == 0 { ubu_host = exec("printenv AG3_UBU_HOST 2>/dev/null || echo 192.168.50.119").trim() }
 
     let mut gate = "offline"
     let mut ubu_load = "0"
@@ -324,10 +325,23 @@ while true {
     let disk_kbps_f = disk_mbps_f * 1024.0
     let gpu_local_f_str = if len(gpu_local_str) > 0 { gpu_local_str } else { "0" }
     let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"cpu_f\":" + cpu_str + ",\"ram\":" + to_string(ram) + ",\"ram_f\":" + ram_str + ",\"ram_used_mb\":" + to_string(ram_used_mb) + ",\"swap\":" + to_string(swap) + ",\"swap_f\":" + swap_str + ",\"swap_mb\":" + to_string(swap_mb) + ",\"net_mbps\":" + to_string(net_mbps) + ",\"net_mbps_f\":" + to_string(net_kbps_f) + ",\"disk_mbps\":" + to_string(disk_mbps) + ",\"disk_mbps_f\":" + to_string(disk_kbps_f) + ",\"gpu_local\":" + to_string(gpu_local) + ",\"gpu_local_f\":" + gpu_local_f_str + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\",\"ghost_sh\":" + to_string(ghost_sh) + ",\"ghost_grep\":" + to_string(ghost_grep) + "}"
-    try { write_file(STATE, state_json + "\n") } catch e {}
+    // 원자적 쓰기: tmp → rename (menubar read 레이스 방지, 골화)
+    let tmp_state = STATE + ".tmp"
+    try {
+        write_file(tmp_state, state_json + "\n")
+        exec("mv -f '" + tmp_state + "' '" + STATE + "'")
+    } catch e {}
 
-    // vitals_ring tick — 6축 push
-    exec("$HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + to_string(cpu) + " " + to_string(ram) + " " + to_string(swap) + " " + to_string(net_mbps) + " " + to_string(disk_mbps) + " " + to_string(gpu_local))
+    // vitals_ring tick — 6축 push (float 정밀도 유지: int 절삭 → <1% 오차)
+    let vr_cpu = cpu_str
+    // ram_str = MB 단위 → 퍼센트 float 변환 필요
+    let vr_ram = to_string(ram_used_f * 100.0 / to_float(to_string(TOTAL_RAM_MB)))
+    // swap_str = MB 단위 → 퍼센트 float 변환 필요
+    let vr_swap = to_string(swap_f * 100.0 / to_float(to_string(TOTAL_RAM_MB)))
+    let vr_net = to_string(net_kbps_f / 1024.0)
+    let vr_disk = to_string(disk_mbps_f)
+    let vr_gpu = gpu_local_f_str
+    exec("timeout 30 $HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu)
 
     prev_level = level
 

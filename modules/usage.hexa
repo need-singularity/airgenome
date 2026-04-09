@@ -43,6 +43,9 @@ let PROXY_ARG = ""
 let CACHE_FILE = HOME + "/.airgenome/usage-cache.json"
 let COOLDOWN_FILE = HOME + "/.airgenome/refresh-cooldown.json"
 
+// python3 경로 — 하드코딩 금지 R2: which로 동적 탐색
+let PYTHON3 = exec("which python3.12 2>/dev/null || which python3 2>/dev/null || echo python3").trim()
+
 // 쿨다운 상수
 let GLOBAL_COOLDOWN_SECS = 300   // 5분 고정 (IP 기반)
 let COOLDOWN_BASE = 1200         // 20분 base
@@ -65,9 +68,9 @@ fn get_label(name: str) -> str {
             let slash_label = ps[1]
             let noslash_label = pn[1]
             // 각각 토큰 만료 체크
-            let slash_exp = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + slash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
+            let slash_exp = exec("" + PYTHON3 + " -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + slash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
             if slash_exp == "y" { return slash_label }
-            let noslash_exp = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + noslash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
+            let noslash_exp = exec("" + PYTHON3 + " -c 'import json,sys,time;d=json.loads(sys.stdin.read());ea=d.get(\"claudeAiOauth\",{}).get(\"expiresAt\",0);print(\"y\" if ea/1000>time.time()+60 else \"n\")' <<< \"$(security find-generic-password -l '" + noslash_label + "' -w 2>/dev/null || echo '{}')\" 2>/dev/null || echo 'n'").trim()
             if noslash_exp == "y" { return noslash_label }
             // 둘 다 만료 — 어느 쪽이든 존재하는 것 반환 (refresh 시도용)
             let kc_s = exec("security find-generic-password -l '" + slash_label + "' -w 2>/dev/null || echo ''").trim()
@@ -145,7 +148,7 @@ fn read_keychain(label: str) -> str {
 
 fn extract_token_info(keychain_json: str) -> str {
     // Returns: access_token|refresh_token|expires_at
-    return exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});print(o.get(\"accessToken\",\"\")+\"|\"+o.get(\"refreshToken\",\"\")+\"|\"+str(o.get(\"expiresAt\",0)))' <<< '" + keychain_json + "' 2>/dev/null").trim()
+    return exec("" + PYTHON3 + " -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});print(o.get(\"accessToken\",\"\")+\"|\"+o.get(\"refreshToken\",\"\")+\"|\"+str(o.get(\"expiresAt\",0)))' <<< '" + keychain_json + "' 2>/dev/null").trim()
 }
 
 fn is_token_expired(expires_at_str: str) -> bool {
@@ -175,7 +178,7 @@ fn save_keychain_token(label: str, access_token: str, expires_at_ms: str) -> voi
     // 키체인에서 기존 데이터 읽기 → accessToken + expiresAt만 교체 → 다시 저장
     let kc = read_keychain(label)
     if len(kc) == 0 { return }
-    let updated = exec("/opt/homebrew/bin/python3.12 -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});o[\"accessToken\"]=\"" + access_token + "\";o[\"expiresAt\"]=" + expires_at_ms + ";d[\"claudeAiOauth\"]=o;print(json.dumps(d))' <<< '" + kc + "' 2>/dev/null").trim()
+    let updated = exec("" + PYTHON3 + " -c 'import json,sys;d=json.loads(sys.stdin.read());o=d.get(\"claudeAiOauth\",{});o[\"accessToken\"]=\"" + access_token + "\";o[\"expiresAt\"]=" + expires_at_ms + ";d[\"claudeAiOauth\"]=o;print(json.dumps(d))' <<< '" + kc + "' 2>/dev/null").trim()
     if len(updated) == 0 { return }
     // security delete + add (macOS keychain update) — acct must match original ('ghost')
     let acct = exec("security find-generic-password -l '" + label + "' 2>/dev/null | grep '\"acct\"' | sed 's/.*<blob>=\"//;s/\"//'").trim()
@@ -257,7 +260,7 @@ fn save_cache(results: str) -> void {
     exec("mkdir -p " + HOME + "/.airgenome")
     // Merge: 에러/쿨다운 계정은 기존 캐시 유지
     let py_script = "import json,time,sys,os\nlines=sys.stdin.read().strip().split('\\n')\nold={}\ntry:\n  old=json.load(open('" + CACHE_FILE + "'))\n  old.pop('_ts',None)\nexcept: pass\nd=dict(old)\nok=0;skip=0\nfor l in lines:\n  if 'cached' in l:\n    skip+=1;continue\n  if 'cooldown' in l:\n    skip+=1;continue\n  p=l.split('|')\n  n=p[0]\n  err=None\n  for tag in ['api_error','token_error','no_keychain','parse_error']:\n    if tag in l: err=tag\n  if err:\n    if n not in d or d[n].get('week_all_pct') is None:\n      d[n]={'session_pct':None,'session_resets':None,'week_all_pct':None,'week_resets':None,'error':err}\n    skip+=1;continue\n  if len(p)>=5:\n    d[n]={'session_pct':float(p[1]) if p[1] else None,'session_resets':p[2] if p[2] else None,'week_all_pct':float(p[3]) if p[3] else None,'week_resets':p[4] if p[4] else None,'error':None}\n    ok+=1\nd['_ts']=time.time()\njson.dump(d,open('" + CACHE_FILE + "','w'))\nprint(f'saved {ok} / skip {skip} (kept old)')"
-    let out = exec("echo '" + results + "' | /opt/homebrew/bin/python3.12 -c \"" + py_script + "\" 2>/dev/null").trim()
+    let out = exec("echo '" + results + "' | " + PYTHON3 + " -c \"" + py_script + "\" 2>/dev/null").trim()
     println("  " + out)
 }
 

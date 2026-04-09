@@ -1,0 +1,5 @@
+{"key":"rate_patterns","value":"rate limit,limit reached,usage cap,rate_limit_error,Too many requests,overloaded_error,over your usage limit,exceeded.*limit","desc":"Rate limit 감지 패턴 (comma-sep, grep -iE 호환)"}
+{"key":"max_concurrent","value":"2","desc":"CLI 동시 실행 최대 세션 수"}
+{"key":"pick_lock_timeout","value":"150","desc":"pick lock 최대 재시도 횟수 (0.1초 단위)"}
+{"key":"pick_lock_stale_sec","value":"15","desc":"stale lock 강제 해제 기준 (초)"}
+{"key":"wait_timeout_sec","value":"30","desc":"동시 실행 한도 대기 시간 (초)"}

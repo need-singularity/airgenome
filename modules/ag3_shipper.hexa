@@ -9,7 +9,6 @@ let VERSION = "0.1.0"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let TMP_BIN = "/tmp/_ag3_ship.bin"
 let REMOTE_BIN = "/tmp/_ag3_ship.bin"
-let REMOTE_SCRIPT = "/home/aiden/airgenome/ag3/ship_consume.py"
 
 // ── CONFIG ──────────────────────────────────────────────────────────────
 fn load_cfg(key: str, fallback: str) -> str {
@@ -29,6 +28,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let REMOTE = load_cfg("ssh_alias", "ubu")
+let REMOTE_SCRIPT = load_cfg("ubu_ship_consume", env("HOME") + "/airgenome/ag3/ship_consume.py")
 
 // ── COLLECT: Mac ps → 6축 ────────────────────────────────────────────────
 // 축 (Mac 재정의):
@@ -110,9 +110,9 @@ fn ship(rows: auto) -> int {
     let py = "python3 -c 'import struct,sys,json; rows=json.loads(sys.argv[1]); open(\"" + TMP_BIN + "\",\"wb\").write(b\"\".join(struct.pack(\"<f\",v) for r in rows for v in r))' "
     let payload = json_stringify(rows)
     exec(py + "'" + payload + "'")
-    exec("scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
+    exec("timeout 30 scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
     try {
-        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
+        let result = exec("timeout 30 ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
         print("[AG3-SHIP] consumer: " + result)
     } catch e {
         print("[AG3-SHIP] ssh exec failed: " + to_string(e))

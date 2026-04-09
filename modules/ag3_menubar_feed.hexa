@@ -1,0 +1,164 @@
+// modules/ag3_menubar_feed.hexa — AG3 Ubuntu-First 상태 피드
+//
+// 주기적으로 원격 Ubuntu의 상태를 수집하여 menubar가 읽을 JSON으로 저장.
+//   - ubu_bridge.health() (ssh 접속/torch.cuda)
+//   - nvidia-smi (util / vram / temp / power / name)
+//   - systemd 서비스 상태 (ag3-gate-daemon / ag3-loop / linux-harvest)
+//   - Ubuntu 시스템 부하 (load avg / CPU% / RAM used/total)
+//   - 오프로드 활성 작업 수 (pgrep airgenome 관련)
+//   - /mnt/ramdisk/airgenome/genome.ring 헤더 (write_idx / slot_count)
+//   - growth_bus.jsonl 의 최근 10분 fallback 이벤트 카운트
+//
+// 출력: ~/.airgenome/ag3_status.json
+// 주기: 5초 (argv[2] 로 덮어쓰기 가능)
+//
+// Usage:
+//   hexa modules/ag3_menubar_feed.hexa [interval_sec]
+//
+// 하드코딩 금지: ssh_alias / remote tmpfs 경로는 gate_config.jsonl 동적 로드.
+
+let HOME = env("HOME")
+let CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let OUT_PATH = HOME + "/.airgenome/ag3_status.json"
+let GROWTH_BUS = HOME + "/Dev/nexus/shared/growth_bus.jsonl"
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                if parsed["key"] == key { return parsed["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let REMOTE    = load_cfg("ssh_alias",    "ubu")
+let UBU_TMPFS = load_cfg("ubu_tmpfs",    "/mnt/ramdisk/airgenome")
+let RING_PATH = UBU_TMPFS + "/genome.ring"
+
+let mut interval = 5
+let a = args()
+if a.len() >= 3 {
+    try { interval = to_int(to_float(a[2])) } catch e {}
+}
+if interval < 2 { interval = 2 }
+
+exec("mkdir -p " + HOME + "/.airgenome")
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"")
+}
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+while true {
+    let ts_s = safe_exec("date +%s")
+    let mut ts = 0
+    try { ts = to_int(to_float(ts_s)) } catch e {}
+
+    // 1) Ubuntu health — SSH ping 3s
+    let ping = safe_exec("ssh -o ConnectTimeout=3 -o BatchMode=yes " + REMOTE + " echo ok 2>&1")
+    let ubu_up = ping.contains("ok")
+
+    let mut gpu_util = 0
+    let mut vram_used = 0
+    let mut vram_total = 0
+    let mut gpu_temp = 0
+    let mut gpu_power = 0
+    let mut gpu_name = ""
+    let mut ring_write_idx = 0
+    let mut ring_slot_count = 0
+    let mut svc_gate = false
+    let mut svc_loop = false
+    let mut svc_harvest = false
+    let mut ubu_load = ""
+    let mut ubu_ram_used_mb = 0
+    let mut ubu_ram_total_mb = 0
+    let mut ubu_cpu_pct = 0
+    let mut ubu_active_jobs = 0
+    let mut last_error = ""
+
+    if ubu_up {
+        // 2) nvidia-smi 단일 호출 (util, mem.used, mem.total, power, temp, name)
+        let smi = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu,name --format=csv,noheader,nounits' 2>&1")
+        if smi.contains("error") == false && smi.contains("No devices") == false && len(smi) > 0 {
+            let parts = smi.split(",")
+            if len(parts) >= 6 {
+                try { gpu_util   = to_int(to_float(parts[0].trim())) } catch e {}
+                try { vram_used  = to_int(to_float(parts[1].trim())) } catch e {}
+                try { vram_total = to_int(to_float(parts[2].trim())) } catch e {}
+                try { gpu_power  = to_int(to_float(parts[3].trim())) } catch e {}
+                try { gpu_temp   = to_int(to_float(parts[4].trim())) } catch e {}
+                gpu_name = parts[5].trim()
+            }
+        } else {
+            last_error = "nvidia-smi: " + smi
+        }
+
+        // 2b) 서비스 + 시스템부하 + 오프로드 작업 수 — 단일 SSH 호출 (RTT 최소화)
+        //     출력 형식: 7줄 — svc_gate | svc_loop | svc_harvest | loadavg_1m | ram_total_mb ram_used_mb | cpu_pct | active_jobs
+        let bulk_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'systemctl --user is-active airgenome-ag3-gate-daemon 2>/dev/null || echo inactive; systemctl is-active airgenome-ag3-loop 2>/dev/null || echo inactive; systemctl is-active airgenome-linux-harvest 2>/dev/null || echo inactive; cut -d\" \" -f1 /proc/loadavg 2>/dev/null || echo 0; awk \"/MemTotal/{t=\\$2} /MemAvailable/{a=\\$2} END{print int(t/1024),int((t-a)/1024)}\" /proc/meminfo 2>/dev/null || echo \"0 0\"; awk \"/^cpu /{u=\\$2+\\$4; t=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8} END{if(t>0) printf \\\"%d\\\\n\\\",int(u*100/t); else print 0}\" /proc/stat 2>/dev/null || echo 0; pgrep -c -f \"airgenome|gpu_gate|linux_harvest|ag3_loop|forge\" 2>/dev/null || echo 0' 2>&1")
+        let bl = bulk_raw.split("\n")
+        if len(bl) >= 1 { svc_gate    = bl[0].trim() == "active" }
+        if len(bl) >= 2 { svc_loop    = bl[1].trim() == "active" }
+        if len(bl) >= 3 { svc_harvest = bl[2].trim() == "active" }
+        if len(bl) >= 4 { ubu_load    = bl[3].trim() }
+        if len(bl) >= 5 {
+            let mp = bl[4].trim().split(" ")
+            if len(mp) >= 2 {
+                try { ubu_ram_total_mb = to_int(to_float(mp[0].trim())) } catch e {}
+                try { ubu_ram_used_mb  = to_int(to_float(mp[1].trim())) } catch e {}
+            }
+        }
+        if len(bl) >= 6 { try { ubu_cpu_pct      = to_int(to_float(bl[5].trim())) } catch e {} }
+        if len(bl) >= 7 { try { ubu_active_jobs   = to_int(to_float(bl[6].trim())) } catch e {} }
+
+        // 3) ring 헤더 — od 로 write_idx(offset 12) / slot_count(offset 8) 읽기
+        let wi_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'od -An -t u4 -N 4 -j 12 " + RING_PATH + "' 2>&1")
+        let sc_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'od -An -t u4 -N 4 -j 8 " + RING_PATH + "' 2>&1")
+        let ring_out = wi_raw + " " + sc_raw
+        if ring_out != "err" && len(ring_out) > 0 && ring_out.contains("Error") == false {
+            let rp = ring_out.split(" ")
+            if len(rp) >= 2 {
+                try { ring_write_idx  = to_int(to_float(rp[0])) } catch e {}
+                try { ring_slot_count = to_int(to_float(rp[1])) } catch e {}
+            }
+        }
+    } else {
+        last_error = "ssh: " + ping
+    }
+
+    // 4) fallback 카운트 (최근 10분) — growth_bus.jsonl
+    let mut fb = 0
+    if file_exists(GROWTH_BUS) {
+        let cutoff = ts - 600
+        // 최근 500줄만 살펴봐도 충분 (부하 방지)
+        let fb_s = exec("timeout 5 tail -500 " + GROWTH_BUS + " 2>/dev/null | grep '\"type\":\"fallback\"' | grep '\"phase\":\"ag3\"' | wc -l | tr -d ' '").trim()
+        try { fb = to_int(to_float(fb_s)) } catch e {}
+        // 타임스탬프 필터 (ISO → epoch) 는 부하 크므로 건수만 사용
+    }
+
+    let ubu_up_s = if ubu_up { "true" } else { "false" }
+    let svc_gate_s = if svc_gate { "true" } else { "false" }
+    let svc_loop_s = if svc_loop { "true" } else { "false" }
+    let svc_harvest_s = if svc_harvest { "true" } else { "false" }
+    let out = "{\"ts\":" + to_string(ts) + ",\"ubu_up\":" + ubu_up_s + ",\"gpu_util\":" + to_string(gpu_util) + ",\"gpu_vram_used_mb\":" + to_string(vram_used) + ",\"gpu_vram_total_mb\":" + to_string(vram_total) + ",\"gpu_temp_c\":" + to_string(gpu_temp) + ",\"gpu_power_w\":" + to_string(gpu_power) + ",\"gpu_name\":\"" + json_escape(gpu_name) + "\"" + ",\"ring_write_idx\":" + to_string(ring_write_idx) + ",\"ring_slot_count\":" + to_string(ring_slot_count) + ",\"svc_gate\":" + svc_gate_s + ",\"svc_loop\":" + svc_loop_s + ",\"svc_harvest\":" + svc_harvest_s + ",\"ubu_load\":\"" + json_escape(ubu_load) + "\"" + ",\"ubu_cpu_pct\":" + to_string(ubu_cpu_pct) + ",\"ubu_ram_used_mb\":" + to_string(ubu_ram_used_mb) + ",\"ubu_ram_total_mb\":" + to_string(ubu_ram_total_mb) + ",\"ubu_active_jobs\":" + to_string(ubu_active_jobs) + ",\"fallback_count_10min\":" + to_string(fb) + ",\"last_error\":\"" + json_escape(last_error) + "\"}"
+    // 원자적 쓰기: tmp → rename (menubar read 레이스 방지, 골화)
+    let tmp_out = OUT_PATH + ".tmp"
+    try {
+        write_file(tmp_out, out + "\n")
+        exec("mv -f '" + tmp_out + "' '" + OUT_PATH + "'")
+    } catch e {}
+
+    exec("sleep " + to_string(interval))
+}

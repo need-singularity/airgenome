@@ -1,0 +1,600 @@
+// genome_crosscorr.hexa — 6축 게놈 교차 분석 (Pearson r + NMI)
+//
+// 비-L0 모듈. L0 코어 읽기 전용.
+// 모든 상수는 nexus/shared/genome_crosscorr.jsonl 에서 로드 (하드코딩 금지).
+//
+// 입력: forge/genomes.index.jsonl — 각 레코드 {ts,pid,comm,axes:"a,b,c,d,e,f",file}
+// 계산:
+//   1) 1000 x 6 행렬 M 구성
+//   2) 15쌍 Pearson r
+//   3) 15쌍 정규화 상호정보량 NMI (bin 히스토그램)
+//   4) 상위 5 |r| 보고
+//   5) |r|>r_breakthrough/100 또는 NMI>nmi_breakthrough/100 시 growth_bus append
+//
+// Run: $HEXA $HOME/Dev/airgenome/modules/genome_crosscorr.hexa
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOAD (no hardcoding)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CONFIG_FILE = "nexus/shared/genome_crosscorr.jsonl"
+
+fn cfg_int(key: str, default_val: int) -> int {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
+    if len(v) == 0 { return default_val }
+    try { return to_int(to_float(v)) } catch e { return default_val }
+}
+
+fn cfg_str(key: str, default_val: str) -> str {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+    if len(v) == 0 { return default_val }
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATRIX LOAD
+// ═══════════════════════════════════════════════════════════════════════
+
+// Returns a flat list: [v00,v01,..v05, v10,v11,..v15, ...] of length 6*N.
+// Using a fast awk extract to avoid per-line hexa parsing.
+fn load_matrix_flat(index_file: str) -> str {
+    // emit "c0 c1 c2 c3 c4 c5\n" per row
+    let cmd = "awk -F'\"axes\":\"' '{split($2,a,\"\\\"\"); n=split(a[1],b,\",\"); if(n==6) print b[1]\" \"b[2]\" \"b[3]\" \"b[4]\" \"b[5]\" \"b[6]}' " + index_file
+    return exec(cmd)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STATISTICS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+fn log2_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    // ln(x)/ln(2) via series is costly; use shell bc for reliability
+    let s = exec("awk 'BEGIN{printf \"%.10f\", log(" + to_string(x) + ")/log(2)}'").trim()
+    try { return to_float(s) } catch e { return 0.0 }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CROSSCORR
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness CrossCorr {
+    let t_start = exec("date +%s").trim()
+
+    let mut index_file = cfg_str("index_file", "forge/genomes.index.jsonl")
+    // --input <path> argv override (minimal patch: default 동작 유지)
+    let argv = args()
+    let argc = len(argv)
+    let mut _ai = 0
+    while _ai < argc {
+        if argv[_ai] == "--input" {
+            if _ai + 1 < argc { index_file = argv[_ai + 1] }
+        }
+        _ai = _ai + 1
+    }
+    let report_f   = cfg_str("output_report", "forge/crosscorr.report.md")
+    let _home = env("HOME")
+    let growth_bus = cfg_str("growth_bus", _home + "/Dev/nexus/shared/growth_bus.jsonl")
+    let bins       = cfg_int("nmi_bins", 8)
+    let r_brk_i    = cfg_int("r_breakthrough", 70)
+    let nmi_brk_i  = cfg_int("nmi_breakthrough", 30)
+    let names_csv  = cfg_str("axis_names", "CPU,RAM,Swap,Net,Disk,GPU")
+
+    let r_brk   = to_float(to_string(r_brk_i)) / 100.0
+    let nmi_brk = to_float(to_string(nmi_brk_i)) / 100.0
+    let names   = names_csv.split(",")
+
+    if file_exists(index_file) == false {
+        println("  ERROR: index not found: " + index_file)
+        exit(1)
+    }
+
+    println("  genome_crosscorr — loading " + index_file)
+
+    let raw = load_matrix_flat(index_file)
+    let rows = raw.split("\n")
+    let mut N = 0
+    // Flat arrays per axis
+    let mut c0 = []
+    let mut c1 = []
+    let mut c2 = []
+    let mut c3 = []
+    let mut c4 = []
+    let mut c5 = []
+    let mut ri = 0
+    while ri < len(rows) {
+        let line = rows[ri].trim()
+        if len(line) > 0 {
+            let p = line.split(" ")
+            if len(p) == 6 {
+                let mut ok = true
+                let mut v0 = 0.0
+                let mut v1 = 0.0
+                let mut v2 = 0.0
+                let mut v3 = 0.0
+                let mut v4 = 0.0
+                let mut v5 = 0.0
+                try { v0 = to_float(p[0]) } catch e { ok = false }
+                try { v1 = to_float(p[1]) } catch e { ok = false }
+                try { v2 = to_float(p[2]) } catch e { ok = false }
+                try { v3 = to_float(p[3]) } catch e { ok = false }
+                try { v4 = to_float(p[4]) } catch e { ok = false }
+                try { v5 = to_float(p[5]) } catch e { ok = false }
+                if ok {
+                    c0 = c0 + [v0]
+                    c1 = c1 + [v1]
+                    c2 = c2 + [v2]
+                    c3 = c3 + [v3]
+                    c4 = c4 + [v4]
+                    c5 = c5 + [v5]
+                    N = N + 1
+                }
+            }
+        }
+        ri = ri + 1
+    }
+
+    println("  rows loaded: " + to_string(N))
+    if N < 10 { println("  ERROR: too few rows"); exit(1) }
+
+    // Group columns in a 2D-ish access via index branching
+    // means & stds
+    let mut means = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut vars  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let Nf = to_float(to_string(N))
+
+    let mut ai = 0
+    while ai < N {
+        means[0] = means[0] + c0[ai]
+        means[1] = means[1] + c1[ai]
+        means[2] = means[2] + c2[ai]
+        means[3] = means[3] + c3[ai]
+        means[4] = means[4] + c4[ai]
+        means[5] = means[5] + c5[ai]
+        ai = ai + 1
+    }
+    let mut k = 0
+    while k < 6 { means[k] = means[k] / Nf; k = k + 1 }
+
+    let mut bi = 0
+    while bi < N {
+        let d0 = c0[bi] - means[0]
+        let d1 = c1[bi] - means[1]
+        let d2 = c2[bi] - means[2]
+        let d3 = c3[bi] - means[3]
+        let d4 = c4[bi] - means[4]
+        let d5 = c5[bi] - means[5]
+        vars[0] = vars[0] + d0 * d0
+        vars[1] = vars[1] + d1 * d1
+        vars[2] = vars[2] + d2 * d2
+        vars[3] = vars[3] + d3 * d3
+        vars[4] = vars[4] + d4 * d4
+        vars[5] = vars[5] + d5 * d5
+        bi = bi + 1
+    }
+    let mut stds = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut k2 = 0
+    while k2 < 6 {
+        stds[k2] = sqrt_approx(vars[k2] / Nf)
+        k2 = k2 + 1
+    }
+
+    // Helper to get column value by axis index
+    // (avoid nested function closures — inline via branching)
+    // Compute Pearson for each pair (x<y)
+    let mut pair_x = []
+    let mut pair_y = []
+    let mut pair_r = []
+    let mut pair_nmi = []
+
+    // Bin width for NMI: data range 0..255 → bins buckets
+    let binsf = to_float(to_string(bins))
+    let binw = 256.0 / binsf
+
+    let mut x = 0
+    while x < 6 {
+        let mut y = x + 1
+        while y < 6 {
+            // Pearson
+            let mut cov = 0.0
+            let mut i = 0
+            while i < N {
+                let mut vx = 0.0
+                let mut vy = 0.0
+                if x == 0 { vx = c0[i] }
+                if x == 1 { vx = c1[i] }
+                if x == 2 { vx = c2[i] }
+                if x == 3 { vx = c3[i] }
+                if x == 4 { vx = c4[i] }
+                if x == 5 { vx = c5[i] }
+                if y == 0 { vy = c0[i] }
+                if y == 1 { vy = c1[i] }
+                if y == 2 { vy = c2[i] }
+                if y == 3 { vy = c3[i] }
+                if y == 4 { vy = c4[i] }
+                if y == 5 { vy = c5[i] }
+                cov = cov + (vx - means[x]) * (vy - means[y])
+                i = i + 1
+            }
+            cov = cov / Nf
+            let mut r_val = 0.0
+            let denom = stds[x] * stds[y]
+            if denom > 0.000001 { r_val = cov / denom }
+
+            // NMI via binned histograms
+            // joint count matrix flattened length bins*bins
+            let total_bins = bins * bins
+            let mut joint = []
+            let mut jz = 0
+            while jz < total_bins { joint = joint + [0]; jz = jz + 1 }
+            let mut hx = []
+            let mut hy = []
+            let mut hz = 0
+            while hz < bins { hx = hx + [0]; hy = hy + [0]; hz = hz + 1 }
+
+            let mut j = 0
+            while j < N {
+                let mut vx2 = 0.0
+                let mut vy2 = 0.0
+                if x == 0 { vx2 = c0[j] }
+                if x == 1 { vx2 = c1[j] }
+                if x == 2 { vx2 = c2[j] }
+                if x == 3 { vx2 = c3[j] }
+                if x == 4 { vx2 = c4[j] }
+                if x == 5 { vx2 = c5[j] }
+                if y == 0 { vy2 = c0[j] }
+                if y == 1 { vy2 = c1[j] }
+                if y == 2 { vy2 = c2[j] }
+                if y == 3 { vy2 = c3[j] }
+                if y == 4 { vy2 = c4[j] }
+                if y == 5 { vy2 = c5[j] }
+                let mut bx = to_int(vx2 / binw)
+                let mut by = to_int(vy2 / binw)
+                if bx >= bins { bx = bins - 1 }
+                if by >= bins { by = bins - 1 }
+                if bx < 0 { bx = 0 }
+                if by < 0 { by = 0 }
+                hx[bx] = hx[bx] + 1
+                hy[by] = hy[by] + 1
+                joint[bx * bins + by] = joint[bx * bins + by] + 1
+                j = j + 1
+            }
+
+            // H(X), H(Y), H(X,Y) → NMI = 2*I / (H(X)+H(Y))
+            let mut Hx = 0.0
+            let mut Hy = 0.0
+            let mut Hxy = 0.0
+            let mut bk = 0
+            while bk < bins {
+                if hx[bk] > 0 {
+                    let px = to_float(to_string(hx[bk])) / Nf
+                    Hx = Hx - px * log2_approx(px)
+                }
+                if hy[bk] > 0 {
+                    let py = to_float(to_string(hy[bk])) / Nf
+                    Hy = Hy - py * log2_approx(py)
+                }
+                bk = bk + 1
+            }
+            let mut jk = 0
+            while jk < total_bins {
+                if joint[jk] > 0 {
+                    let pj = to_float(to_string(joint[jk])) / Nf
+                    Hxy = Hxy - pj * log2_approx(pj)
+                }
+                jk = jk + 1
+            }
+            let MI = Hx + Hy - Hxy
+            let mut nmi_val = 0.0
+            let hsum = Hx + Hy
+            if hsum > 0.000001 { nmi_val = 2.0 * MI / hsum }
+            if nmi_val < 0.0 { nmi_val = 0.0 }
+
+            pair_x = pair_x + [x]
+            pair_y = pair_y + [y]
+            pair_r = pair_r + [r_val]
+            pair_nmi = pair_nmi + [nmi_val]
+
+            y = y + 1
+        }
+        x = x + 1
+    }
+
+    // ─── Report ──────────────────────────────────────────────────────────
+    let mut report = "# Genome 6-Axis Crosscorrelation Report\n\n"
+    report = report + "N = " + to_string(N) + " genomes · bins = " + to_string(bins) + "\n\n"
+    report = report + "| # | Pair | Pearson r | NMI |\n|---|------|-----------|-----|\n"
+
+    println("")
+    println("  === 15 pair correlations ===")
+    println("  #   pair         r         NMI")
+    let np = len(pair_r)
+    let mut pi = 0
+    while pi < np {
+        let xi = pair_x[pi]
+        let yi = pair_y[pi]
+        let nm = names[xi] + "-" + names[yi]
+        let rs = exec("awk 'BEGIN{printf \"%+.4f\", " + to_string(pair_r[pi]) + "}'").trim()
+        let ns = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(pair_nmi[pi]) + "}'").trim()
+        println("  " + to_string(pi + 1) + "  " + nm + "   " + rs + "   " + ns)
+        report = report + "| " + to_string(pi + 1) + " | " + nm + " | " + rs + " | " + ns + " |\n"
+        pi = pi + 1
+    }
+
+    // ─── Top 5 by |r| (positive and negative) ────────────────────────────
+    // Sort by |r| descending — simple selection over 15 items
+    let mut order = []
+    let mut oi = 0
+    while oi < np { order = order + [oi]; oi = oi + 1 }
+    let mut s1 = 0
+    while s1 < np {
+        let mut s2 = s1 + 1
+        while s2 < np {
+            let ra = pair_r[order[s1]]
+            let rb = pair_r[order[s2]]
+            let mut aa = ra
+            let mut bb = rb
+            if aa < 0.0 { aa = 0.0 - aa }
+            if bb < 0.0 { bb = 0.0 - bb }
+            if bb > aa {
+                let tmp = order[s1]
+                order[s1] = order[s2]
+                order[s2] = tmp
+            }
+            s2 = s2 + 1
+        }
+        s1 = s1 + 1
+    }
+
+    report = report + "\n## Top 5 by |r|\n\n"
+    println("")
+    println("  === Top 5 by |r| ===")
+    let mut top = 5
+    if np < top { top = np }
+    let mut ti = 0
+    let mut top_pos_count = 0
+    let mut top_neg_count = 0
+    let mut breakthroughs = ""
+    while ti < top {
+        let idx = order[ti]
+        let xi = pair_x[idx]
+        let yi = pair_y[idx]
+        let nm = names[xi] + "-" + names[yi]
+        let rv = pair_r[idx]
+        let nv = pair_nmi[idx]
+        let rs = exec("awk 'BEGIN{printf \"%+.4f\", " + to_string(rv) + "}'").trim()
+        let ns = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(nv) + "}'").trim()
+        let sign = if rv >= 0.0 { "+" } else { "-" }
+        println("  " + to_string(ti + 1) + ". " + nm + "  r=" + rs + "  NMI=" + ns + "  (" + sign + ")")
+        report = report + "- " + to_string(ti + 1) + ". **" + nm + "** — r=" + rs + ", NMI=" + ns + "\n"
+        let mut abs_r = rv
+        if abs_r < 0.0 { abs_r = 0.0 - abs_r }
+        if abs_r > r_brk || nv > nmi_brk {
+            breakthroughs = breakthroughs + nm + "(r=" + rs + ",NMI=" + ns + ") "
+        }
+        ti = ti + 1
+    }
+
+    // ─── n=6 GLOBAL CORRELATION ANALYSIS ─────────────────────────────────
+    // Build full 6x6 correlation matrix (symmetric, diag=1)
+    // Flat storage: R[i*6+j]
+    let mut R = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0
+    ]
+    let mut fi = 0
+    while fi < np {
+        let xi = pair_x[fi]
+        let yi = pair_y[fi]
+        R[xi * 6 + yi] = pair_r[fi]
+        R[yi * 6 + xi] = pair_r[fi]
+        fi = fi + 1
+    }
+
+    // Mean absolute correlation (exclude diagonal)
+    let mut sum_abs_r = 0.0
+    let mut gi = 0
+    while gi < np {
+        let mut ar = pair_r[gi]
+        if ar < 0.0 { ar = 0.0 - ar }
+        sum_abs_r = sum_abs_r + ar
+        gi = gi + 1
+    }
+    let mean_abs_r = sum_abs_r / 15.0
+
+    // Per-axis coupling: mean |r| for each axis across its 5 partners
+    let mut axis_coupling = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ac_i = 0
+    while ac_i < 6 {
+        let mut ac_sum = 0.0
+        let mut ac_j = 0
+        while ac_j < 6 {
+            if ac_i != ac_j {
+                let mut rv = R[ac_i * 6 + ac_j]
+                if rv < 0.0 { rv = 0.0 - rv }
+                ac_sum = ac_sum + rv
+            }
+            ac_j = ac_j + 1
+        }
+        axis_coupling[ac_i] = ac_sum / 5.0
+        ac_i = ac_i + 1
+    }
+
+    // Determinant of 6x6 via LU decomposition (Doolittle, no pivoting)
+    // Copy R → LU
+    let mut LU = []
+    let mut lu_i = 0
+    while lu_i < 36 { LU = LU + [R[lu_i]]; lu_i = lu_i + 1 }
+    let mut det = 1.0
+    let mut piv_k = 0
+    while piv_k < 6 {
+        let pivot = LU[piv_k * 6 + piv_k]
+        if pivot > -0.0000001 && pivot < 0.0000001 {
+            det = 0.0
+            piv_k = 6 // break
+        } else {
+            det = det * pivot
+            let mut eli = piv_k + 1
+            while eli < 6 {
+                let factor = LU[eli * 6 + piv_k] / pivot
+                LU[eli * 6 + piv_k] = factor
+                let mut elj = piv_k + 1
+                while elj < 6 {
+                    LU[eli * 6 + elj] = LU[eli * 6 + elj] - factor * LU[piv_k * 6 + elj]
+                    elj = elj + 1
+                }
+                eli = eli + 1
+            }
+            piv_k = piv_k + 1
+        }
+    }
+
+    // Cluster detection: pairs with |r| > cluster_threshold form connected groups
+    let cluster_thresh = cfg_int("cluster_threshold", 35)
+    let ct = to_float(to_string(cluster_thresh)) / 100.0
+    // Union-Find for 6 axes
+    let mut uf_parent = [0, 1, 2, 3, 4, 5]
+    // find root (inline, no separate fn for array param compat)
+    let mut ci = 0
+    while ci < np {
+        let mut arv = pair_r[ci]
+        if arv < 0.0 { arv = 0.0 - arv }
+        if arv > ct {
+            // find root of pair_x[ci]
+            let mut rx = pair_x[ci]
+            while uf_parent[rx] != rx { rx = uf_parent[rx] }
+            // find root of pair_y[ci]
+            let mut ry = pair_y[ci]
+            while uf_parent[ry] != ry { ry = uf_parent[ry] }
+            if rx != ry { uf_parent[ry] = rx }
+        }
+        ci = ci + 1
+    }
+    // Build cluster labels
+    let mut clusters = []
+    let mut cl_i = 0
+    while cl_i < 6 {
+        // find root inline
+        let mut cr = cl_i
+        while uf_parent[cr] != cr { cr = uf_parent[cr] }
+        clusters = clusters + [cr]
+        cl_i = cl_i + 1
+    }
+    // Group by root
+    let mut cluster_strs = []
+    let mut seen_roots = []
+    let mut cs_i = 0
+    while cs_i < 6 {
+        let root = clusters[cs_i]
+        let mut found = false
+        let mut sr_j = 0
+        while sr_j < len(seen_roots) {
+            if seen_roots[sr_j] == root {
+                cluster_strs[sr_j] = cluster_strs[sr_j] + "+" + names[cs_i]
+                found = true
+            }
+            sr_j = sr_j + 1
+        }
+        if found == false {
+            seen_roots = seen_roots + [root]
+            cluster_strs = cluster_strs + [names[cs_i]]
+        }
+        cs_i = cs_i + 1
+    }
+
+    // Format results
+    let det_s = exec("awk 'BEGIN{printf \"%.6f\", " + to_string(det) + "}'").trim()
+    let mar_s = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(mean_abs_r) + "}'").trim()
+
+    println("")
+    println("  === n=6 Global Correlation Matrix ===")
+    println("  det(R) = " + det_s + "  (1.0=independent, 0.0=degenerate)")
+    println("  mean |r| = " + mar_s)
+    println("")
+    println("  Per-axis coupling (mean |r| to other 5):")
+    let mut pr_i = 0
+    while pr_i < 6 {
+        let acs = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(axis_coupling[pr_i]) + "}'").trim()
+        println("    " + names[pr_i] + ": " + acs)
+        pr_i = pr_i + 1
+    }
+
+    println("")
+    println("  Axis clusters (|r|>" + to_string(cluster_thresh) + "%):")
+    let mut pc_i = 0
+    while pc_i < len(cluster_strs) {
+        println("    [" + to_string(pc_i + 1) + "] " + cluster_strs[pc_i])
+        pc_i = pc_i + 1
+    }
+
+    // Append to report
+    report = report + "\n## n=6 Global Analysis\n\n"
+    report = report + "- **det(R)** = " + det_s + " (1.0=fully independent, 0.0=degenerate)\n"
+    report = report + "- **mean |r|** = " + mar_s + "\n\n"
+    report = report + "### Per-axis coupling\n\n| Axis | mean |r| |\n|------|----------|\n"
+    let mut rp_i = 0
+    while rp_i < 6 {
+        let acs = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(axis_coupling[rp_i]) + "}'").trim()
+        report = report + "| " + names[rp_i] + " | " + acs + " |\n"
+        rp_i = rp_i + 1
+    }
+    report = report + "\n### Axis clusters (|r|>" + to_string(cluster_thresh) + "%)\n\n"
+    let mut rpc_i = 0
+    while rpc_i < len(cluster_strs) {
+        report = report + "- **Cluster " + to_string(rpc_i + 1) + "**: " + cluster_strs[rpc_i] + "\n"
+        rpc_i = rpc_i + 1
+    }
+
+    // Global coupling breakthrough check
+    let global_brk_thresh = cfg_int("global_coupling_breakthrough", 30)
+    let gbt = to_float(to_string(global_brk_thresh)) / 100.0
+    if mean_abs_r > gbt {
+        let iso_ts2 = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+        let g_entry = "{\"ts\":\"" + iso_ts2 + "\",\"source\":\"airgenome/genome_crosscorr\",\"event\":\"breakthrough\",\"domain\":\"airgenome\",\"project\":\"airgenome\",\"type\":\"discovery\",\"layer\":\"L10_n6_global\",\"result\":\"mean_abs_r=" + mar_s + " det=" + det_s + " clusters=" + to_string(len(cluster_strs)) + "\"}\n"
+        try { append_file(growth_bus, g_entry) } catch e {}
+        breakthroughs = breakthroughs + "n6_global(mean|r|=" + mar_s + ",det=" + det_s + ") "
+        println("")
+        println("  N=6 GLOBAL BREAKTHROUGH → mean |r|=" + mar_s + " > " + to_string(global_brk_thresh) + "%")
+    }
+
+    // ─── Write report ────────────────────────────────────────────────────
+    try { write_file(report_f, report) } catch e {}
+    println("")
+    println("  report written: " + report_f)
+
+    // ─── Growth bus (breakthroughs) ──────────────────────────────────────
+    if len(breakthroughs) > 0 {
+        // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+        let iso_ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+        let entry = "{\"ts\":\"" + iso_ts + "\",\"source\":\"airgenome/genome_crosscorr\",\"event\":\"breakthrough\",\"domain\":\"airgenome\",\"project\":\"airgenome\",\"type\":\"discovery\",\"layer\":\"L10_crosscorr\",\"result\":\"" + breakthroughs.trim() + "\"}\n"
+        try { append_file(growth_bus, entry) } catch e {}
+        println("  BREAKTHROUGH → growth_bus: " + breakthroughs)
+    } else {
+        println("  no breakthrough (|r|<=" + to_string(r_brk) + ", NMI<=" + to_string(nmi_brk) + ")")
+    }
+
+    let t_end = exec("date +%s").trim()
+    let dt = to_int(to_float(t_end)) - to_int(to_float(t_start))
+    println("  elapsed: " + to_string(dt) + "s")
+}

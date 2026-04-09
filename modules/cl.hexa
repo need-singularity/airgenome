@@ -1,12 +1,8 @@
 // airgenome/modules/cl.hexa — Claude Code multi-account launcher
 // python3-free: 순수 hexa + awk/grep/sed
 
-let VERSION = "0.3.0"
-let ACCOUNTS_FILE = "~/.airgenome/accounts.json"
-let STATE_FILE = "~/.airgenome/cl-state.json"
-let USAGE_CACHE = "~/.airgenome/usage-cache.json"
-
-let RATE_PATTERNS = ["rate limit", "limit reached", "usage cap", "rate_limit_error", "Too many requests", "overloaded_error"]
+let VERSION = "0.4.0"
+// (paths resolved below as R_ACCOUNTS, R_STATE, R_USAGE_CACHE)
 
 // ═══════════════════════════════════════════════════════════════════════
 //  RESOLVED PATHS (1회 확장, 재사용)
@@ -18,10 +14,28 @@ let R_USAGE_CACHE = HOME + "/.airgenome/usage-cache.json"
 let NOW_TS = to_int(exec("date -u +%s").trim())
 
 // ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOADER — nexus/shared/cl_config.jsonl (하드코딩 금지)
+// ═══════════════════════════════════════════════════════════════════════
+let CL_CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/cl_config.jsonl"
+
+fn load_config_val(key: str) -> str {
+    return exec("grep '\"" + key + "\"' '" + CL_CONFIG_PATH + "' 2>/dev/null | sed 's/.*\"value\":\\s*\"//;s/\".*//'").trim()
+}
+
+let RATE_PATTERNS_STR = load_config_val("rate_patterns")
+let RATE_PATTERNS = RATE_PATTERNS_STR.split(",")
+
+// ═══════════════════════════════════════════════════════════════════════
 //  CLI 경쟁 방지 — cli_race.hexa 연동
 // ═══════════════════════════════════════════════════════════════════════
 let SESSION_FILE = HOME + "/.airgenome/cli-sessions.json"
-let MAX_CONCURRENT = 2
+let MAX_CONCURRENT_STR = load_config_val("max_concurrent")
+let MAX_CONCURRENT = to_int(MAX_CONCURRENT_STR)
+// fallback: config 로드 실패 시 기본값 2
+fn safe_max_concurrent() -> int {
+    if MAX_CONCURRENT < 1 { return 2 }
+    return MAX_CONCURRENT
+}
 
 fn race_ensure() -> void {
     exec("mkdir -p " + HOME + "/.airgenome")
@@ -605,7 +619,7 @@ fn resolve_launch(account_name: str) -> str {
 
     // ── 경쟁 방지 체크 ──
     let active = race_active_count()
-    let max_c = MAX_CONCURRENT
+    let max_c = safe_max_concurrent()
     if active >= max_c {
         println("")
         println("  ⚠ CLI 세션 동시 실행 한도 (" + to_string(max_c) + ") 도달")
@@ -928,7 +942,7 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
 
     // 활성 세션 표시
     let race_count = race_active_count()
-    let max_c = MAX_CONCURRENT
+    let max_c = safe_max_concurrent()
     if race_count > 0 {
         buf = buf + nl
         let race_color = C_GREEN
@@ -957,17 +971,32 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
 //  CLI ROUTER
 // ═══════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════
+//  SESSION UNREGISTER — 세션 종료 시 호출 (cl 쉘에서 trap으로 연동)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn race_unregister(pid: str) -> void {
+    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    if exists == "n" { return }
+    exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+}
+
 fn print_help() -> void {
     println("cl v" + VERSION + " — Claude Code multi-account launcher (airgenome)")
     println("")
     println("Commands:")
     println("  cl              → 대시보드 + 계정 선택 → claude 실행")
     println("  cl pick <name>  → 지정 계정으로 실행")
+    println("  cl status       → 계정 현황 요약")
+    println("  cl u            → 상세 사용량 대시보드 (실행 없이)")
     println("  cl add <name> <dir> → 계정 추가")
     println("  cl remove <name>    → 계정 폐기")
+    println("  cl unregister <pid> → 세션 등록 해제")
+    println("  cl sessions     → 활성 세션 목록")
     println("  cl help         → 도움말")
     println("")
     println("Rate limit 시 자동 전환. 오염 방지 내장.")
+    println("Config: nexus/shared/cl_config.jsonl")
 }
 
 fn main() {
@@ -1026,6 +1055,12 @@ fn main() {
             println("usage: cl pick <name>")
         }
     }
+    if cmd == "status" {
+        show_status()
+    }
+    if cmd == "u" {
+        show_usage_dashboard()
+    }
     if cmd == "add" {
         if len(argv) > 5 {
             add_account(argv[4], argv[5])
@@ -1041,6 +1076,23 @@ fn main() {
         if len(argv) <= 4 {
             println("usage: cl remove <name>")
         }
+    }
+    if cmd == "unregister" {
+        if len(argv) > 4 {
+            race_unregister(argv[4])
+            println("  ✓ 세션 해제: pid=" + argv[4])
+        }
+        if len(argv) <= 4 {
+            println("usage: cl unregister <pid>")
+        }
+    }
+    if cmd == "sessions" {
+        let count = race_active_count()
+        let max_c = safe_max_concurrent()
+        println("  ⬡ 활성 CLI 세션: " + to_string(count) + "/" + to_string(max_c))
+        let list = race_active_list()
+        if len(list) > 0 { println(list) }
+        if count == 0 { println("  (없음)") }
     }
     if cmd == "help" { print_help() }
 }

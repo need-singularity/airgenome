@@ -39,8 +39,8 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let REMOTE       = load_cfg("ssh_alias",       "ubu")
-let UBU_HEXA     = load_cfg("ubu_hexa_bin",    "/home/aiden/Dev/hexa-lang/target/release/hexa")
-let UBU_BLOWUP   = load_cfg("ubu_blowup_hexa", "/home/aiden/Dev/nexus/mk2_hexa/native/blowup.hexa")
+let UBU_HEXA     = load_cfg("ubu_hexa_bin",    env("HOME") + "/Dev/hexa-lang/target/release/hexa")
+let UBU_BLOWUP   = load_cfg("ubu_blowup_hexa", env("HOME") + "/Dev/nexus/mk2_hexa/native/blowup.hexa")
 let RING_PATH    = load_cfg("ubu_ring_path",   "/mnt/ramdisk/airgenome/genome.ring")
 
 // ── TIMESTAMP ───────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ fn append_growth(ev_type: str, id: str, value: int, grade: str) -> void {
 // ── RING HEADER READ (write_idx @ offset 12, u32 LE) ────────────────────
 // od -An -v -t u4 -N 4 -j 12 <file>   → 단일 u32 값
 fn read_write_idx() -> int {
-    let cmd = "ssh -o ConnectTimeout=3 " + REMOTE + " \"od -An -v -t u4 -N 4 -j 12 " + RING_PATH + " 2>/dev/null\""
+    let cmd = "timeout 10 ssh -o ConnectTimeout=3 " + REMOTE + " \"od -An -v -t u4 -N 4 -j 12 " + RING_PATH + " 2>/dev/null\""
     let out = exec(cmd).trim()
     if len(out) == 0 { return -1 }
     return to_int(out)
@@ -73,7 +73,7 @@ fn read_write_idx() -> int {
 fn count_recent_anomalies() -> int {
     let py = "import struct,sys,os\np='" + RING_PATH + "'\ntry:\n  f=open(p,'rb'); f.seek(0); hdr=f.read(16)\n  wi=struct.unpack('<I',hdr[12:16])[0]\n  ENT=80\n  fsz=os.path.getsize(p)\n  cap=(fsz-16)//ENT\n  n=0\n  for k in range(10):\n    idx=(wi-1-k)%cap\n    f.seek(16+idx*ENT); e=f.read(ENT)\n    if len(e)<ENT: continue\n    flags=struct.unpack('<I',e[76:80])[0]\n    if flags & 1: n+=1\n  print(n)\nexcept Exception as ex:\n  print(0)\n"
     write_file("/tmp/_ag3_loop_scan.py", py)
-    let out = exec("ssh -o ConnectTimeout=3 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
+    let out = exec("timeout 15 ssh -o ConnectTimeout=3 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
     if len(out) == 0 { return 0 }
     return to_int(out)
 }
@@ -89,7 +89,7 @@ fn trigger_blowup(domain: str) -> bool {
 
 // ── GPU UTILIZATION ─────────────────────────────────────────────────────
 fn gpu_util() -> int {
-    let raw = exec("ssh -o ConnectTimeout=3 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
+    let raw = exec("timeout 10 ssh -o ConnectTimeout=3 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
     if len(raw) == 0 { return 100 }
     return to_int(raw)
 }

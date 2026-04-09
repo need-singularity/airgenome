@@ -1,1 +1,1 @@
-{"key":"ring","size":256,"min_ready":32,"tau":10,"bins":8,"state_path":"forge/vitals_ring.state","out_path":"forge/state.json"}
+{"key":"ring","size":512,"min_ready":48,"tau":10,"bins":16,"state_path":"forge/vitals_ring.state","out_path":"forge/state.json"}

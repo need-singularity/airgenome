@@ -14,9 +14,6 @@ let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let OFFLOAD_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_offload.jsonl"
 let LOG_FILE = env("HOME") + "/Dev/airgenome/dispatch.log"
 
-// Ubuntu hexa binary path
-let UBU_HEXA = "/tmp/hexa-build/hexa-lang/target/release/hexa"
-
 // ═══════════════════════════════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════════════════════════════
@@ -37,8 +34,10 @@ fn load_cfg(key: str, fallback: str) -> str {
     return fallback
 }
 
+// Ubuntu hexa binary path (loaded from config, fallback to env-relative path)
+let UBU_HEXA = load_cfg("ubu_hexa_bin", env("HOME") + "/Dev/hexa-lang/target/release/hexa")
 let REMOTE = load_cfg("ssh_alias", "ubu")
-let REMOTE_DIR = load_cfg("remote_dir", "/home/aiden/airgenome")
+let REMOTE_DIR = load_cfg("remote_dir", env("HOME") + "/airgenome")
 
 // ═══════════════════════════════════════════════════════════════════════
 //  AG3 ENFORCE — 정책 집행 (ag3_policy.jsonl 경유)
@@ -130,19 +129,19 @@ fn is_mac_only(name: str) -> bool {
 
 fn ssh_cmd(cmd: str) -> str {
     write_file("/tmp/_dispatch_ssh.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>&1")
+    let result = exec("timeout 120 ssh -o ConnectTimeout=5 " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>&1")
     return result.trim()
 }
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_dispatch_ssh.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>/dev/null")
+    let result = exec("timeout 60 ssh -o ConnectTimeout=5 " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }
 
 fn ubu_reachable() -> bool {
-    let ping = exec("ssh -o ConnectTimeout=3 " + REMOTE + " echo ok 2>/dev/null").trim()
+    let ping = exec("timeout 10 ssh -o ConnectTimeout=3 " + REMOTE + " echo ok 2>/dev/null").trim()
     return ping == "ok"
 }
 
@@ -191,16 +190,16 @@ fn sync_to_ubu(script: str) -> bool {
     ssh_quiet("mkdir -p " + REMOTE_DIR + " " + REMOTE_DIR + "/nexus/shared " + REMOTE_DIR + "/mk2_hexa/native " + REMOTE_DIR + "/modules " + REMOTE_DIR + "/src")
 
     // Sync the script
-    let scp_result = exec("scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>&1").trim()
+    let scp_result = exec("timeout 30 scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>&1").trim()
 
     // Sync hexa.toml
     let home = env("HOME")
-    exec("scp -q " + home + "/Dev/airgenome/hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("timeout 30 scp -q " + home + "/Dev/airgenome/hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     // Sync shared config
-    exec("scp -q " + home + "/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
-    exec("scp -q " + home + "/Dev/airgenome/nexus/shared/gate_config.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
-    exec("scp -q " + home + "/Dev/airgenome/nexus/shared/gate_offload.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("timeout 30 scp -q " + home + "/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("timeout 30 scp -q " + home + "/Dev/airgenome/nexus/shared/gate_config.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("timeout 30 scp -q " + home + "/Dev/airgenome/nexus/shared/gate_offload.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
 
     return scp_result.contains("error") == false
 }
@@ -287,7 +286,7 @@ fn dispatch_gpu(script_args: str) -> str {
 
     // Sync script
     ssh_quiet("mkdir -p " + REMOTE_DIR)
-    exec("scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("timeout 30 scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     let fname = script
     if script.contains("/") {

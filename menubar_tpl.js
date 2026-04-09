@@ -97,6 +97,10 @@ var ag3GpuDetailItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('GP
 ag3GpuDetailItem.enabled = false;
 menu.addItem(ag3GpuDetailItem);
 
+var ag3LoadItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Load ...'), null, $(''));
+ag3LoadItem.enabled = false;
+menu.addItem(ag3LoadItem);
+
 var ag3SvcItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Svc ...'), null, $(''));
 ag3SvcItem.enabled = false;
 menu.addItem(ag3SvcItem);
@@ -225,9 +229,14 @@ function levelIcon(lv) {
     return '\u2B22';
 }
 
+var _lastValidState = null;
+var _lastValidAg3 = null;
+
 $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var j = readState();
+    if (!j && _lastValidState) { j = _lastValidState; }
     if (!j) { statusItem.button.title = $('\u26A0 airgenome'); return; }
+    _lastValidState = j;
 
     var cfg = readConfig() || {cpu_ceil: 90, ram_ceil: 80, swap_ceil: 50};
     var cc = cfg.cpu_ceil;
@@ -310,8 +319,9 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     }
 
     // ─── AG3 section ───
-    var ag3 = readAg3();
+    var ag3 = readAg3() || _lastValidAg3;
     if (ag3) {
+        _lastValidAg3 = ag3;
         var upIcon = ag3.ubu_up ? '\uD83D\uDFE2' : '\uD83D\uDD34';
         var upTxt  = ag3.ubu_up ? 'ubu UP' : 'ubu DOWN';
         var gname = ag3.gpu_name || '';
@@ -331,10 +341,21 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         var rsc = ag3.ring_slot_count || 0;
         var ringPct = rsc > 0 ? Math.round(rwi * 100 / rsc) : 0;
         ag3RingItem.title = $('\uD83D\uDCBE Ring ' + bar(ringPct, 100, 10) + '  ' + rwi + '/' + rsc + ' (' + ringPct + '%)');
+        // Ubuntu offload load metrics
+        var aLoad = ag3.ubu_load || '0';
+        var aCpu  = ag3.ubu_cpu_pct || 0;
+        var aRamU = ag3.ubu_ram_used_mb || 0;
+        var aRamT = ag3.ubu_ram_total_mb || 0;
+        var aRamG = aRamT > 0 ? Math.round(aRamU / 1024 * 10) / 10 + '/' + Math.round(aRamT / 1024 * 10) / 10 + 'G' : '--';
+        var aJobs = ag3.ubu_active_jobs || 0;
+        var jobsTag = aJobs > 0 ? '  \u2191' + aJobs + 'jobs' : '';
+        ag3LoadItem.title = $('\u2699 load=' + aLoad + '  CPU ' + aCpu + '%  RAM ' + aRamG + jobsTag);
+        ag3LoadItem.hidden = false;
         // Service status
         var gateUp = ag3.svc_gate ? '\u25CF' : '\u25CB';
-        var fillUp = ag3.svc_fill ? '\u25CF' : '\u25CB';
-        ag3SvcItem.title = $('\u2699 svc  gate ' + gateUp + '  fill ' + fillUp);
+        var loopUp = ag3.svc_loop ? '\u25CF' : '\u25CB';
+        var harvestUp = ag3.svc_harvest ? '\u25CF' : '\u25CB';
+        ag3SvcItem.title = $('\u2699 svc  gate ' + gateUp + '  loop ' + loopUp + '  harvest ' + harvestUp);
         ag3SvcItem.hidden = false;
         // Fallback
         var fb = ag3.fallback_count_10min || 0;
@@ -345,6 +366,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         ag3VramItem.title = $('');
         ag3GpuDetailItem.title = $(''); ag3GpuDetailItem.hidden = true;
         ag3RingItem.title = $('');
+        ag3LoadItem.title = $(''); ag3LoadItem.hidden = true;
         ag3SvcItem.title = $(''); ag3SvcItem.hidden = true;
         ag3FallbackItem.title = $('');
     }

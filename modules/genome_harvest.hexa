@@ -1,0 +1,331 @@
+// genome_harvest.hexa — 게놈 1000+ 자동 수집 파이프라인
+//
+// 비-L0 모듈. L0 코어(src/core.hexa, modules/forge.hexa 등)는 읽기만.
+// 모든 상수는 nexus/shared/genome_harvest.jsonl 에서 로드 (하드코딩 금지).
+//
+// 각 프로세스를 6축(CPU/RAM/Swap/Net/Disk/GPU) 시그니처로 투영 →
+// 15쌍 × 4바이트 = 60바이트 게놈 파일로 저장.
+//
+// Run: $HEXA $HOME/Dev/airgenome/modules/genome_harvest.hexa [once|loop]
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOAD (no hardcoding)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CONFIG_FILE = "nexus/shared/genome_harvest.jsonl"
+
+fn cfg_int(key: str, default_val: int) -> int {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
+    if len(v) == 0 { return default_val }
+    try { return to_int(to_float(v)) } catch e { return default_val }
+}
+
+fn cfg_str(key: str, default_val: str) -> str {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+    if len(v) == 0 { return default_val }
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PROCESS → 6-AXIS PROJECTION
+// ═══════════════════════════════════════════════════════════════════════
+
+// HEX TABLE — pure hexa hex encoding, zero exec() calls
+let HEX_TBL = ["00","01","02","03","04","05","06","07","08","09","0a","0b","0c","0d","0e","0f","10","11","12","13","14","15","16","17","18","19","1a","1b","1c","1d","1e","1f","20","21","22","23","24","25","26","27","28","29","2a","2b","2c","2d","2e","2f","30","31","32","33","34","35","36","37","38","39","3a","3b","3c","3d","3e","3f","40","41","42","43","44","45","46","47","48","49","4a","4b","4c","4d","4e","4f","50","51","52","53","54","55","56","57","58","59","5a","5b","5c","5d","5e","5f","60","61","62","63","64","65","66","67","68","69","6a","6b","6c","6d","6e","6f","70","71","72","73","74","75","76","77","78","79","7a","7b","7c","7d","7e","7f","80","81","82","83","84","85","86","87","88","89","8a","8b","8c","8d","8e","8f","90","91","92","93","94","95","96","97","98","99","9a","9b","9c","9d","9e","9f","a0","a1","a2","a3","a4","a5","a6","a7","a8","a9","aa","ab","ac","ad","ae","af","b0","b1","b2","b3","b4","b5","b6","b7","b8","b9","ba","bb","bc","bd","be","bf","c0","c1","c2","c3","c4","c5","c6","c7","c8","c9","ca","cb","cc","cd","ce","cf","d0","d1","d2","d3","d4","d5","d6","d7","d8","d9","da","db","dc","dd","de","df","e0","e1","e2","e3","e4","e5","e6","e7","e8","e9","ea","eb","ec","ed","ee","ef","f0","f1","f2","f3","f4","f5","f6","f7","f8","f9","fa","fb","fc","fd","fe","ff"]
+
+fn hex2(v: int) -> str {
+    let b = v & 255
+    return HEX_TBL[b]
+}
+
+// Return 6 comma-separated normalized values (0..255) for one PID.
+// cpu/ram: ps. swap/net/disk/gpu: proxies derived from PID stats
+// (macOS doesn't expose per-proc swap/net/disk cheaply, use cheap proxies).
+// Integer log2 scaled by 16 — maps v in [1..~65535] roughly into [0..255].
+// Hexa has no log(); use pow2 compare ladder.  log2(v)*16 ≈ 8-bit bucketed log.
+fn log2_x16(v: int) -> int {
+    if v <= 1 { return 0 }
+    // Find highest bit: floor(log2)
+    let mut hi = 0
+    let mut pw = 1
+    while pw * 2 <= v && hi < 30 { pw = pw * 2; hi = hi + 1 }
+    // Fractional part via linear interp between pw and 2*pw: (v - pw) / pw in [0..1)
+    // frac16 = (v - pw) * 16 / pw — avoid overflow by dividing first when pw large
+    let mut frac16 = 0
+    if pw >= 16 {
+        frac16 = (v - pw) / (pw / 16)
+    } else {
+        frac16 = (v - pw) * 16 / pw
+    }
+    let out = hi * 16 + frac16
+    return out
+}
+
+fn log2_x16_clip(v: int) -> int {
+    let o = log2_x16(v)
+    if o > 255 { return 255 }
+    return o
+}
+
+// sample_proc_from_row — parse pre-fetched row: "%cpu rss vsz H:MM:SS pri nice ppid"
+// Single awk call merges all 7 field extractions into one.
+fn sample_proc_from_row(pid: str, row: str, total_ram_mb: int) -> str {
+    if len(row) == 0 { return "" }
+    // One awk: emit "cpu_x10 rss vsz time_s pri nice ppid" space-separated
+    let safe = row.replace("'", "")
+    let parsed = exec("echo '" + safe + "' | awk '{cpu=int(($1+0)*10); rss=int($2+0); vsz=int($3+0); n=split($4,a,\":\"); s=0; for(i=1;i<=n;i++) s=s*60+a[i]; printf \"%d %d %d %d %d %d %d\", cpu, rss, vsz, int(s+0), int($5+0), int($6+0), int($7+0)}'").trim()
+    let f = parsed.split(" ")
+    if len(f) < 7 { return "" }
+
+    let mut cpu_raw = 0
+    let mut rss_raw = 0
+    let mut vsz_raw = 0
+    let mut tim_raw = 0
+    let mut pri_raw = 0
+    let mut nice_raw = 0
+    let mut ppid_raw = 0
+    try { cpu_raw  = to_int(to_float(f[0])) } catch e {}
+    try { rss_raw  = to_int(to_float(f[1])) } catch e {}
+    try { vsz_raw  = to_int(to_float(f[2])) } catch e {}
+    try { tim_raw  = to_int(to_float(f[3])) } catch e {}
+    try { pri_raw  = to_int(to_float(f[4])) } catch e {}
+    try { nice_raw = to_int(to_float(f[5])) } catch e {}
+    try { ppid_raw = to_int(to_float(f[6])) } catch e {}
+
+    // CPU: blend 순간 cpu% + 누적 cputime + rss 바닥값 → 0% 집중 해소
+    // cpu_raw*256: 순간 CPU 비중 최대, tim_raw: 누적 cputime 보정,
+    // rss_raw/1024: cpu%=0 & cputime=0인 프로세스도 메모리 크기로 분산 (1MB 단위)
+    let cpu_blend = cpu_raw * 256 + tim_raw * 4 + rss_raw / 1024 + 1
+    let cpu_v = log2_x16_clip(cpu_blend)
+    // RAM: log-scale rss_kb → 0..255, floor 보정으로 전체 범위 활용
+    let ram_raw = log2_x16_clip(rss_raw)
+    let ram_floor = 128   // 경험적 하한 (~4MB rss); cfg 이관 가능
+    let mut ram_v = 0
+    if ram_raw > ram_floor {
+        ram_v = (ram_raw - ram_floor) * 255 / (255 - ram_floor)
+    }
+    if ram_v > 255 { ram_v = 255 }
+    // SWAP proxy: macOS has no per-proc swap; blend log(rss) residual + ppid mix
+    // to produce genuine spread tied to process tree / memory size.
+    let mut swp_v = (log2_x16(rss_raw * 1024 + 1) + ppid_raw * 7) % 256
+    if swp_v < 0 { swp_v = swp_v + 256 }
+    // Net proxy: priority (0..80 typical) *3 → 0..240
+    let mut net_v = pri_raw * 3
+    if net_v < 0 { net_v = 0 }
+    if net_v > 255 { net_v = 255 }
+    // Disk proxy: log-scale cpu time; cputime==0 → pid-hash 기반 바닥값 보정
+    let pid_i = to_int(to_float(pid))
+    let mut dsk_v = 0
+    if tim_raw > 0 {
+        dsk_v = log2_x16_clip(tim_raw)
+    } else {
+        // cputime=0 프로세스: pid hash로 최소 분산 확보 (0..63)
+        dsk_v = ((pid_i * 2654435761) / 64) % 64
+        if dsk_v < 0 { dsk_v = dsk_v + 64 }
+    }
+    // GPU proxy: time×256 + pri×4 + (nice+20) — vsz는 macOS에서 ~400GB 균일 → 포화.
+    // cputime·priority 복합은 GPU-heavy 프로세스일수록 높고, log2_x16으로 0..255 분산.
+    let gpu_combo = tim_raw * 256 + pri_raw * 4 + (nice_raw + 20)
+    let gpu_v = log2_x16_clip(gpu_combo + 1)
+    let _ = total_ram_mb
+
+    return to_string(cpu_v) + "," + to_string(ram_v) + "," + to_string(swp_v) + "," + to_string(net_v) + "," + to_string(dsk_v) + "," + to_string(gpu_v)
+}
+
+// Encode 6 axes into 60-byte hex genome: 15 pairs × 4-byte signatures.
+// Pair (i,j): byte = (axis[i] XOR axis[j]) rotated by (i+j).
+fn encode_genome(axes_csv: str) -> str {
+    let parts = axes_csv.split(",")
+    if len(parts) < 6 { return "" }
+    let mut a = [0, 0, 0, 0, 0, 0]
+    let mut i = 0
+    while i < 6 {
+        try { a[i] = to_int(to_float(parts[i])) } catch e {}
+        i = i + 1
+    }
+
+    let mut hex = ""
+    let mut x = 0
+    while x < 6 {
+        let mut y = x + 1
+        while y < 6 {
+            let r = (x + y) % 8
+            let xor_v = (a[x] ^ a[y]) & 255
+            // rotate-left r bits without <<: use pow2 table
+            let mut pow_r = 1
+            let mut k = 0
+            while k < r { pow_r = pow_r * 2; k = k + 1 }
+            let mut pow_8r = 1
+            let mut k2 = 0
+            while k2 < (8 - r) { pow_8r = pow_8r * 2; k2 = k2 + 1 }
+            let hi = (xor_v * pow_r) & 255
+            let lo = xor_v / pow_8r
+            let rot = (hi + lo) & 255
+            // 4 bytes per pair: [a[x], a[y], xor, rot]
+            let b0 = a[x] & 255
+            let b1 = a[y] & 255
+            let b2 = xor_v
+            let b3 = rot
+            hex = hex + hex2(b0) + hex2(b1) + hex2(b2) + hex2(b3)
+            y = y + 1
+        }
+        x = x + 1
+    }
+    return hex  // 15 pairs × 8 hex chars = 120 hex chars = 60 bytes
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HARVEST LOOP
+// ═══════════════════════════════════════════════════════════════════════
+
+fn count_existing(out_dir: str) -> int {
+    // find avoids ARG_MAX overflow that "ls *.genome" hits at ~10k+ files
+    let c = exec("find " + out_dir + " -maxdepth 1 -name '*.genome' 2>/dev/null | wc -l").trim()
+    try { return to_int(to_float(c)) } catch e { return 0 }
+}
+
+// LCG PRNG — ts-seeded; avoids fixed round-robin → kills τ=N self-revisit MI artifact.
+// Returns next state; caller derives index via state % range.
+fn lcg_next(state: int) -> int {
+    // Numerical Recipes constants, 32-bit wrap emulated via & 2147483647
+    let n = (state * 1103515245 + 12345) & 2147483647
+    return n
+}
+
+fn harvest_batch(out_dir: str, index_file: str, batch: int, min_pid: int, skip_prefix: str, total_ram_mb: int, pid_shuffle: int) -> int {
+    exec("mkdir -p " + out_dir)
+    // BULK SNAPSHOT — single ps call captures all process data at once.
+    // Format: "PID %CPU RSS VSZ H:MM:SS PRI NICE PPID COMM"
+    // Tab-delimited via awk to safely handle comm with spaces.
+    let snapshot = exec("ps -eo pid=,%cpu=,rss=,vsz=,time=,pri=,nice=,ppid=,comm= 2>/dev/null | awk '$1>" + to_string(min_pid) + " && $3>0 {printf \"%s\\t%s %s %s %s %s %s %s\\t%s\\n\", $1, $2, $3, $4, $5, $6, $7, $8, $9}'").trim()
+    if len(snapshot) == 0 { return 0 }
+    let mut lines = snapshot.split("\n")
+    if pid_shuffle != 0 {
+        // Fisher-Yates in-place, ts-seeded LCG — kills τ=N self-revisit MI artifact.
+        let seed_s = exec("date +%s").trim()
+        let mut st = 1
+        try { st = to_int(to_float(seed_s)) & 2147483647 } catch e {}
+        if st <= 0 { st = 1 }
+        let n = len(lines)
+        let mut si = n - 1
+        while si > 0 {
+            st = lcg_next(st)
+            let sj = st % (si + 1)
+            let tmp = lines[si]
+            lines[si] = lines[sj]
+            lines[sj] = tmp
+            si = si - 1
+        }
+    }
+    let mut added = 0
+    let mut idx_buf = ""
+    let ts_base = exec("date +%s%N 2>/dev/null || date +%s").trim()
+    let mut i = 0
+    while i < len(lines) && added < batch {
+        try {
+            let line = lines[i].trim()
+            if len(line) > 0 {
+                let tabs = line.split("\t")
+                if len(tabs) >= 3 {
+                    let pid = tabs[0].trim()
+                    let row = tabs[1].trim()
+                    let comm = tabs[2].trim()
+                    let skip = false
+                    if len(skip_prefix) > 0 && comm.contains(skip_prefix) { skip = true }
+                    if skip == false {
+                        let axes = sample_proc_from_row(pid, row, total_ram_mb)
+                        if len(axes) > 0 {
+                            let genome = encode_genome(axes)
+                            if len(genome) == 120 {
+                                // Monotonic ts: base + counter to avoid collision
+                                let ts = to_string(to_int(to_float(ts_base)) + added)
+                                let fname = out_dir + "/" + ts + "_" + pid + ".genome"
+                                try { write_file(fname, genome) } catch e {}
+                                let safe_comm = comm.replace("\"", "").replace("\\", "")
+                                idx_buf = idx_buf + "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm + "\",\"axes\":\"" + axes + "\",\"file\":\"" + fname + "\",\"encoding_ver\":2}\n"
+                                added = added + 1
+                            }
+                        }
+                    }
+                }
+            }
+        } catch proc_err {
+            // PID vanished mid-sample or parse error — skip silently
+        }
+        i = i + 1
+    }
+    // Batch-write index
+    if len(idx_buf) > 0 {
+        try { append_file(index_file, idx_buf) } catch e {}
+    }
+    return added
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness HarvestRouter {
+    let target     = cfg_int("target_count", 1000)
+    let batch      = cfg_int("batch_size", 50)
+    let sleep_s    = cfg_int("sleep_between_batches_sec", 2)
+    let out_dir    = cfg_str("output_dir", "forge/genomes")
+    let index_file = cfg_str("index_file", "forge/genomes.index.jsonl")
+    let skip_pref  = cfg_str("skip_comm_prefix", "kernel_task")
+    let min_pid    = cfg_int("min_pid", 100)
+    let pid_shuffle = cfg_int("pid_shuffle", 1)
+
+    let total_ram_mb = to_int(to_float(exec("sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}'").trim()))
+
+    let argv = args()
+    let mut mode = "once"
+    // hexa argv layout varies; scan all slots for keyword
+    let mut ai = 0
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v == "loop" { mode = "loop" }
+        if v == "once" { mode = "once" }
+        if v == "status" { mode = "status" }
+        ai = ai + 1
+    }
+
+    println("  genome_harvest — target=" + to_string(target) + " batch=" + to_string(batch) + " mode=" + mode)
+    println("  out_dir=" + out_dir)
+
+    let mut have = count_existing(out_dir)
+    println("  existing: " + to_string(have))
+
+    if mode == "status" {
+        println("  target remaining: " + to_string(target - have))
+        exit(0)
+    }
+
+    let mut loops = 0
+    let max_loops = 200
+    let run_once = mode == "once"
+    let mut done = false
+
+    while done == false {
+        if have >= target {
+            println("  reached target (" + to_string(have) + " >= " + to_string(target) + ")")
+            done = true
+        }
+        if done == false {
+            let added = harvest_batch(out_dir, index_file, batch, min_pid, skip_pref, total_ram_mb, pid_shuffle)
+            have = count_existing(out_dir)
+            println("  batch+" + to_string(added) + " total=" + to_string(have))
+            loops = loops + 1
+            if run_once { done = true }
+            if loops >= max_loops { done = true }
+            if done == false { exec("sleep " + to_string(sleep_s)) }
+        }
+    }
+
+    println("  done. genomes=" + to_string(have))
+}

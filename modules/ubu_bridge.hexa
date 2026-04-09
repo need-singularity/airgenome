@@ -52,10 +52,10 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let REMOTE       = load_cfg("ssh_alias",          "ubu")
-let REMOTE_DIR   = load_cfg("remote_dir",         "/home/aiden/airgenome")
+let REMOTE_DIR   = load_cfg("remote_dir",         env("HOME") + "/airgenome")
 let UBU_TMPFS    = load_cfg("ubu_tmpfs",          "/mnt/ramdisk/airgenome")
 let UBU_PYTHON   = load_cfg("ubu_python",         "python3")
-let UBU_WORKER   = load_cfg("ubu_gpu_worker_dir", "/home/aiden/airgenome")
+let UBU_WORKER   = load_cfg("ubu_gpu_worker_dir", env("HOME") + "/airgenome")
 
 // ═══════════════════════════════════════════════════════════════════════
 //  health() — ssh 접속 + torch.cuda 확인
@@ -63,13 +63,13 @@ let UBU_WORKER   = load_cfg("ubu_gpu_worker_dir", "/home/aiden/airgenome")
 
 fn health() -> bool {
     // 1) SSH 접속 3초 타임아웃
-    let ping = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes " + REMOTE + " echo ok 2>&1").trim()
+    let ping = exec("timeout 10 ssh -o ConnectTimeout=3 -o BatchMode=yes " + REMOTE + " echo ok 2>&1").trim()
     if ping.contains("ok") == false {
         fallback_local()
         return false
     }
     // 2) torch.cuda 확인
-    let cuda = exec("ssh -o ConnectTimeout=5 " + REMOTE + " " + UBU_PYTHON + " -c 'import torch; print(torch.cuda.is_available())' 2>&1").trim()
+    let cuda = exec("timeout 15 ssh -o ConnectTimeout=5 " + REMOTE + " " + UBU_PYTHON + " -c 'import torch; print(torch.cuda.is_available())' 2>&1").trim()
     if cuda.contains("True") == false {
         fallback_local()
         return false
@@ -85,7 +85,7 @@ fn remote_exec(cmd: str) -> str {
     // offload.hexa::ssh_cmd 패턴: 로컬 임시 스크립트를 stdin 으로 흘려보냄
     write_file("/tmp/_ubu_bridge.sh", cmd)
     try {
-        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
+        let result = exec("timeout 60 ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
         let s = to_string(result)
         if s.contains("exec error") {
             fallback_local()
@@ -105,7 +105,7 @@ fn remote_exec(cmd: str) -> str {
 fn exec_python(script: str) -> str {
     // 로컬 임시 py 파일 → stdin 으로 원격 python3 에 주입
     write_file("/tmp/_ubu_bridge.py", script)
-    let result = exec("ssh " + REMOTE + " " + UBU_PYTHON + " - < /tmp/_ubu_bridge.py 2>&1")
+    let result = exec("timeout 60 ssh -o ConnectTimeout=5 " + REMOTE + " " + UBU_PYTHON + " - < /tmp/_ubu_bridge.py 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()
@@ -120,7 +120,7 @@ fn exec_python(script: str) -> str {
 
 fn tmpfs_write(name: str, data: str) -> str {
     // 1) 원격 tmpfs 디렉토리 보장
-    let mk = exec("ssh " + REMOTE + " mkdir -p " + UBU_TMPFS + " 2>&1")
+    let mk = exec("timeout 15 ssh -o ConnectTimeout=5 " + REMOTE + " mkdir -p " + UBU_TMPFS + " 2>&1")
     if to_string(mk).contains("exec error") {
         fallback_local()
         return ""
@@ -129,7 +129,7 @@ fn tmpfs_write(name: str, data: str) -> str {
     let local_tmp = "/tmp/_ubu_bridge_upload_" + name
     write_file(local_tmp, data)
     let remote_path = UBU_TMPFS + "/" + name
-    let r = exec("scp " + local_tmp + " " + REMOTE + ":" + remote_path + " 2>&1")
+    let r = exec("timeout 30 scp " + local_tmp + " " + REMOTE + ":" + remote_path + " 2>&1")
     if to_string(r).contains("exec error") {
         fallback_local()
         return ""
@@ -143,7 +143,7 @@ fn tmpfs_write(name: str, data: str) -> str {
 
 fn tmpfs_read(name: str) -> str {
     // 원격 tmpfs 파일 cat
-    let result = exec("ssh " + REMOTE + " cat " + UBU_TMPFS + "/" + name + " 2>&1")
+    let result = exec("timeout 15 ssh -o ConnectTimeout=5 " + REMOTE + " cat " + UBU_TMPFS + "/" + name + " 2>&1")
     let s = to_string(result)
     if s.contains("No such file") { return "" }
     if s.contains("exec error") {
@@ -163,7 +163,7 @@ fn tmpfs_read(name: str) -> str {
 fn gpu_submit(worker: str, args: str) -> str {
     // worker 는 파일명만 (예: "gpu_sweep.py") → 원격 워커 디렉토리에서 python3 실행
     let cmd = "cd " + UBU_WORKER + " && " + UBU_PYTHON + " " + worker + " " + args
-    let result = exec("ssh " + REMOTE + " \"" + cmd + "\" 2>&1")
+    let result = exec("timeout 60 ssh -o ConnectTimeout=5 " + REMOTE + " \"" + cmd + "\" 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()
@@ -179,7 +179,7 @@ fn gpu_submit(worker: str, args: str) -> str {
 fn get_gpu_status() -> str {
     // util / mem.used / mem.total / power / temp
     let q = "nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu --format=csv,noheader"
-    let result = exec("ssh " + REMOTE + " \"" + q + "\" 2>&1")
+    let result = exec("timeout 15 ssh -o ConnectTimeout=5 " + REMOTE + " \"" + q + "\" 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()

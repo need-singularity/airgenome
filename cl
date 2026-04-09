@@ -82,8 +82,8 @@ if [[ "$1" == "login" ]]; then
     exit $?
 fi
 
-# ─── Subcommands ───
-if [[ "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" ]]; then
+# ─── Subcommands (non-launch) ───
+if [[ "$1" == "pick" || "$1" == "add" || "$1" == "remove" || "$1" == "help" || "$1" == "status" || "$1" == "u" || "$1" == "sessions" || "$1" == "unregister" ]]; then
     cd "$AIRGENOME"
     $HEXA run modules/cl.hexa "$@" 2>&1
     cd "$ORIG_DIR"
@@ -149,6 +149,8 @@ get_config_dir() {
 # ─── Cleanup ───
 cleanup() {
     [ -n "$FSWATCH_PID" ] && kill "$FSWATCH_PID" 2>/dev/null
+    # 세션 등록 해제 (PID 기반)
+    cd "$AIRGENOME" 2>/dev/null && $HEXA run modules/cl.hexa unregister "$$" 2>/dev/null
     rm -f "$LOGFILE"
 }
 trap cleanup EXIT INT TERM
