@@ -93,7 +93,7 @@
       "Blur Radius": 0,
       "Columns": 120,
       "Rows": 35,
-      "Normal Font": "Monaco 12",
+      "Normal Font": "SFMono-Regular 12",
       "Horizontal Spacing": 1.0,
       "Vertical Spacing": 1.1,
       "Command": "/bin/zsh -c 'cd /Users/ghost/Dev/contact && exec /Users/ghost/Dev/airgenome/cl'",
@@ -101,8 +101,8 @@
       "Allow Title Setting": false,
       "Title Components": 32,
       "Sync Title": false,
-      "Non-ASCII Font": "Monaco 12",
-      "Shortcut": "0"
+      "Shortcut": "0",
+      "Use Non-ASCII Font": false
     }
   ]
 }
