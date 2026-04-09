@@ -84,11 +84,9 @@ let VIOLATION_COUNT = 0
 fn record_violation(op: str, reason: str) -> void {
     VIOLATION_COUNT = VIOLATION_COUNT + 1
     let ts = now_iso()
-    let event = "{\"type\":\"ag3_violation\",\"phase\":\"" + reason
-              + "\",\"id\":\"airgenome\",\"value\":\"" + op
-              + "\",\"grade\":\"warn\",\"domain\":\"airgenome\",\"timestamp\":\""
-              + ts + "\"}"
-    append_file(GROWTH_BUS, event + "\n")
+    // gb_append schema: {ts iso8601Z, source, event, domain="airgenome", ...}
+    let ev = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/ag3_guard\",\"event\":\"ag3_violation\",\"domain\":\"airgenome\",\"type\":\"ag3_violation\",\"phase\":\"" + reason + "\",\"id\":\"airgenome\",\"value\":\"" + op + "\",\"grade\":\"warn\",\"op\":\"" + op + "\",\"reason\":\"" + reason + "\",\"timestamp\":\"" + ts + "\"}"
+    append_file(GROWTH_BUS, ev + "\n")
     append_file(DISPATCH_LOG, "[AG3] violation op=" + op + " reason=" + reason + "\n")
 }
 
