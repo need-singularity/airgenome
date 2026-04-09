@@ -1,0 +1,243 @@
+// airgenome/modules/auto_dispatch.hexa — OFFLOAD_O1 자동 디스패치 권장기
+//
+// Mac CPU 과부하 + Ubuntu 여유 시 오프로드 후보를 탐지하고 추천 로그를 남긴다.
+// Prime Directive 준수: 프로세스 kill/migration 없음. 탐지 + 권장만.
+//
+// 설정 (nexus/shared/gate_config.jsonl):
+//   offload_cpu_threshold  — Mac CPU% 임계치 (default 80)
+//   offload_ubu_max_cpu    — Ubuntu CPU% 상한 (default 70)
+//   offload_patterns       — 오프로드 대상 패턴 (comma-sep, default "hexa,python3,node,cargo,gcc,clang")
+//   offload_scan_interval  — watch 모드 폴링 초 (default 10)
+//   offload_top_n          — CPU hog 상위 N개 (default 3)
+//
+// Usage:
+//   hexa modules/auto_dispatch.hexa check              — 1회 분석
+//   hexa modules/auto_dispatch.hexa watch              — 폴링 루프
+//   hexa modules/auto_dispatch.hexa check <state_path> — 커스텀 상태 경로
+//
+// 출력: JSON (stdout) + forge/dispatch.log (JSONL append)
+
+let VERSION = "0.1.0"
+let HOME = env("HOME")
+let DIR = HOME + "/Dev/airgenome"
+let CONFIG_PATH = DIR + "/nexus/shared/gate_config.jsonl"
+let DISPATCH_LOG = DIR + "/forge/dispatch.log"
+let GROWTH_BUS = HOME + "/Dev/nexus/shared/growth_bus.jsonl"
+
+// ── SYSTEM EXCLUDE (PID < 200 또는 시스템 데몬) ──────────────────────────
+// Prime Directive: 시스템 프로세스는 관찰 대상에서 제외
+let SYS_EXCLUDE = "kernel_task|WindowServer|launchd|loginwindow|Finder|Dock|opendirectoryd|mds_stores|hidd|coreservicesd"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Config loader (ag3_loop.hexa 동일 패턴)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn load_cfg_int(key: str, fallback: int) -> int {
+    let v = load_cfg(key, to_string(fallback))
+    try { return to_int(to_float(v)) } catch e { return fallback }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Read sampler state JSON (Mac vitals + Ubuntu status)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_json_int(raw: str, key: str, fallback: int) -> int {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fallback }
+}
+
+fn read_json_str(raw: str, key: str, fallback: str) -> str {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    // "key":"value" — after = :"value",... → split(":") → ["", "\"value\",..."]
+    // 두번째 조각에서 따옴표 사이 값 추출
+    let colon_parts = after.split(":")
+    if colon_parts.len() < 2 { return fallback }
+    let val_raw = colon_parts[1].split(",")[0].split("}")[0].trim()
+    // 따옴표 제거
+    return val_raw.replace("\"", "")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Top CPU hog 목록 (시스템 프로세스 제외)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn get_top_hogs(top_n: int) -> str {
+    // ps 결과: pid cpu comm — PID>100, 시스템 제외, CPU 내림차순 상위 N
+    let cmd = "ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>0.5 {c=$3; if(c~/" + SYS_EXCLUDE + "/) next; printf \"%s %.1f %s\\n\",$1,$2,$3}' | sort -rnk2 | head -" + to_string(top_n)
+    return exec(cmd).trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Pattern matcher: comm 이 offload_patterns 중 하나를 포함하는지
+// ═══════════════════════════════════════════════════════════════════════
+
+fn matches_pattern(comm: str, patterns: str) -> bool {
+    let pats = patterns.split(",")
+    let i = 0
+    while i < pats.len() {
+        let p = pats[i].trim()
+        if len(p) > 0 && comm.contains(p) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Timestamp
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ts_epoch() -> str {
+    return exec("date +%s").trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Core: 1회 분석
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_once(state_path: str) -> str {
+    let ts = ts_iso()
+    let epoch = ts_epoch()
+
+    // ── 설정 로드 ──
+    let cpu_thresh = load_cfg_int("offload_cpu_threshold", 80)
+    let ubu_max    = load_cfg_int("offload_ubu_max_cpu", 70)
+    let patterns   = load_cfg("offload_patterns", "hexa,python3,node,cargo,gcc,clang")
+    let top_n      = load_cfg_int("offload_top_n", 3)
+
+    // ── 상태 읽기 ──
+    if file_exists(state_path) == false {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"reason\":\"state file not found: " + state_path + "\"}"
+    }
+    let raw = read_file(state_path).trim()
+    if len(raw) < 10 {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"reason\":\"state file empty\"}"
+    }
+
+    let mac_cpu = read_json_int(raw, "cpu", 0)
+    let gate    = read_json_str(raw, "gate", "offline")
+    let ubu_cpu = read_json_int(raw, "ubu_cpu", 100)
+
+    // ── 조건 평가 ──
+    if mac_cpu < cpu_thresh {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"idle\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"threshold\":" + to_string(cpu_thresh) + ",\"reason\":\"mac cpu below threshold\"}"
+    }
+    if gate != "online" {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"gate_offline\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"gate\":\"" + gate + "\",\"reason\":\"ubuntu gate not online\"}"
+    }
+    if ubu_cpu > ubu_max {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"ubu_busy\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_max\":" + to_string(ubu_max) + ",\"reason\":\"ubuntu cpu too high\"}"
+    }
+
+    // ── 조건 충족: top N hog 탐색 ──
+    let hog_raw = get_top_hogs(top_n)
+    if len(hog_raw) == 0 {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_hogs\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"reason\":\"no significant cpu hogs found\"}"
+    }
+
+    let hog_lines = hog_raw.split("\n")
+    let mut recs = ""
+    let mut rec_count = 0
+    let j = 0
+    while j < hog_lines.len() {
+        let line = hog_lines[j].trim()
+        if len(line) > 0 {
+            let parts = line.split(" ")
+            if parts.len() >= 3 {
+                let pid = parts[0].trim()
+                let cpu_s = parts[1].trim()
+                let comm = parts[2].trim()
+                if matches_pattern(comm, patterns) {
+                    if rec_count > 0 { recs = recs + "," }
+                    recs = recs + "{\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"action\":\"taskpolicy -b -p " + pid + "\"}"
+
+                    // ── dispatch.log JSONL append ──
+                    let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"OFFLOAD_O1\",\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"gate\":\"" + gate + "\",\"action\":\"recommend_taskpolicy_bg\"}"
+                    try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
+
+                    rec_count = rec_count + 1
+                }
+            }
+        }
+        j = j + 1
+    }
+
+    if rec_count == 0 {
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_match\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"hogs\":" + to_string(hog_lines.len()) + ",\"reason\":\"no hogs matched offload_patterns\"}"
+    }
+
+    // ── growth_bus 이벤트 (돌파/발견 기록) ──
+    let gb_ev = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/auto_dispatch\",\"event\":\"offload_o1_recommend\",\"domain\":\"airgenome\",\"type\":\"offload\",\"phase\":\"ag3\",\"id\":\"o1_" + epoch + "\",\"value\":" + to_string(rec_count) + ",\"grade\":\"INFO\",\"resource_domain\":\"resource\",\"timestamp\":\"" + ts + "\"}"
+    try { append_file(GROWTH_BUS, gb_ev + "\n") } catch e {}
+
+    return "{\"ts\":\"" + ts + "\",\"status\":\"recommend\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"gate\":\"" + gate + "\",\"count\":" + to_string(rec_count) + ",\"recommendations\":[" + recs + "]}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Commands: check / watch
+// ═══════════════════════════════════════════════════════════════════════
+
+fn resolve_state_path() -> str {
+    let a = args()
+    // 커스텀 state_path 지정 가능 (3번째 인수)
+    if a.len() >= 4 { return a[3] }
+    // 기본: $TMPDIR/airgenome-state.json (sampler 기록 경로)
+    let tmpdir = exec("echo ${TMPDIR:-/tmp}").trim()
+    return tmpdir + "/airgenome-state.json"
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 3 {
+        println("Usage: hexa modules/auto_dispatch.hexa <check|watch> [state_path]")
+        println("  check  — one-shot analysis, print JSON")
+        println("  watch  — poll every scan_interval, log recommendations")
+        exit(1)
+    }
+
+    let cmd = a[2]
+    let state_path = resolve_state_path()
+
+    if cmd == "check" {
+        let result = check_once(state_path)
+        println(result)
+    } else if cmd == "watch" {
+        let interval = load_cfg_int("offload_scan_interval", 10)
+        println("[OFFLOAD_O1 v" + VERSION + "] watch mode. interval=" + to_string(interval) + "s state=" + state_path)
+        while true {
+            let result = check_once(state_path)
+            // 추천이 있을 때만 stdout 출력 (노이즈 감소)
+            if result.contains("\"recommend\"") {
+                println(result)
+            }
+            sleep(interval)
+        }
+    } else {
+        println("Unknown command: " + cmd + ". Use 'check' or 'watch'.")
+        exit(1)
+    }
+}
+
+main()

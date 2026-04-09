@@ -1,6 +1,6 @@
 // sampler.hexa — airgenome 백그라운드 리소스 샘플러 (run.sh 내장 루프 분리)
 // 사용: hexa sampler.hexa <state_path> <config_path> <total_ram_mb> <ncpu> <dir>
-// 5초 간격으로 CPU/RAM/Swap/Load/Gate 측정 → state JSON 기록
+// adaptive 간격(ok=15s/warn=5s/critical=3s)으로 CPU/RAM/Swap/Load/Gate 측정 → state JSON 기록
 
 let a = args()
 if a.len() < 7 {
@@ -24,23 +24,39 @@ fn read_config_val(path: str, key: str, default_val: int) -> int {
     try { return to_int(to_float(v)) } catch e { return default_val }
 }
 
+fn read_jsonl_val(path: str, key: str, default_val: int) -> int {
+    if file_exists(path) == false { return default_val }
+    let v = exec("awk -F'\"' '/\"" + key + "\"/{print $8}' " + path + " 2>/dev/null").trim()
+    if len(v) == 0 { return default_val }
+    try { return to_int(to_float(v)) } catch e { return default_val }
+}
+
 let mut prev_level = "ok"
 let mut prev_net_bytes = 0
 let mut prev_net_ts = 0
 let mut prev_disk_kb = 0
 let mut prev_disk_ts = 0
+let mut cycle = 0
 
 while true {
+    // ── ADAPTIVE SCAN ── (lite_scan: ok 레벨 시 heavy exec 스킵, 첫 사이클은 항상 full)
+    let lite_scan = (prev_level == "ok" && cycle > 0)
+    cycle = cycle + 1
+
     // ── MEASURE ── (정밀도 <1%: 단일 top 호출 + vm_stat 페이지 단위)
 
     // CPU — top -l2 평균(첫 샘플은 부팅 이래 누적이라 부정확), 소수 1자리 유지
-    let cpu_str = exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
+    let mut cpu_str = ""
     let mut cpu = 0
     let mut cpu_f = 0.0
-    try { cpu_f = to_float(cpu_str) } catch e {}
+    if lite_scan == false {
+        cpu_str = exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
+        try { cpu_f = to_float(cpu_str) } catch e {}
+    }
     if cpu_f <= 0.0 {
         let cpu_total = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim()
         try { cpu_f = to_float(cpu_total) / to_float(to_string(NCPU)) } catch e {}
+        cpu_str = to_string(cpu_f)
     }
     cpu = to_int(cpu_f)
 
@@ -84,16 +100,34 @@ while true {
     prev_net_bytes = net_now
     prev_net_ts = ts_now
 
-    // Disk — iostat 1초 샘플, MB/s (nonblocking 단발)
-    let disk_now_str = exec("iostat -d -c 2 disk0 2>/dev/null | awk 'END{printf \"%.1f\",$3}'").trim()
+    // Disk — iostat -Id cumulative KB (delta 방식, 정밀도 향상)
+    let mut disk_cum = prev_disk_kb
+    let mut disk_mbps = 0
     let mut disk_mbps_f = 0.0
-    try { disk_mbps_f = to_float(disk_now_str) } catch e {}
-    let disk_mbps = to_int(disk_mbps_f)
+    if lite_scan == false {
+        let disk_cum_str = exec("iostat -Id disk0 2>/dev/null | awk 'NR==3{printf \"%.0f\",$3}'").trim()
+        try { disk_cum = to_int(to_float(disk_cum_str)) } catch e {}
+    }
+    if prev_disk_kb > 0 && ts_now > prev_disk_ts {
+        let dt = ts_now - prev_disk_ts
+        let dk = if disk_cum > prev_disk_kb { disk_cum - prev_disk_kb } else { 0 }
+        if dt > 0 {
+            disk_mbps = dk / dt / 1024
+            try { disk_mbps_f = to_float(to_string(dk)) / to_float(to_string(dt)) / 1024.0 } catch e {}
+        }
+    }
+    if lite_scan == false {
+        prev_disk_kb = disk_cum
+        prev_disk_ts = ts_now
+    }
 
     // GPU (로컬 Apple Silicon) — ioreg 기반 IOGPU 사용률 (powermetrics sudo 필요없이)
-    let gpu_local_str = exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim()
+    let mut gpu_local_str = ""
     let mut gpu_local = 0
-    try { gpu_local = to_int(to_float(gpu_local_str)) } catch e {}
+    if lite_scan == false {
+        gpu_local_str = exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim()
+        try { gpu_local = to_int(to_float(gpu_local_str)) } catch e {}
+    }
 
     // ── CONFIG ──
     let cpu_ceil = read_config_val(CONFIG, "cpu_ceil", 90)
@@ -281,8 +315,7 @@ while true {
     }
 
     // ── WRITE STATE ──
-    let mut disk_kbps_f = 0.0
-    try { disk_kbps_f = to_float(disk_now_str) * 1024.0 } catch e {}
+    let disk_kbps_f = disk_mbps_f * 1024.0
     let gpu_local_f_str = if len(gpu_local_str) > 0 { gpu_local_str } else { "0" }
     let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"cpu_f\":" + cpu_str + ",\"ram\":" + to_string(ram) + ",\"ram_f\":" + ram_str + ",\"ram_used_mb\":" + to_string(ram_used_mb) + ",\"swap\":" + to_string(swap) + ",\"swap_f\":" + swap_str + ",\"swap_mb\":" + to_string(swap_mb) + ",\"net_mbps\":" + to_string(net_mbps) + ",\"net_mbps_f\":" + to_string(net_kbps_f) + ",\"disk_mbps\":" + to_string(disk_mbps) + ",\"disk_mbps_f\":" + to_string(disk_kbps_f) + ",\"gpu_local\":" + to_string(gpu_local) + ",\"gpu_local_f\":" + gpu_local_f_str + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\",\"ghost_sh\":" + to_string(ghost_sh) + ",\"ghost_grep\":" + to_string(ghost_grep) + "}"
     try { write_file(STATE, state_json + "\n") } catch e {}
@@ -291,5 +324,14 @@ while true {
     exec("$HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + to_string(cpu) + " " + to_string(ram) + " " + to_string(swap) + " " + to_string(net_mbps) + " " + to_string(disk_mbps) + " " + to_string(gpu_local))
 
     prev_level = level
-    exec("sleep 5")
+
+    // ── ADAPTIVE SLEEP ── (level 기반 스캔 주기 조절)
+    let scan_ok_sec = read_jsonl_val(gate_cfg, "scan_ok_sec", 15)
+    let scan_warn_sec = read_jsonl_val(gate_cfg, "scan_warn_sec", 5)
+    let scan_critical_sec = read_jsonl_val(gate_cfg, "scan_critical_sec", 3)
+    let mut sleep_sec = 5
+    if level == "ok" { sleep_sec = scan_ok_sec }
+    if level == "warn" { sleep_sec = scan_warn_sec }
+    if level == "critical" || level == "danger" { sleep_sec = scan_critical_sec }
+    exec("sleep " + to_string(sleep_sec))
 }
