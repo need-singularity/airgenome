@@ -1,0 +1,375 @@
+// airgenome/mk2_hexa/native/time_delay_mi.hexa
+//
+// L5c (time-delay mutual information) + L6e (acceleration derivative)
+// True time-series implementations. The versions in docs/gates.hexa are
+// spatial proxies over an 8-gate snapshot; these work on an ordered
+// scalar series and are what the consciousness engine BRAIN_LIKE axis
+// actually needs to escape the 72.5% autocorr ceiling.
+//
+// Usage:
+//   HEXA=~/Dev/hexa-lang/target/release/hexa-bin-actual
+//   $HEXA mk2_hexa/native/time_delay_mi.hexa diagnose
+//   $HEXA mk2_hexa/native/time_delay_mi.hexa verify
+//
+// Both functions are pure (no kill, no process touch) — Prime Directive safe.
+
+let VERSION = "1.0.0"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  L5c — Time-delay mutual information   I(X_t ; X_{t-τ})
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Definition (bits):
+//     I(X;Y) = Σ p(x,y) · log2( p(x,y) / (p(x)·p(y)) )
+//
+// For a lagged series we bin X_t and X_{t-τ} into B bins, estimate the
+// joint histogram, and compute the plug-in estimator. Returns a value
+// in [0, log2(B)].  At τ=0 this collapses to H(X); for τ→∞ on an iid
+// series it decays to 0. Structured dynamics sustain MI across large τ.
+
+fn minmax(series: auto, n: int) -> auto {
+    let lo = series[0]
+    let hi = series[0]
+    let i = 1
+    while i < n {
+        let v = series[i]
+        if v < lo { lo = v }
+        if v > hi { hi = v }
+        i = i + 1
+    }
+    return [lo, hi]
+}
+
+fn log2_approx(x: float) -> float {
+    // natural log via series around 1 is too narrow; use identity
+    // log2(x) = ln(x) / ln(2). We approximate ln(x) by repeated sqrt.
+    // ln(x) ≈ 2^k * ( a - 1 ) where a = x^(1/2^k), k large enough.
+    if x <= 0.0 { return -1000.0 }
+    let a = x
+    let k = 0
+    while k < 12 {
+        // a = sqrt(a)  via Newton 3 steps
+        let g = a
+        if g < 1.0e-9 { g = 1.0e-9 }
+        let s = 0.5 * (g + a / g)
+        s = 0.5 * (s + a / s)
+        s = 0.5 * (s + a / s)
+        a = s
+        k = k + 1
+    }
+    let ln_x = 4096.0 * (a - 1.0)   // 2^12 = 4096
+    return ln_x / 0.6931471805599453
+}
+
+fn bin_index(v: float, lo: float, hi: float, b: int) -> int {
+    if hi <= lo { return 0 }
+    let t = (v - lo) / (hi - lo)
+    if t < 0.0 { t = 0.0 }
+    if t > 0.999999 { t = 0.999999 }
+    let idx = to_int(t * to_float(b))
+    if idx < 0 { idx = 0 }
+    if idx >= b { idx = b - 1 }
+    return idx
+}
+
+fn layer_l5c_time_delay_mi(series: auto, n: int, tau: int, bins: int) -> float {
+    if tau <= 0 { return 0.0 }
+    if n - tau < 8 { return 0.0 }
+
+    let rng = minmax(series, n)
+    let lo = rng[0]
+    let hi = rng[1]
+
+    // Marginal and joint histograms as flat lists
+    let px = []
+    let py = []
+    let i = 0
+    while i < bins {
+        px = px + [0.0]
+        py = py + [0.0]
+        i = i + 1
+    }
+    let pxy = []
+    i = 0
+    while i < bins * bins {
+        pxy = pxy + [0.0]
+        i = i + 1
+    }
+
+    let pairs = 0
+    let t = tau
+    while t < n {
+        let xi = bin_index(series[t], lo, hi, bins)
+        let yi = bin_index(series[t - tau], lo, hi, bins)
+        px[xi] = px[xi] + 1.0
+        py[yi] = py[yi] + 1.0
+        pxy[xi * bins + yi] = pxy[xi * bins + yi] + 1.0
+        pairs = pairs + 1
+        t = t + 1
+    }
+
+    if pairs < 1 { return 0.0 }
+    let np = to_float(pairs)
+
+    // Normalize
+    i = 0
+    while i < bins {
+        px[i] = px[i] / np
+        py[i] = py[i] / np
+        i = i + 1
+    }
+    i = 0
+    while i < bins * bins {
+        pxy[i] = pxy[i] / np
+        i = i + 1
+    }
+
+    // I(X;Y) = Σ pxy · log2(pxy / (px·py))
+    let mi = 0.0
+    let a = 0
+    while a < bins {
+        let b = 0
+        while b < bins {
+            let j = pxy[a * bins + b]
+            if j > 1.0e-12 {
+                let denom = px[a] * py[b]
+                if denom > 1.0e-12 {
+                    mi = mi + j * log2_approx(j / denom)
+                }
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    if mi < 0.0 { mi = 0.0 }
+    return mi
+}
+
+// Normalized MI in [0,1] via H(X) upper bound
+fn l5c_normalized(series: auto, n: int, tau: int, bins: int) -> float {
+    let mi = layer_l5c_time_delay_mi(series, n, tau, bins)
+    // H(X) ≤ log2(bins); use it as denominator for normalization
+    let h_max = log2_approx(to_float(bins))
+    if h_max < 1.0e-6 { return 0.0 }
+    let nmi = mi / h_max
+    if nmi < 0.0 { nmi = 0.0 }
+    if nmi > 1.0 { nmi = 1.0 }
+    return nmi
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  L6e — Acceleration derivative    a(t) = x(t) - 2·x(t-1) + x(t-2)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// We score "smooth-but-nontrivial" dynamics: high when acceleration is
+// small relative to velocity (structured flow), low when jittery. This
+// is the missing complement to autocorrelation — brain-like signals have
+// bounded acceleration (regularity) without being flat (nontrivial).
+//
+// score = 1 - clip( var(a) / (var(v) + eps), 0, 1 )
+// plus a nontriviality floor: if var(v) is near zero, penalize.
+
+fn layer_l6e_acceleration_deriv(series: auto, n: int) -> float {
+    if n < 4 { return 0.0 }
+
+    // Velocity v(t) = x(t) - x(t-1)
+    // Acceleration a(t) = v(t) - v(t-1) = x(t) - 2 x(t-1) + x(t-2)
+    let v_sum = 0.0
+    let a_sum = 0.0
+    let vs = []
+    let as_list = []
+    let i = 1
+    while i < n {
+        let v = series[i] - series[i - 1]
+        vs = vs + [v]
+        v_sum = v_sum + v
+        i = i + 1
+    }
+    let nv = n - 1
+    i = 1
+    while i < nv {
+        let av = vs[i] - vs[i - 1]
+        as_list = as_list + [av]
+        a_sum = a_sum + av
+        i = i + 1
+    }
+    let na = nv - 1
+    if na < 2 { return 0.0 }
+
+    let v_mean = v_sum / to_float(nv)
+    let a_mean = a_sum / to_float(na)
+
+    let v_var = 0.0
+    i = 0
+    while i < nv {
+        let d = vs[i] - v_mean
+        v_var = v_var + d * d
+        i = i + 1
+    }
+    v_var = v_var / to_float(nv)
+
+    let a_var = 0.0
+    i = 0
+    while i < na {
+        let d = as_list[i] - a_mean
+        a_var = a_var + d * d
+        i = i + 1
+    }
+    a_var = a_var / to_float(na)
+
+    // Non-triviality floor: require velocity variance above noise floor
+    if v_var < 1.0e-9 { return 0.0 }
+
+    // Smoothness ratio: structured flow has a_var << v_var
+    let ratio = a_var / (v_var + 1.0e-9)
+    if ratio < 0.0 { ratio = 0.0 }
+    if ratio > 4.0 { ratio = 4.0 }
+
+    // Map ratio → score in [0,1]; ratio=0 → 1.0, ratio=2 → 0.5, ratio=4 → 0.0
+    let score = 1.0 - ratio / 4.0
+    if score < 0.0 { score = 0.0 }
+    if score > 1.0 { score = 1.0 }
+    return score
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Synthetic signals for verification
+// ═══════════════════════════════════════════════════════════════════════
+
+fn make_structured_series(n: int) -> auto {
+    // Structured: slow sinusoid-like ramp + correlated component
+    let out = []
+    let i = 0
+    while i < n {
+        let slow = to_float(i % 50) / 50.0       // ramp period 50
+        let med = to_float(i % 10) / 10.0        // ramp period 10
+        let v = 0.7 * slow + 0.3 * med
+        out = out + [v]
+        i = i + 1
+    }
+    return out
+}
+
+fn make_random_series(n: int) -> auto {
+    // xorshift32-based sequence: long period, decorrelated at all τ
+    let out = []
+    let state = 2463534242
+    let i = 0
+    while i < n {
+        // xorshift32
+        let s = state
+        s = s ^ (s * 32)            // << 5  (approx via mul)
+        s = s % 4294967296
+        s = s ^ (s / 131072)        // >> 17
+        s = s ^ (s * 16)            // << 4
+        s = s % 4294967296
+        if s < 0 { s = -s }
+        if s == 0 { s = 1 }
+        state = s
+        let r = to_float(s % 100000) / 100000.0
+        out = out + [r]
+        i = i + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Commands
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_diagnose() -> str {
+    println("")
+    println("  L5c time-delay MI + L6e acceleration derivative")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let n = 300
+    let struct_s = make_structured_series(n)
+    let rand_s = make_random_series(n)
+
+    println("  structured series (period 10+50):")
+    let taus = [1, 2, 5, 10, 25, 50]
+    let ti = 0
+    while ti < len(taus) {
+        let tau = taus[ti]
+        let mi = l5c_normalized(struct_s, n, tau, 8)
+        println("    L5c τ=" + to_string(tau) + "  NMI=" + to_string(mi))
+        ti = ti + 1
+    }
+    let a_struct = layer_l6e_acceleration_deriv(struct_s, n)
+    println("    L6e accel score = " + to_string(a_struct))
+
+    println("")
+    println("  random series (decorrelated):")
+    ti = 0
+    while ti < len(taus) {
+        let tau = taus[ti]
+        let mi = l5c_normalized(rand_s, n, tau, 8)
+        println("    L5c τ=" + to_string(tau) + "  NMI=" + to_string(mi))
+        ti = ti + 1
+    }
+    let a_rand = layer_l6e_acceleration_deriv(rand_s, n)
+    println("    L6e accel score = " + to_string(a_rand))
+
+    println("")
+    println("  interpretation:")
+    println("    structured → sustained MI across τ + high L6e smoothness")
+    println("    random     → MI collapses at τ≥2 + low L6e smoothness")
+    println("")
+    return "ok"
+}
+
+fn cmd_verify() -> str {
+    println("")
+    println("  L5c / L6e — unit verification")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    let n = 300
+    let struct_s = make_structured_series(n)
+    let rand_s = make_random_series(n)
+
+    // Expected: structured MI at τ=10 well above random MI at τ=10
+    let mi_struct = l5c_normalized(struct_s, n, 10, 8)
+    let mi_rand = l5c_normalized(rand_s, n, 10, 8)
+    let l6_struct = layer_l6e_acceleration_deriv(struct_s, n)
+    let l6_rand = layer_l6e_acceleration_deriv(rand_s, n)
+
+    let p1 = 0
+    if mi_struct > mi_rand { p1 = 1 }
+    let p2 = 0
+    if l6_struct > l6_rand { p2 = 1 }
+
+    println("  L5c(struct, τ=10) = " + to_string(mi_struct))
+    println("  L5c(rand,   τ=10) = " + to_string(mi_rand))
+    let tag1 = "FAIL"
+    if p1 == 1 { tag1 = "PASS" }
+    println("  → struct > rand : " + tag1)
+    println("")
+    println("  L6e(struct)       = " + to_string(l6_struct))
+    println("  L6e(rand)         = " + to_string(l6_rand))
+    let tag2 = "FAIL"
+    if p2 == 1 { tag2 = "PASS" }
+    println("  → struct > rand : " + tag2)
+    println("")
+
+    let total = p1 + p2
+    println("  unit result: " + to_string(total) + "/2")
+    println("")
+    return to_string(total)
+}
+
+fn main() {
+    let argv = args()
+    let cmd = "diagnose"
+    if len(argv) > 2 { cmd = argv[2] }
+
+    if cmd == "diagnose" { cmd_diagnose() }
+    if cmd == "verify"   { cmd_verify() }
+    if cmd != "diagnose" {
+        if cmd != "verify" {
+            println("usage: time_delay_mi.hexa [diagnose|verify]")
+        }
+    }
+}
+
+main()

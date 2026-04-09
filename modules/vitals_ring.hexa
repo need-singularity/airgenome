@@ -1,0 +1,376 @@
+// airgenome/modules/vitals_ring.hexa — 6-axis rolling ring buffer for L5c/L6e
+//
+// Push each runtime tick's projected axes into a bounded JSONL ring,
+// then compute time-delay MI (L5c, τ from config) and acceleration-derivative
+// score (L6e) over the buffered window.
+//
+// Config (no hardcoding): nexus/shared/vitals_ring.jsonl (key="ring")
+//   size, min_ready, tau, bins, state_path, out_path
+//
+// Usage:
+//   $HEXA modules/vitals_ring.hexa push c r s n d g
+//   $HEXA modules/vitals_ring.hexa stats     → prints JSON on stdout
+//   $HEXA modules/vitals_ring.hexa tick c r s n d g   (push + stats + merge)
+//
+// Prime Directive safe — pure read/write of JSONL files.
+
+let VERSION = "0.1.0"
+let CFG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/vitals_ring.jsonl"
+let NUM_AXES = 6
+
+// ── config loader ───────────────────────────────────────────────────────
+fn load_cfg() -> auto {
+    // defaults mirror jsonl but are overwritten by file
+    let cfg = json_parse("{\"size\":256,\"min_ready\":32,\"tau\":10,\"bins\":8,\"state_path\":\"forge/vitals_ring.state\",\"out_path\":\"forge/state.json\"}")
+    if file_exists(CFG_PATH) == false { return cfg }
+    let content = read_file(CFG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == "ring" { return parsed }
+        }
+        i = i + 1
+    }
+    return cfg
+}
+
+// ── ring file helpers ───────────────────────────────────────────────────
+fn ring_load(path: str) -> auto {
+    if file_exists(path) == false { return [] }
+    let content = read_file(path)
+    let lines = content.split("\n")
+    let out = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 { out = out + [line] }
+        i = i + 1
+    }
+    return out
+}
+
+fn ring_push(path: str, size: int, axes: auto) -> int {
+    let ts = exec("date +%s").trim()
+    let rec = "{\"ts\":" + ts
+    let a = 0
+    let axkey = ["c","r","s","n","d","g"]
+    while a < NUM_AXES {
+        rec = rec + ",\"" + axkey[a] + "\":" + to_string(axes[a])
+        a = a + 1
+    }
+    rec = rec + "}"
+    append_file(path, rec + "\n")
+    // Trim if over size (rewrite tail-only)
+    let lines = ring_load(path)
+    let n = len(lines)
+    if n > size {
+        let start = n - size
+        let buf = ""
+        let i = start
+        while i < n {
+            buf = buf + lines[i] + "\n"
+            i = i + 1
+        }
+        write_file(path, buf)
+        return size
+    }
+    return n
+}
+
+fn ring_series(path: str) -> auto {
+    let lines = ring_load(path)
+    let n = len(lines)
+    let axkey = ["c","r","s","n","d","g"]
+    let series_all = []
+    let a = 0
+    while a < NUM_AXES {
+        let s = []
+        let i = 0
+        while i < n {
+            let p = json_parse(lines[i])
+            s = s + [to_float(p[axkey[a]])]
+            i = i + 1
+        }
+        series_all = series_all + [s]
+        a = a + 1
+    }
+    return [series_all, n]
+}
+
+// ── L5c / L6e primitives (ported from real_vitals_score.hexa) ───────────
+fn minmax(series: auto, n: int) -> auto {
+    let lo = series[0]
+    let hi = series[0]
+    let i = 1
+    while i < n {
+        let v = series[i]
+        if v < lo { lo = v }
+        if v > hi { hi = v }
+        i = i + 1
+    }
+    return [lo, hi]
+}
+
+fn log2_approx(x: float) -> float {
+    if x <= 0.0 { return -1000.0 }
+    let a = x
+    let k = 0
+    while k < 12 {
+        let g = a
+        if g < 1.0e-9 { g = 1.0e-9 }
+        let s = 0.5 * (g + a / g)
+        s = 0.5 * (s + a / s)
+        s = 0.5 * (s + a / s)
+        a = s
+        k = k + 1
+    }
+    let ln_x = 4096.0 * (a - 1.0)
+    return ln_x / 0.6931471805599453
+}
+
+fn bin_index(v: float, lo: float, hi: float, b: int) -> int {
+    if hi <= lo { return 0 }
+    let t = (v - lo) / (hi - lo)
+    if t < 0.0 { t = 0.0 }
+    if t > 0.999999 { t = 0.999999 }
+    let idx = to_int(t * to_float(b))
+    if idx < 0 { idx = 0 }
+    if idx >= b { idx = b - 1 }
+    return idx
+}
+
+fn layer_l5c_time_delay_mi(series: auto, n: int, tau: int, bins: int) -> float {
+    if tau <= 0 { return 0.0 }
+    if n - tau < 8 { return 0.0 }
+    let rng = minmax(series, n)
+    let lo = rng[0]
+    let hi = rng[1]
+    let px = []
+    let py = []
+    let i = 0
+    while i < bins { px = px + [0.0]; py = py + [0.0]; i = i + 1 }
+    let pxy = []
+    i = 0
+    while i < bins * bins { pxy = pxy + [0.0]; i = i + 1 }
+    let pairs = 0
+    let t = tau
+    while t < n {
+        let xi = bin_index(series[t], lo, hi, bins)
+        let yi = bin_index(series[t - tau], lo, hi, bins)
+        px[xi] = px[xi] + 1.0
+        py[yi] = py[yi] + 1.0
+        pxy[xi * bins + yi] = pxy[xi * bins + yi] + 1.0
+        pairs = pairs + 1
+        t = t + 1
+    }
+    if pairs < 1 { return 0.0 }
+    let np = to_float(pairs)
+    i = 0
+    while i < bins { px[i] = px[i] / np; py[i] = py[i] / np; i = i + 1 }
+    i = 0
+    while i < bins * bins { pxy[i] = pxy[i] / np; i = i + 1 }
+    let mi = 0.0
+    let aa = 0
+    while aa < bins {
+        let bb = 0
+        while bb < bins {
+            let j = pxy[aa * bins + bb]
+            if j > 1.0e-12 {
+                let denom = px[aa] * py[bb]
+                if denom > 1.0e-12 { mi = mi + j * log2_approx(j / denom) }
+            }
+            bb = bb + 1
+        }
+        aa = aa + 1
+    }
+    if mi < 0.0 { mi = 0.0 }
+    return mi
+}
+
+fn l5c_normalized(series: auto, n: int, tau: int, bins: int) -> float {
+    let mi = layer_l5c_time_delay_mi(series, n, tau, bins)
+    let h_max = log2_approx(to_float(bins))
+    if h_max < 1.0e-6 { return 0.0 }
+    let nmi = mi / h_max
+    if nmi < 0.0 { nmi = 0.0 }
+    if nmi > 1.0 { nmi = 1.0 }
+    return nmi
+}
+
+fn layer_l6e(series: auto, n: int) -> float {
+    if n < 4 { return 0.0 }
+    let v_sum = 0.0
+    let a_sum = 0.0
+    let vs = []
+    let as_list = []
+    let i = 1
+    while i < n {
+        let v = series[i] - series[i - 1]
+        vs = vs + [v]
+        v_sum = v_sum + v
+        i = i + 1
+    }
+    let nv = n - 1
+    i = 1
+    while i < nv {
+        let av = vs[i] - vs[i - 1]
+        as_list = as_list + [av]
+        a_sum = a_sum + av
+        i = i + 1
+    }
+    let na = nv - 1
+    if na < 2 { return 0.0 }
+    let v_mean = v_sum / to_float(nv)
+    let a_mean = a_sum / to_float(na)
+    let v_var = 0.0
+    i = 0
+    while i < nv {
+        let d = vs[i] - v_mean
+        v_var = v_var + d * d
+        i = i + 1
+    }
+    v_var = v_var / to_float(nv)
+    let a_var = 0.0
+    i = 0
+    while i < na {
+        let d = as_list[i] - a_mean
+        a_var = a_var + d * d
+        i = i + 1
+    }
+    a_var = a_var / to_float(na)
+    if v_var < 1.0e-9 { return 0.0 }
+    let ratio = a_var / (v_var + 1.0e-9)
+    if ratio < 0.0 { ratio = 0.0 }
+    if ratio > 4.0 { ratio = 4.0 }
+    let score = 1.0 - ratio / 4.0
+    if score < 0.0 { score = 0.0 }
+    if score > 1.0 { score = 1.0 }
+    return score
+}
+
+// ── fmt ─────────────────────────────────────────────────────────────────
+fn fmt(x: float) -> str {
+    let y = x
+    let sign = ""
+    if y < 0.0 { sign = "-"; y = -y }
+    let whole = to_int(y)
+    let frac = to_int((y - to_float(whole)) * 10000.0)
+    let fs = to_string(frac)
+    while len(fs) < 4 { fs = "0" + fs }
+    return sign + to_string(whole) + "." + fs
+}
+
+// ── stats: compute L5c/L6e over current ring, emit JSON string ──────────
+fn compute_stats_json(cfg: auto) -> str {
+    let state_path = cfg["state_path"]
+    let tau = to_int(cfg["tau"])
+    let bins = to_int(cfg["bins"])
+    let min_ready = to_int(cfg["min_ready"])
+    let loaded = ring_series(state_path)
+    let series_all = loaded[0]
+    let n = loaded[1]
+    let ready = 0
+    if n >= min_ready { ready = 1 }
+    let axlab = ["v1","v2","v3","v4","v5","v6"]
+    let per_l5c = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let per_l6e = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let sum_l5c = 0.0
+    let sum_l6e = 0.0
+    let used = 0
+    let a = 0
+    while a < NUM_AXES {
+        if ready == 1 {
+            let s = series_all[a]
+            let rng = minmax(s, n)
+            if rng[1] - rng[0] > 1.0e-9 {
+                let l5 = l5c_normalized(s, n, tau, bins)
+                let l6 = layer_l6e(s, n)
+                per_l5c[a] = l5
+                per_l6e[a] = l6
+                sum_l5c = sum_l5c + l5
+                sum_l6e = sum_l6e + l6
+                used = used + 1
+            }
+        }
+        a = a + 1
+    }
+    let m5 = 0.0
+    let m6 = 0.0
+    if used > 0 {
+        m5 = sum_l5c / to_float(used)
+        m6 = sum_l6e / to_float(used)
+    }
+    let ts = exec("date +%s").trim()
+    let j = "{\"ts\":" + ts + ",\"ring_ready\":" + to_string(ready) + ",\"ring_n\":" + to_string(n) + ",\"axes_used\":" + to_string(used) + ",\"tau\":" + to_string(tau) + ",\"l5c_nmi\":" + fmt(m5) + ",\"l6e_score\":" + fmt(m6) + ",\"per_axis\":{"
+    let b = 0
+    while b < NUM_AXES {
+        if b > 0 { j = j + "," }
+        j = j + "\"" + axlab[b] + "\":{\"l5c\":" + fmt(per_l5c[b]) + ",\"l6e\":" + fmt(per_l6e[b]) + "}"
+        b = b + 1
+    }
+    j = j + "}}"
+    return j
+}
+
+// ── merge into out_path (forge/state.json) ──────────────────────────────
+fn merge_state(cfg: auto, stats_json: str) -> int {
+    let out_path = cfg["out_path"]
+    let base = "{}"
+    if file_exists(out_path) { base = read_file(out_path).trim() }
+    if len(base) < 2 { base = "{}" }
+    let parsed = json_parse(base)
+    parsed["vitals"] = json_parse(stats_json)
+    // Manual JSON re-emit: hexa lacks json_stringify? Try exec python fallback.
+    let tmp = "/tmp/_vitals_merge_" + exec("date +%s%N").trim() + ".json"
+    write_file(tmp + ".b", base)
+    write_file(tmp + ".v", stats_json)
+    let py = "python3 -c \"import json,sys; b=json.load(open('" + tmp + ".b')); v=json.load(open('" + tmp + ".v')); b['vitals']=v; open('" + out_path + "','w').write(json.dumps(b,indent=2))\""
+    exec(py)
+    exec("rm -f " + tmp + ".b " + tmp + ".v")
+    return 1
+}
+
+// ── CLI ─────────────────────────────────────────────────────────────────
+fn main() {
+    let cfg = load_cfg()
+    let argv = args()
+    let cmd = "help"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "push" {
+        if len(argv) < 10 {
+            println("usage: push <c> <r> <s> <n> <d> <g>")
+            return
+        }
+        let axes = [to_float(argv[4]), to_float(argv[5]), to_float(argv[6]), to_float(argv[7]), to_float(argv[8]), to_float(argv[9])]
+        let n = ring_push(cfg["state_path"], to_int(cfg["size"]), axes)
+        println("ring_n=" + to_string(n))
+        return
+    }
+
+    if cmd == "stats" {
+        println(compute_stats_json(cfg))
+        return
+    }
+
+    if cmd == "tick" {
+        if len(argv) < 10 {
+            println("usage: tick <c> <r> <s> <n> <d> <g>")
+            return
+        }
+        let axes = [to_float(argv[4]), to_float(argv[5]), to_float(argv[6]), to_float(argv[7]), to_float(argv[8]), to_float(argv[9])]
+        ring_push(cfg["state_path"], to_int(cfg["size"]), axes)
+        let j = compute_stats_json(cfg)
+        merge_state(cfg, j)
+        println(j)
+        return
+    }
+
+    println("vitals_ring v" + VERSION)
+    println("commands: push <6 floats> | stats | tick <6 floats>")
+}
+
+main()

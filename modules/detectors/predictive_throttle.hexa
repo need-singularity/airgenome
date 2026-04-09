@@ -1,0 +1,515 @@
+// airgenome/modules/detectors/predictive_throttle.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Predictive Throttle — 시간 지연 MI 기반 캐스케이드 사전 예측 및 스로틀
+//
+// L5c NMI(τ) 가 높은 축 = 시간적 관성(momentum)이 있다.
+//   현재 압력이 높으면 → 나중에도 높을 것이라 예측 가능.
+// 교차상관 캐스케이드 경로와 결합:
+//   RAM↑+persistent → Swap surge 예측 → Disk surge 예측
+//   CPU↑+persistent → Disk surge 예측
+//
+// 입력: forge/vitals_ring.state (JSONL, {ts,c,r,s,n,d,g})
+// 설정: nexus/shared/detectors.jsonl (key="predictive_throttle")
+//   watch_cpu, watch_ram, watch_swap — 감시 임계값 (0-1)
+//   nmi_threshold — L5c NMI 최소값 (관성 판정)
+//   tau — 시간 지연 τ
+//   bins — MI 히스토그램 빈 수
+//   min_window — 최소 링 크기
+//   cascade_pairs — 캐스케이드 쌍 정의 (from detectors.jsonl)
+//
+// 명령:
+//   $HEXA modules/detectors/predictive_throttle.hexa predict
+//   $HEXA modules/detectors/predictive_throttle.hexa act
+//
+// Prime Directive safe — predict는 순수 분석, act는 taskpolicy -b만 사용.
+// ─────────────────────────────────────────────────────────────────────────
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+let NUM_AXES = 6
+let AX_KEY = ["c", "r", "s", "n", "d", "g"]
+let AX_LABEL = ["CPU", "RAM", "Swap", "Net", "Disk", "GPU"]
+
+// ── config loader (detectors.jsonl key/value 패턴) ─────────────────────
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                if parsed["key"] == key { return parsed["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+fn cfg_i(key: str, fb: int) -> int {
+    try { return to_int(to_float(load_cfg(key, to_string(fb)))) } catch e { return fb }
+}
+fn cfg_f(key: str, fb: float) -> float {
+    try { return to_float(load_cfg(key, to_string(fb))) } catch e { return fb }
+}
+
+// ── ring file helpers ───────────────────────────────────────────────────
+fn ring_load(path: str) -> auto {
+    if file_exists(path) == false { return [] }
+    let content = read_file(path)
+    let lines = content.split("\n")
+    let out = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 { out = out + [line] }
+        i = i + 1
+    }
+    return out
+}
+
+fn ring_series(path: str) -> auto {
+    let lines = ring_load(path)
+    let n = len(lines)
+    let series_all = []
+    let a = 0
+    while a < NUM_AXES {
+        let s = []
+        let i = 0
+        while i < n {
+            let p = json_parse(lines[i])
+            s = s + [to_float(p[AX_KEY[a]])]
+            i = i + 1
+        }
+        series_all = series_all + [s]
+        a = a + 1
+    }
+    return [series_all, n]
+}
+
+// ── L5c primitives (vitals_ring.hexa에서 복제) ──────────────────────────
+fn minmax(series: auto, n: int) -> auto {
+    let lo = series[0]
+    let hi = series[0]
+    let i = 1
+    while i < n {
+        let v = series[i]
+        if v < lo { lo = v }
+        if v > hi { hi = v }
+        i = i + 1
+    }
+    return [lo, hi]
+}
+
+fn log2_approx(x: float) -> float {
+    if x <= 0.0 { return -1000.0 }
+    let a = x
+    let k = 0
+    while k < 12 {
+        let g = a
+        if g < 1.0e-9 { g = 1.0e-9 }
+        let s = 0.5 * (g + a / g)
+        s = 0.5 * (s + a / s)
+        s = 0.5 * (s + a / s)
+        a = s
+        k = k + 1
+    }
+    let ln_x = 4096.0 * (a - 1.0)
+    return ln_x / 0.6931471805599453
+}
+
+fn bin_index(v: float, lo: float, hi: float, b: int) -> int {
+    if hi <= lo { return 0 }
+    let t = (v - lo) / (hi - lo)
+    if t < 0.0 { t = 0.0 }
+    if t > 0.999999 { t = 0.999999 }
+    let idx = to_int(t * to_float(b))
+    if idx < 0 { idx = 0 }
+    if idx >= b { idx = b - 1 }
+    return idx
+}
+
+fn layer_l5c_time_delay_mi(series: auto, n: int, tau: int, bins: int) -> float {
+    if tau <= 0 { return 0.0 }
+    if n - tau < 8 { return 0.0 }
+    let rng = minmax(series, n)
+    let lo = rng[0]
+    let hi = rng[1]
+    let px = []
+    let py = []
+    let i = 0
+    while i < bins { px = px + [0.0]; py = py + [0.0]; i = i + 1 }
+    let pxy = []
+    i = 0
+    while i < bins * bins { pxy = pxy + [0.0]; i = i + 1 }
+    let pairs = 0
+    let t = tau
+    while t < n {
+        let xi = bin_index(series[t], lo, hi, bins)
+        let yi = bin_index(series[t - tau], lo, hi, bins)
+        px[xi] = px[xi] + 1.0
+        py[yi] = py[yi] + 1.0
+        pxy[xi * bins + yi] = pxy[xi * bins + yi] + 1.0
+        pairs = pairs + 1
+        t = t + 1
+    }
+    if pairs < 1 { return 0.0 }
+    let np = to_float(pairs)
+    i = 0
+    while i < bins { px[i] = px[i] / np; py[i] = py[i] / np; i = i + 1 }
+    i = 0
+    while i < bins * bins { pxy[i] = pxy[i] / np; i = i + 1 }
+    let mi = 0.0
+    let aa = 0
+    while aa < bins {
+        let bb = 0
+        while bb < bins {
+            let j = pxy[aa * bins + bb]
+            if j > 1.0e-12 {
+                let denom = px[aa] * py[bb]
+                if denom > 1.0e-12 { mi = mi + j * log2_approx(j / denom) }
+            }
+            bb = bb + 1
+        }
+        aa = aa + 1
+    }
+    if mi < 0.0 { mi = 0.0 }
+    return mi
+}
+
+fn l5c_normalized(series: auto, n: int, tau: int, bins: int) -> float {
+    let mi = layer_l5c_time_delay_mi(series, n, tau, bins)
+    let h_max = log2_approx(to_float(bins))
+    if h_max < 1.0e-6 { return 0.0 }
+    let nmi = mi / h_max
+    if nmi < 0.0 { nmi = 0.0 }
+    if nmi > 1.0 { nmi = 1.0 }
+    return nmi
+}
+
+// ── float formatting ────────────────────────────────────────────────────
+fn fmt(x: float) -> str {
+    let y = x
+    let sign = ""
+    if y < 0.0 { sign = "-"; y = -y }
+    let whole = to_int(y)
+    let frac = to_int((y - to_float(whole)) * 10000.0)
+    let fs = to_string(frac)
+    while len(fs) < 4 { fs = "0" + fs }
+    return sign + to_string(whole) + "." + fs
+}
+
+// ── cascade path definitions (from detectors.jsonl cascade_pairs) ───────
+// Parses "r>s:0.73,s>d:0.57,..." into structured cascade chains.
+// Returns list of [src_idx, dst_idx, correlation]
+fn parse_cascade_pairs() -> auto {
+    let raw = load_cfg("cascade_pairs", "r>s:0.73,s>d:0.57,r>d:0.55,c>d:0.54")
+    let pairs = raw.split(",")
+    let result = []
+    let i = 0
+    while i < len(pairs) {
+        let p = pairs[i].trim()
+        let colon = p.split(":")
+        if len(colon) == 2 {
+            let arrow = colon[0].split(">")
+            if len(arrow) == 2 {
+                let src = arrow[0].trim()
+                let dst = arrow[1].trim()
+                let corr = to_float(colon[1].trim())
+                // Map axis letter to index
+                let si = ax_index(src)
+                let di = ax_index(dst)
+                if si >= 0 && di >= 0 {
+                    result = result + [[to_float(si), to_float(di), corr]]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn ax_index(letter: str) -> int {
+    if letter == "c" { return 0 }
+    if letter == "r" { return 1 }
+    if letter == "s" { return 2 }
+    if letter == "n" { return 3 }
+    if letter == "d" { return 4 }
+    if letter == "g" { return 5 }
+    return -1
+}
+
+// ── cascade chain builder ───────────────────────────────────────────────
+// Given a high+persistent root axis, trace downstream cascade paths.
+// Returns list of {"chain": "RAM->Swap->Disk", "severity": 0.xx, "endpoints": [idx...]}
+fn trace_cascades(root_idx: int, nmi_vals: auto, current_vals: auto, watch_thresholds: auto, nmi_threshold: float, pairs: auto) -> auto {
+    let chains = []
+    // First hop: root -> direct targets
+    let pi = 0
+    while pi < len(pairs) {
+        let src = to_int(pairs[pi][0])
+        let dst = to_int(pairs[pi][1])
+        let corr = pairs[pi][2]
+        if src == root_idx {
+            // Severity = root_current * root_nmi * correlation
+            let sev1 = current_vals[root_idx] * nmi_vals[root_idx] * corr
+            let chain_str = AX_LABEL[root_idx] + "->" + AX_LABEL[dst]
+            let endpoints = [dst]
+
+            // Second hop: dst -> further targets
+            let pj = 0
+            while pj < len(pairs) {
+                let src2 = to_int(pairs[pj][0])
+                let dst2 = to_int(pairs[pj][1])
+                let corr2 = pairs[pj][2]
+                if src2 == dst && dst2 != root_idx {
+                    // Extended chain
+                    let sev2 = sev1 * corr2
+                    let chain_ext = chain_str + "->" + AX_LABEL[dst2]
+                    chains = chains + [[chain_ext, to_string(sev2), to_string(root_idx), to_string(dst2)]]
+                }
+                pj = pj + 1
+            }
+            // Also add the single-hop chain
+            chains = chains + [[chain_str, to_string(sev1), to_string(root_idx), to_string(dst)]]
+        }
+        pi = pi + 1
+    }
+    return chains
+}
+
+// ── predict: run L5c analysis + cascade prediction ──────────────────────
+fn run_predict() -> str {
+    let state_path = load_cfg("cascade_state_path", "forge/vitals_ring.state")
+    let tau = cfg_i("pt_tau", 5)
+    let bins = cfg_i("mi_bins", 8)
+    let min_window = cfg_i("pt_min_window", 32)
+    let nmi_threshold = cfg_f("pt_nmi_threshold", 0.3)
+    let watch_cpu = cfg_f("pt_watch_cpu", 0.6)
+    let watch_ram = cfg_f("pt_watch_ram", 0.6)
+    let watch_swap = cfg_f("pt_watch_swap", 0.4)
+    let watch_net = cfg_f("pt_watch_net", 0.7)
+    let watch_disk = cfg_f("pt_watch_disk", 0.7)
+    let watch_gpu = cfg_f("pt_watch_gpu", 0.8)
+    let watch_thresholds = [watch_cpu, watch_ram, watch_swap, watch_net, watch_disk, watch_gpu]
+
+    // Load ring
+    let loaded = ring_series(state_path)
+    let series_all = loaded[0]
+    let n = loaded[1]
+
+    if n < min_window {
+        let ts = exec("date +%s").trim()
+        return "{\"ts\":" + ts + ",\"error\":\"ring_too_small\",\"ring_n\":" + to_string(n) + ",\"min_window\":" + to_string(min_window) + ",\"predictions\":[],\"throttle_targets\":[],\"confidence\":0.0}"
+    }
+
+    // Compute per-axis: current value (last sample), L5c NMI
+    let current_vals = []
+    let nmi_vals = []
+    let high_persistent = []  // axes that are both above watch AND have momentum
+    let a = 0
+    while a < NUM_AXES {
+        let s = series_all[a]
+        let cur = s[n - 1]
+        current_vals = current_vals + [cur]
+        let rng = minmax(s, n)
+        let nmi = 0.0
+        if rng[1] - rng[0] > 1.0e-9 {
+            nmi = l5c_normalized(s, n, tau, bins)
+        }
+        nmi_vals = nmi_vals + [nmi]
+        if cur > watch_thresholds[a] && nmi > nmi_threshold {
+            high_persistent = high_persistent + [a]
+        }
+        a = a + 1
+    }
+
+    // Parse cascade pairs from config
+    let pairs = parse_cascade_pairs()
+
+    // Trace cascade chains from each high+persistent root
+    let all_chains = []
+    let hi = 0
+    while hi < len(high_persistent) {
+        let root = high_persistent[hi]
+        let chains = trace_cascades(root, nmi_vals, current_vals, watch_thresholds, nmi_threshold, pairs)
+        let ci = 0
+        while ci < len(chains) {
+            all_chains = all_chains + [chains[ci]]
+            ci = ci + 1
+        }
+        hi = hi + 1
+    }
+
+    // Compute overall confidence: mean NMI of high_persistent axes
+    let conf = 0.0
+    if len(high_persistent) > 0 {
+        let sum_nmi = 0.0
+        let k = 0
+        while k < len(high_persistent) {
+            sum_nmi = sum_nmi + nmi_vals[high_persistent[k]]
+            k = k + 1
+        }
+        conf = sum_nmi / to_float(len(high_persistent))
+    }
+
+    // Determine throttle target categories
+    let throttle_targets = []
+    let has_ram_root = 0
+    let has_cpu_root = 0
+    let hj = 0
+    while hj < len(high_persistent) {
+        if high_persistent[hj] == 0 { has_cpu_root = 1 }
+        if high_persistent[hj] == 1 { has_ram_root = 1 }
+        hj = hj + 1
+    }
+    if has_ram_root == 1 { throttle_targets = throttle_targets + ["top_ram_consumers"] }
+    if has_cpu_root == 1 { throttle_targets = throttle_targets + ["top_cpu_consumers"] }
+
+    // Build JSON output
+    let ts = exec("date +%s").trim()
+    let j = "{\"ts\":" + ts
+    j = j + ",\"ring_n\":" + to_string(n)
+    j = j + ",\"tau\":" + to_string(tau)
+
+    // Per-axis diagnostics
+    j = j + ",\"axes\":{"
+    a = 0
+    while a < NUM_AXES {
+        if a > 0 { j = j + "," }
+        j = j + "\"" + AX_KEY[a] + "\":{\"current\":" + fmt(current_vals[a]) + ",\"nmi\":" + fmt(nmi_vals[a]) + ",\"watch\":" + fmt(watch_thresholds[a]) + ",\"alert\":"
+        // Check if this axis is in high_persistent
+        let is_alert = 0
+        let hk = 0
+        while hk < len(high_persistent) {
+            if high_persistent[hk] == a { is_alert = 1 }
+            hk = hk + 1
+        }
+        if is_alert == 1 { j = j + "true" } else { j = j + "false" }
+        j = j + "}"
+        a = a + 1
+    }
+    j = j + "}"
+
+    // Predictions
+    j = j + ",\"predictions\":["
+    let ci = 0
+    while ci < len(all_chains) {
+        if ci > 0 { j = j + "," }
+        let chain = all_chains[ci]
+        let sev = to_float(chain[1])
+        // Cap severity at 1.0
+        if sev > 1.0 { sev = 1.0 }
+        if sev < 0.0 { sev = 0.0 }
+        j = j + "{\"cascade\":\"" + chain[0] + "\",\"severity\":" + fmt(sev) + ",\"root\":\"" + AX_LABEL[to_int(to_float(chain[2]))] + "\",\"action\":\"preemptive_bg_throttle\"}"
+        ci = ci + 1
+    }
+    j = j + "]"
+
+    // Throttle targets
+    j = j + ",\"throttle_targets\":["
+    let ti = 0
+    while ti < len(throttle_targets) {
+        if ti > 0 { j = j + "," }
+        j = j + "\"" + throttle_targets[ti] + "\""
+        ti = ti + 1
+    }
+    j = j + "]"
+
+    j = j + ",\"confidence\":" + fmt(conf)
+    j = j + "}"
+    return j
+}
+
+// ── act: apply preemptive taskpolicy -b to top consumers ────────────────
+// ONLY background priority. NO kill. Prime Directive compliant.
+fn run_act() -> str {
+    let prediction_json = run_predict()
+    let prediction = json_parse(prediction_json)
+    let targets = prediction["throttle_targets"]
+    let n_targets = len(targets)
+
+    if n_targets == 0 {
+        return "{\"action\":\"none\",\"reason\":\"no_cascade_predicted\",\"prediction\":" + prediction_json + "}"
+    }
+
+    let throttled_pids = []
+    let top_n = cfg_i("pt_throttle_top_n", 5)
+    let exclude_pattern = "kernel_task|WindowServer|launchd|loginwindow|Finder|Dock|opendirectoryd"
+
+    let ti = 0
+    while ti < n_targets {
+        let target = targets[ti]
+        if target == "top_ram_consumers" {
+            // taskpolicy -b top RAM consumers (exclude system)
+            let cmd = "ps -eo pid=,rss=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done"
+            let result = exec(cmd).trim()
+            if len(result) > 0 {
+                let pids = result.split("\n")
+                let pi = 0
+                while pi < len(pids) {
+                    let pid = pids[pi].trim()
+                    if len(pid) > 0 { throttled_pids = throttled_pids + [pid] }
+                    pi = pi + 1
+                }
+            }
+        }
+        if target == "top_cpu_consumers" {
+            let cmd = "ps -eo pid=,%cpu=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TCPU TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done"
+            let result = exec(cmd).trim()
+            if len(result) > 0 {
+                let pids = result.split("\n")
+                let pi = 0
+                while pi < len(pids) {
+                    let pid = pids[pi].trim()
+                    if len(pid) > 0 { throttled_pids = throttled_pids + [pid] }
+                    pi = pi + 1
+                }
+            }
+        }
+        ti = ti + 1
+    }
+
+    // Build result JSON
+    let ts = exec("date +%s").trim()
+    let j = "{\"ts\":" + ts + ",\"action\":\"preemptive_bg_throttle\",\"throttled_pids\":["
+    let pi = 0
+    while pi < len(throttled_pids) {
+        if pi > 0 { j = j + "," }
+        j = j + "\"" + throttled_pids[pi] + "\""
+        pi = pi + 1
+    }
+    j = j + "],\"count\":" + to_string(len(throttled_pids))
+    j = j + ",\"prediction\":" + prediction_json + "}"
+    return j
+}
+
+// ── CLI ─────────────────────────────────────────────────────────────────
+fn main() {
+    let argv = args()
+    let cmd = "help"
+    if len(argv) > 2 { cmd = argv[2] }
+
+    if cmd == "predict" {
+        println(run_predict())
+        return
+    }
+
+    if cmd == "act" {
+        println(run_act())
+        return
+    }
+
+    println("predictive_throttle v" + VERSION)
+    println("  L5c temporal-momentum cascade predictor")
+    println("")
+    println("commands:")
+    println("  predict  — analyze ring, output cascade predictions (JSON)")
+    println("  act      — predict + apply taskpolicy -b to top consumers")
+    println("")
+    println("config: nexus/shared/detectors.jsonl (pt_* keys)")
+}
+
+main()

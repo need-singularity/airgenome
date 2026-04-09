@@ -1,0 +1,197 @@
+// ubu_workers/ag3_loop.hexa — AG3 연속 돌파 루프 (pure hexa port of ag3_loop.py)
+//
+// 게놈 링 폴링 → 이상치 감지 → growth_bus append → blowup 트리거
+// GPU 유휴 감지 → forge 자동 가동
+//
+// Usage: hexa run ubu_workers/ag3_loop.hexa
+// Runs on Ubuntu where nvidia-smi is available.
+
+let CONFIG_PATH = env("AG3_CONFIG")
+if len(CONFIG_PATH) == 0 {
+    CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+}
+
+let GROWTH_BUS = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+let RING_IO = env("HOME") + "/Dev/airgenome/modules/ring_io.hexa"
+
+// ── CONFIG (동적 로드, 하드코딩 금지) ───────────────────────────────────
+fn load_cfg() -> auto {
+    let cfg = json_parse("{}")
+    if file_exists(CONFIG_PATH) == false { return cfg }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            cfg[parsed["key"]] = parsed["value"]
+        }
+        i = i + 1
+    }
+    return cfg
+}
+
+fn cfg_int(cfg: auto, key: str, fallback: int) -> int {
+    try {
+        let v = cfg[key]
+        if v == null { return fallback }
+        return to_int(v)
+    } catch e { return fallback }
+}
+
+fn cfg_str(cfg: auto, key: str, fallback: str) -> str {
+    try {
+        let v = cfg[key]
+        if v == null { return fallback }
+        return to_string(v)
+    } catch e { return fallback }
+}
+
+// ── GPU utilization via nvidia-smi ──────────────────────────────────────
+fn gpu_util() -> int {
+    let raw = exec("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader 2>/dev/null || echo 100")
+    let trimmed = raw.trim()
+    // strip trailing " %" or "%"
+    let cleaned = trimmed.replace(" %", "").replace("%", "").trim()
+    if len(cleaned) == 0 { return 100 }
+    return to_int(cleaned)
+}
+
+// ── TIMESTAMP (ISO-8601 UTC via date) ───────────────────────────────────
+fn utc_now() -> str {
+    return exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+}
+
+fn epoch_sec() -> int {
+    return to_int(exec("date +%s").trim())
+}
+
+// ── GROWTH BUS append ───────────────────────────────────────────────────
+fn append_growth(event: auto) {
+    let line = json_stringify(event)
+    append_file(GROWTH_BUS, line + "\n")
+}
+
+// ── BLOWUP trigger ─────────────────────────────────────────────────────
+fn trigger_blowup(cfg: auto, domain: str) -> bool {
+    let hexa = cfg_str(cfg, "ubu_hexa_bin", HEXA_BIN)
+    let blowup = cfg_str(cfg, "ubu_blowup_hexa", env("HOME") + "/Dev/nexus/mk2_hexa/native/blowup.hexa")
+    // fire-and-forget via & background
+    let cmd = hexa + " " + blowup + " " + domain + " 3 --no-graph >/dev/null 2>&1 &"
+    exec(cmd)
+    return true
+}
+
+// ── RING HEADER via ring_io.hexa stats ──────────────────────────────────
+fn read_ring_header(cfg: auto) -> auto {
+    let hexa = cfg_str(cfg, "ubu_hexa_bin", HEXA_BIN)
+    let raw = exec(hexa + " run " + RING_IO + " stats --local 2>/dev/null")
+    let trimmed = raw.trim()
+    if len(trimmed) < 5 {
+        return json_parse("{\"ok\":false,\"write_idx\":0}")
+    }
+    return json_parse(trimmed)
+}
+
+// ── RING TAIL via ring_io.hexa tail ─────────────────────────────────────
+fn read_ring_recent(cfg: auto, n: int) -> auto {
+    let hexa = cfg_str(cfg, "ubu_hexa_bin", HEXA_BIN)
+    let raw = exec(hexa + " run " + RING_IO + " tail -n " + to_string(n) + " --local 2>/dev/null")
+    let trimmed = raw.trim()
+    if len(trimmed) == 0 { return [] }
+    let lines = trimmed.split("\n")
+    let out = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            out = out + [json_parse(line)]
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────
+fn main() {
+    let cfg = load_cfg()
+    let key_count = len(json_stringify(cfg))
+    println("[AG3-LOOP] started (hexa). config loaded (" + to_string(key_count) + " chars)")
+
+    let poll_sec = cfg_int(cfg, "ag3_poll_sec", 5)
+    let idle_threshold = cfg_int(cfg, "ag3_idle_threshold_sec", 300)
+
+    let last_write_idx = -1
+    let idle_start = 0
+    let idle_tracking = false
+
+    while true {
+        // ── 1. Ring poll ────────────────────────────────────────────
+        let hdr = read_ring_header(cfg)
+        if hdr["ok"] == true {
+            let wi = hdr["write_idx"]
+            if wi != last_write_idx {
+                last_write_idx = wi
+                let recent = read_ring_recent(cfg, 10)
+                let ri = 0
+                while ri < len(recent) {
+                    let r = recent[ri]
+                    let flags = r["flags"]
+                    // anomaly flag = bit 0
+                    if flags != null {
+                        if (flags % 2) == 1 {
+                            let pid_val = r["pid"]
+                            let ev = json_parse("{}")
+                            ev["type"] = "anomaly_observed"
+                            ev["phase"] = "ag3"
+                            ev["id"] = "pid_" + to_string(pid_val)
+                            ev["value"] = 1
+                            ev["grade"] = "INFO"
+                            ev["domain"] = "resource"
+                            ev["timestamp"] = utc_now()
+                            append_growth(ev)
+                            if trigger_blowup(cfg, "resource") {
+                                println("[AG3-LOOP] blowup triggered for pid " + to_string(pid_val))
+                            }
+                        }
+                    }
+                    ri = ri + 1
+                }
+            }
+        }
+
+        // ── 2. GPU idle detection ───────────────────────────────────
+        let util = gpu_util()
+        if util < 5 {
+            let now = epoch_sec()
+            if idle_tracking == false {
+                idle_start = now
+                idle_tracking = true
+            } else {
+                let elapsed = now - idle_start
+                if elapsed > idle_threshold {
+                    let ev = json_parse("{}")
+                    ev["type"] = "gpu_idle_forge"
+                    ev["phase"] = "ag3"
+                    ev["id"] = "idle_forge"
+                    ev["value"] = elapsed
+                    ev["grade"] = "INFO"
+                    ev["domain"] = "resource"
+                    ev["timestamp"] = utc_now()
+                    append_growth(ev)
+                    // reset timer
+                    idle_start = now
+                }
+            }
+        } else {
+            idle_tracking = false
+        }
+
+        // ── 3. Sleep ────────────────────────────────────────────────
+        exec("sleep " + to_string(poll_sec))
+    }
+}
+
+main()

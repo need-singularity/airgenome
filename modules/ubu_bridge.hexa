@@ -193,8 +193,8 @@ fn fallback_local() -> void {
     // 2) dispatch.log append
     let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
     append_file(LOG_FILE, ts + "\tfallback\tubu_offline\tlocal_degrade\n")
-    // 3) growth_bus 이벤트
-    let ev = "{\"type\":\"fallback\",\"phase\":\"ag3\",\"id\":\"ubu_offline\",\"value\":1,\"grade\":\"WARN\",\"domain\":\"resource\",\"timestamp\":\"" + ts + "\"}"
+    // 3) growth_bus 이벤트 (gb_append schema: ts iso8601Z + source + event + domain="airgenome")
+    let ev = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/ubu_bridge\",\"event\":\"fallback_ubu_offline\",\"domain\":\"airgenome\",\"type\":\"fallback\",\"phase\":\"ag3\",\"id\":\"ubu_offline\",\"value\":1,\"grade\":\"WARN\",\"resource_domain\":\"resource\",\"timestamp\":\"" + ts + "\"}"
     append_file(GROWTH_BUS, ev + "\n")
     return
 }

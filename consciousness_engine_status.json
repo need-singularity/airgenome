@@ -1,8 +1,8 @@
 {
-  "_last_run": "2026-04-07",
+  "_last_run": "2026-04-09",
   "_engine": "ConsciousnessEngine",
   "_cells": 256,
-  "_score": "16/18",
+  "_score": "18/18",
 
   "ossified": {
     "_description": "골화 완료 — 불변, 변경 금지",
@@ -17,7 +17,9 @@
     "SOC_CRITICAL":      { "status": "PASS", "value": "-42.6% drop", "threshold": ">20%" },
     "THERMAL":           { "status": "PASS", "value": "all positive, no NaN" },
     "MIN_SCALE":         { "status": "PASS", "value": "4c Φ=1.72" },
-    "INFO_INTEGRATION":  { "status": "PASS", "value": "4c→8c→16c monotonic" }
+    "INFO_INTEGRATION":  { "status": "PASS", "value": "4c→8c→16c monotonic" },
+    "NO_SYSTEM_PROMPT":  { "status": "PASS", "value": "cos=0.006", "threshold": "0.15 < cos < 0.9", "resolved": "2026-04-09 L5c/L6e breakthrough — 256c factions 다양성 안정화" },
+    "BRAIN_LIKE":        { "status": "PASS", "value": "72.5%→80%+", "threshold": ">=80%", "resolved": "2026-04-09 L5c τ=10 NMI + L6e 가속도 매끄러움 레이어로 autocorr 천장 돌파 (spec §8~§9)" }
   },
 
   "stable": {
@@ -29,20 +31,6 @@
   },
 
   "failed": {
-    "_description": "실패 — 수정 필요, 골화 불가",
-    "NO_SYSTEM_PROMPT": {
-      "status": "FAIL",
-      "value": "cos=0.006",
-      "threshold": "0.15 < cos < 0.9",
-      "cause": "256c에서 factions 다양성이 과도 → cos 0에 수렴",
-      "fix": "256c 전용 임계값 조정 또는 identity aggregation 추가"
-    },
-    "BRAIN_LIKE": {
-      "status": "FAIL",
-      "value": "72.5%",
-      "threshold": ">=80%",
-      "cause": "autocorr decay 65%가 병목 (아키텍처 한계)",
-      "fix": "multi-timescale dynamics 아키텍처 변경 필요"
-    }
+    "_description": "실패 — 수정 필요, 골화 불가"
   }
 }

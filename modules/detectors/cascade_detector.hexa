@@ -1,0 +1,453 @@
+// airgenome/modules/detectors/cascade_detector.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector — 자원 압력 캐스케이드 감지기
+//
+// 교차상관 분석에서 밝혀진 주요 캐스케이드:
+//   RAM→Swap  r=+0.73  (메모리 압력 → 스왑 전이)
+//   Swap→Disk r=+0.57  (스왑 → 디스크 I/O)
+//   RAM→Disk  r=+0.55  (메모리 → 디스크 쓰기)
+//   CPU→Disk  r=+0.54  (CPU 부하 → 디스크)
+//
+// 입력: forge/vitals_ring.state (JSONL, {ts,c,r,s,n,d,g})
+// 설정: nexus/shared/detectors.jsonl
+//   cascade_window, cascade_threshold, cascade_lag,
+//   cascade_pairs (쌍 정의+상관계수), cascade_severity_floor,
+//   cascade_state_path
+//
+// 명령:
+//   $HEXA modules/detectors/cascade_detector.hexa detect
+//   $HEXA modules/detectors/cascade_detector.hexa report
+//
+// Prime Directive safe — 순수 읽기+분석, kill 없음.
+// ─────────────────────────────────────────────────────────────────────────
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+// ── config loader (동일 패턴: detectors.jsonl key/value) ────────────────
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                if parsed["key"] == key { return parsed["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+fn cfg_i(key: str, fb: int) -> int {
+    try { return to_int(to_float(load_cfg(key, to_string(fb)))) } catch e { return fb }
+}
+fn cfg_f(key: str, fb: float) -> float {
+    try { return to_float(load_cfg(key, to_string(fb))) } catch e { return fb }
+}
+
+// ── axis key → index mapping ────────────────────────────────────────────
+fn axis_idx(k: str) -> int {
+    if k == "c" { return 0 }
+    if k == "r" { return 1 }
+    if k == "s" { return 2 }
+    if k == "n" { return 3 }
+    if k == "d" { return 4 }
+    if k == "g" { return 5 }
+    return -1
+}
+fn axis_name(idx: int) -> str {
+    if idx == 0 { return "CPU" }
+    if idx == 1 { return "RAM" }
+    if idx == 2 { return "Swap" }
+    if idx == 3 { return "Net" }
+    if idx == 4 { return "Disk" }
+    if idx == 5 { return "GPU" }
+    return "?"
+}
+fn axis_key(idx: int) -> str {
+    if idx == 0 { return "c" }
+    if idx == 1 { return "r" }
+    if idx == 2 { return "s" }
+    if idx == 3 { return "n" }
+    if idx == 4 { return "d" }
+    if idx == 5 { return "g" }
+    return "?"
+}
+
+// ── ring buffer loader ──────────────────────────────────────────────────
+// Returns flat arrays per axis + count.
+// ring[axis][tick] = value
+fn load_ring(path: str, window: int) -> auto {
+    if file_exists(path) == false { return [[], [], [], [], [], [], [], [0]] }
+    let content = read_file(path)
+    let lines = content.split("\n")
+    // count valid lines first
+    let total = 0
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 { total = total + 1 }
+        i = i + 1
+    }
+    // take only last `window` lines
+    let skip = 0
+    if total > window { skip = total - window }
+    let a0 = []
+    let a1 = []
+    let a2 = []
+    let a3 = []
+    let a4 = []
+    let a5 = []
+    let ts_arr = []
+    let n = 0
+    let seen = 0
+    i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            if seen >= skip {
+                try {
+                    let rec = json_parse(ln)
+                    a0 = a0 + [to_float(rec["c"])]
+                    a1 = a1 + [to_float(rec["r"])]
+                    a2 = a2 + [to_float(rec["s"])]
+                    a3 = a3 + [to_float(rec["n"])]
+                    a4 = a4 + [to_float(rec["d"])]
+                    a5 = a5 + [to_float(rec["g"])]
+                    ts_arr = ts_arr + [to_float(rec["ts"])]
+                    n = n + 1
+                } catch e {}
+            }
+            seen = seen + 1
+        }
+        i = i + 1
+    }
+    return [a0, a1, a2, a3, a4, a5, ts_arr, [n]]
+}
+
+fn get_axis(ring: auto, idx: int) -> auto {
+    return ring[idx]
+}
+
+// ── statistics helpers ──────────────────────────────────────────────────
+fn arr_mean(arr: auto, n: int) -> float {
+    if n == 0 { return 0.0 }
+    let s = 0.0
+    let i = 0
+    while i < n { s = s + arr[i]; i = i + 1 }
+    return s / to_float(n)
+}
+
+fn arr_std(arr: auto, n: int, mean: float) -> float {
+    if n < 2 { return 0.0 }
+    let s = 0.0
+    let i = 0
+    while i < n {
+        let d = arr[i] - mean
+        s = s + d * d
+        i = i + 1
+    }
+    let v = s / to_float(n)
+    // Newton sqrt
+    if v < 1.0e-12 { return 0.0 }
+    let x = v
+    let j = 0
+    while j < 20 { x = 0.5 * (x + v / x); j = j + 1 }
+    return x
+}
+
+// z-score of the last `tail` values relative to the full window
+fn tail_pressure(arr: auto, n: int, tail: int) -> float {
+    if n < tail + 4 { return 0.0 }
+    let m = arr_mean(arr, n)
+    let sd = arr_std(arr, n, m)
+    if sd < 1.0e-9 { return 0.0 }
+    // mean of last `tail` ticks
+    let s = 0.0
+    let i = n - tail
+    while i < n { s = s + arr[i]; i = i + 1 }
+    let tail_m = s / to_float(tail)
+    let z = (tail_m - m) / sd
+    // clamp to [0, 1] — only positive pressure matters
+    if z < 0.0 { return 0.0 }
+    if z > 3.0 { return 1.0 }
+    return z / 3.0
+}
+
+// ── cascade pair parser ─────────────────────────────────────────────────
+// Format from config: "r>s:0.73,s>d:0.57,r>d:0.55,c>d:0.54"
+// Returns list of [src_idx, dst_idx, correlation_weight] triples
+// packed as a flat array: [src0, dst0, w0, src1, dst1, w1, ...]
+fn parse_pairs(spec: str) -> auto {
+    let parts = spec.split(",")
+    let out = []
+    let i = 0
+    while i < len(parts) {
+        let p = parts[i].trim()
+        // format: "r>s:0.73"
+        let colon = p.split(":")
+        if len(colon) >= 2 {
+            let pair_part = colon[0].trim()
+            let weight = 0.0
+            try { weight = to_float(colon[1].trim()) } catch e { weight = 0.5 }
+            let arrow = pair_part.split(">")
+            if len(arrow) >= 2 {
+                let src = axis_idx(arrow[0].trim())
+                let dst = axis_idx(arrow[1].trim())
+                if src >= 0 && dst >= 0 {
+                    out = out + [to_float(src), to_float(dst), weight]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ── cascade detection ───────────────────────────────────────────────────
+// For each pair (A→B):
+//   1. Check if A has elevated pressure in recent ticks
+//   2. Check if B's pressure rose AFTER A (within lag window)
+//   3. severity = correlation_weight * pressure_A * pressure_B
+//   4. Root cause = axis A if it triggered first
+fn detect_cascades(ring: auto, n: int, pairs: auto, lag: int, threshold: float, sev_floor: float) -> auto {
+    let n_pairs = len(pairs) / 3
+    let results = []
+    let tail = lag
+    if tail < 3 { tail = 3 }
+
+    let mut root_axis = -1
+    let mut root_severity = 0.0
+
+    let pi = 0
+    while pi < n_pairs {
+        let src_idx = to_int(pairs[pi * 3])
+        let dst_idx = to_int(pairs[pi * 3 + 1])
+        let corr_w  = pairs[pi * 3 + 2]
+
+        let src_arr = get_axis(ring, src_idx)
+        let dst_arr = get_axis(ring, dst_idx)
+
+        // Pressure of source in the early part of the tail window
+        let src_pressure = tail_pressure(src_arr, n, tail + lag)
+        // Pressure of destination in the late part (after lag)
+        let dst_pressure = tail_pressure(dst_arr, n, tail)
+
+        // Check temporal ordering: source should have risen before destination
+        // Compare mean of src in [n-tail-lag, n-tail] vs dst in [n-tail, n]
+        let src_early_sum = 0.0
+        let src_late_sum = 0.0
+        let dst_early_sum = 0.0
+        let dst_late_sum = 0.0
+        let valid = 0
+        if n >= tail + lag + 4 {
+            let j = n - tail - lag
+            while j < n - tail {
+                src_early_sum = src_early_sum + src_arr[j]
+                dst_early_sum = dst_early_sum + dst_arr[j]
+                j = j + 1
+            }
+            j = n - tail
+            while j < n {
+                src_late_sum = src_late_sum + src_arr[j]
+                dst_late_sum = dst_late_sum + dst_arr[j]
+                j = j + 1
+            }
+            valid = 1
+        }
+
+        let active = 0
+        let severity = 0.0
+        if valid == 1 {
+            let src_early_m = src_early_sum / to_float(lag)
+            let dst_late_m  = dst_late_sum / to_float(tail)
+            let src_m_full  = arr_mean(src_arr, n)
+            let dst_m_full  = arr_mean(dst_arr, n)
+
+            // Source was above its mean in the early window
+            let src_elevated = src_early_m - src_m_full
+            // Destination rose above its mean in the late window
+            let dst_elevated = dst_late_m - dst_m_full
+
+            if src_elevated > 0.0 && dst_elevated > 0.0 {
+                // Both elevated + temporal ordering holds
+                severity = corr_w * src_pressure * dst_pressure
+                if severity >= sev_floor {
+                    active = 1
+                }
+            }
+        }
+
+        // clamp severity
+        if severity > 1.0 { severity = 1.0 }
+        if severity < 0.0 { severity = 0.0 }
+
+        results = results + [to_float(src_idx), to_float(dst_idx), to_float(active), severity]
+
+        // track root cause: axis with highest pressure that is a cascade source
+        if active == 1 && src_pressure > root_severity {
+            root_severity = src_pressure
+            root_axis = src_idx
+        }
+
+        pi = pi + 1
+    }
+
+    return [results, [to_float(n_pairs)], [to_float(root_axis)], [root_severity]]
+}
+
+// ── fmt ─────────────────────────────────────────────────────────────────
+fn fmt4(x: float) -> str {
+    let y = x
+    let sign = ""
+    if y < 0.0 { sign = "-"; y = -y }
+    let whole = to_int(y)
+    let frac = to_int((y - to_float(whole)) * 10000.0)
+    let fs = to_string(frac)
+    while len(fs) < 4 { fs = "0" + fs }
+    return sign + to_string(whole) + "." + fs
+}
+
+// ── JSON report builder ─────────────────────────────────────────────────
+fn build_report_json(det: auto, n: int) -> str {
+    let results  = det[0]
+    let n_pairs  = to_int(det[1][0])
+    let root_idx = to_int(det[2][0])
+    let root_sev = det[3][0]
+
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let j = "{\"ts\":\"" + ts + "\",\"detector\":\"cascade_detector\",\"ring_n\":" + to_string(n)
+
+    // cascades array
+    j = j + ",\"cascades\":["
+    let active_count = 0
+    let pi = 0
+    while pi < n_pairs {
+        let src = to_int(results[pi * 4])
+        let dst = to_int(results[pi * 4 + 1])
+        let act = to_int(results[pi * 4 + 2])
+        let sev = results[pi * 4 + 3]
+
+        if pi > 0 { j = j + "," }
+        j = j + "{\"from\":\"" + axis_key(src) + "\",\"to\":\"" + axis_key(dst) + "\""
+        j = j + ",\"from_name\":\"" + axis_name(src) + "\",\"to_name\":\"" + axis_name(dst) + "\""
+        j = j + ",\"active\":" + to_string(act) + ",\"severity\":" + fmt4(sev) + "}"
+
+        if act == 1 { active_count = active_count + 1 }
+        pi = pi + 1
+    }
+    j = j + "]"
+
+    j = j + ",\"active_count\":" + to_string(active_count)
+    j = j + ",\"total_pairs\":" + to_string(n_pairs)
+
+    if root_idx >= 0 {
+        j = j + ",\"root_cause\":{\"axis\":\"" + axis_key(root_idx) + "\",\"name\":\"" + axis_name(root_idx) + "\",\"pressure\":" + fmt4(root_sev) + "}"
+    } else {
+        j = j + ",\"root_cause\":null"
+    }
+
+    j = j + "}"
+    return j
+}
+
+// ── pretty report ───────────────────────────────────────────────────────
+fn pretty_report(det: auto, n: int) {
+    let results  = det[0]
+    let n_pairs  = to_int(det[1][0])
+    let root_idx = to_int(det[2][0])
+    let root_sev = det[3][0]
+
+    println("╔══════════════════════════════════════════════╗")
+    println("║  cascade_detector v" + VERSION + " — pressure report  ║")
+    println("╚══════════════════════════════════════════════╝")
+    println("")
+    println("ring ticks: " + to_string(n))
+    println("")
+
+    let active_count = 0
+    let pi = 0
+    while pi < n_pairs {
+        let src = to_int(results[pi * 4])
+        let dst = to_int(results[pi * 4 + 1])
+        let act = to_int(results[pi * 4 + 2])
+        let sev = results[pi * 4 + 3]
+
+        let tag = "  "
+        if act == 1 { tag = ">>"; active_count = active_count + 1 }
+        let bar = ""
+        let bar_len = to_int(sev * 20.0)
+        let bi = 0
+        while bi < bar_len { bar = bar + "#"; bi = bi + 1 }
+        while bi < 20 { bar = bar + "."; bi = bi + 1 }
+
+        println(tag + " " + axis_name(src) + " -> " + axis_name(dst) + "  severity=" + fmt4(sev) + "  [" + bar + "]")
+        pi = pi + 1
+    }
+
+    println("")
+    if active_count == 0 {
+        println("status: no active cascades")
+    } else {
+        println("status: " + to_string(active_count) + " active cascade(s)")
+    }
+    if root_idx >= 0 {
+        println("root cause: " + axis_name(root_idx) + " (pressure=" + fmt4(root_sev) + ")")
+    } else {
+        println("root cause: none identified")
+    }
+}
+
+// ── CLI ─────────────────────────────────────────────────────────────────
+fn main() {
+    let window    = cfg_i("cascade_window", 32)
+    let lag       = cfg_i("cascade_lag", 3)
+    let threshold = cfg_f("cascade_threshold", 0.35)
+    let sev_floor = cfg_f("cascade_severity_floor", 0.1)
+    let state_path = load_cfg("cascade_state_path", "forge/vitals_ring.state")
+    let pair_spec  = load_cfg("cascade_pairs", "r>s:0.73,s>d:0.57,r>d:0.55,c>d:0.54")
+    let bus_path   = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    let pairs = parse_pairs(pair_spec)
+    let ring_data = load_ring(state_path, window)
+    let n = ring_data[7][0]
+
+    let argv = args()
+    let cmd = "detect"
+    if len(argv) > 2 { cmd = argv[2] }
+
+    if cmd == "detect" {
+        if n < 8 {
+            println("{\"detector\":\"cascade_detector\",\"status\":\"insufficient_data\",\"ring_n\":" + to_string(n) + "}")
+            return
+        }
+        let det = detect_cascades(ring_data, n, pairs, lag, threshold, sev_floor)
+        let report_json = build_report_json(det, n)
+        println(report_json)
+        // append to growth_bus
+        try { append_file(bus_path, report_json + "\n") } catch e {}
+        return
+    }
+
+    if cmd == "report" {
+        if n < 8 {
+            println("insufficient data in ring: " + to_string(n) + " ticks (need >= 8)")
+            return
+        }
+        let det = detect_cascades(ring_data, n, pairs, lag, threshold, sev_floor)
+        pretty_report(det, n)
+        // also emit JSON to growth_bus
+        let report_json = build_report_json(det, n)
+        try { append_file(bus_path, report_json + "\n") } catch e {}
+        return
+    }
+
+    println("cascade_detector v" + VERSION)
+    println("commands: detect | report")
+}
+
+main()

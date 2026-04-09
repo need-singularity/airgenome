@@ -1,0 +1,333 @@
+// airgenome/modules/ring_io.hexa — AG3 Genome Ring Buffer I/O (HEXA port of ring_io.py)
+//
+// Spec: docs/superpowers/specs/2026-04-09-genome-ring-format.md
+// Header 64B: magic "AG3R"(4) + version u16LE(2) + slot_size u16LE(2)
+//           + slot_count u32LE(4) + write_idx u32LE(4) + wrap_count u32LE(4) + 44x
+// Slot  128B: ts f64LE(8) + pid i32LE(4) + name_hash u32LE(4) + genome(60)
+//           + cluster_id i32LE(4) + flags u32LE(4) + 44x
+//
+// hexa 런타임에는 바이너리 I/O primitive 가 없음 → exec() 로 외부 툴 위임:
+//   read_header/stats/tail : 순수 `od -An -v -t u1` 바이트 덤프 → hexa 내부 LE 파싱
+//   init/append/probe      : python3 struct.pack one-liner (ag3_shipper 와 동일 패턴)
+//
+// 기본 대상은 원격 ubu 의 /mnt/ramdisk/airgenome/genome.ring (env AG3_RING).
+// --local 플래그로 Mac 로컬 파일도 대상 가능. --remote <alias> 로 ssh alias 지정.
+//
+// Usage:
+//   hexa run modules/ring_io.hexa stats
+//   hexa run modules/ring_io.hexa tail -n 5
+//   hexa run modules/ring_io.hexa probe
+//   hexa run modules/ring_io.hexa init
+//   hexa run modules/ring_io.hexa stats --local /tmp/test.ring
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let DEFAULT_PATH = "/mnt/ramdisk/airgenome/genome.ring"
+let HEADER_SIZE = 64
+let SLOT_SIZE = 128
+let SLOT_COUNT = 65536
+let MAGIC = "AG3R"
+
+// ── CONFIG ──────────────────────────────────────────────────────────────
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ── EXEC: 로컬/원격 명령 실행 ────────────────────────────────────────────
+fn run_at(remote: str, cmd: str) -> str {
+    if len(remote) == 0 { return exec(cmd) }
+    // ssh 경유. 인용 안전을 위해 single-quote wrap.
+    let esc = cmd.replace("'", "'\\''")
+    return exec("ssh " + remote + " '" + esc + "'")
+}
+
+fn file_exists_at(remote: str, path: str) -> bool {
+    if len(remote) == 0 { return file_exists(path) }
+    let out = run_at(remote, "test -f " + path + " && echo Y || echo N").trim()
+    return out == "Y"
+}
+
+// ── BYTE PARSE: od -t u1 → int list ─────────────────────────────────────
+// `od -An -v -t u1 -N <n> -j <off> <path>` 는 공백 구분 0-255 값 스트림 반환.
+fn dump_bytes(remote: str, path: str, off: int, n: int) -> auto {
+    // od → single-space separated bytes on one line
+    let cmd = "od -An -v -t u1 -N " + to_string(n) + " -j " + to_string(off) + " " + path + " | tr -s ' \\n' ' '"
+    let out = run_at(remote, cmd).trim()
+    let toks = out.split(" ")
+    let arr = []
+    let i = 0
+    while i < len(toks) {
+        let t = toks[i].trim()
+        if len(t) > 0 { arr = arr + [to_int(t)] }
+        i = i + 1
+    }
+    return arr
+}
+
+fn u16_le(b: auto, o: int) -> int {
+    return b[o] + b[o + 1] * 256
+}
+fn u32_le(b: auto, o: int) -> int {
+    return b[o] + b[o + 1] * 256 + b[o + 2] * 65536 + b[o + 3] * 16777216
+}
+fn i32_le(b: auto, o: int) -> int {
+    let v = u32_le(b, o)
+    if v >= 2147483648 { return v - 4294967296 }
+    return v
+}
+
+fn hex_byte(v: int) -> str {
+    let hx = "0123456789abcdef"
+    let hi = v / 16
+    let lo = v - hi * 16
+    return hx.substring(hi, hi + 1) + hx.substring(lo, lo + 1)
+}
+fn bytes_to_hex(b: auto, off: int, n: int) -> str {
+    let s = ""
+    let i = 0
+    while i < n {
+        s = s + hex_byte(b[off + i])
+        i = i + 1
+    }
+    return s
+}
+
+// ── PUBLIC: ring_path / read_header ─────────────────────────────────────
+fn ring_path() -> str {
+    let p = env("AG3_RING")
+    if len(p) == 0 { return DEFAULT_PATH }
+    return p
+}
+
+fn read_header(remote: str, path: str) -> auto {
+    let hdr = json_parse("{\"ok\":false,\"magic\":\"\",\"version\":0,\"slot_size\":0,\"slot_count\":0,\"write_idx\":0,\"wrap_count\":0,\"path\":\"\"}")
+    hdr["path"] = path
+    let b = dump_bytes(remote, path, 0, HEADER_SIZE)
+    if len(b) < HEADER_SIZE {
+        print("[ring_io] ERROR: header read short (" + to_string(len(b)) + "B)")
+        return hdr
+    }
+    let m0 = b[0]; let m1 = b[1]; let m2 = b[2]; let m3 = b[3]
+    if m0 != 65 || m1 != 71 || m2 != 51 || m3 != 82 {
+        print("[ring_io] ERROR: bad magic")
+        return hdr
+    }
+    hdr["ok"] = true
+    hdr["magic"] = "AG3R"
+    hdr["version"] = u16_le(b, 4)
+    hdr["slot_size"] = u16_le(b, 6)
+    hdr["slot_count"] = u32_le(b, 8)
+    hdr["write_idx"] = u32_le(b, 12)
+    hdr["wrap_count"] = u32_le(b, 16)
+    return hdr
+}
+
+// ── INIT: python3 one-liner (struct.pack + zero slots) ──────────────────
+fn init_ring(remote: str, path: str) -> str {
+    let dir = path
+    // parent dir
+    let slash = path.rfind("/")
+    if slash > 0 { dir = path.substring(0, slash) }
+    run_at(remote, "mkdir -p " + dir)
+    let py = "python3 -c 'import struct,os,sys; p=sys.argv[1]; "
+    py = py + "hdr=struct.pack(\"<4sHHIII44x\",b\"AG3R\",1,"
+    py = py + to_string(SLOT_SIZE) + "," + to_string(SLOT_COUNT) + ",0,0); "
+    py = py + "f=open(p,\"wb\"); f.write(hdr); f.write(b\"\\x00\"*("
+    py = py + to_string(SLOT_COUNT) + "*" + to_string(SLOT_SIZE) + ")); f.close(); "
+    py = py + "print(p)' " + path
+    let out = run_at(remote, py).trim()
+    return out
+}
+
+// ── APPEND: python3 one-liner ───────────────────────────────────────────
+// genome_hex: 60 bytes as 120 hex chars.
+fn append_genome(remote: str, path: str, pid: int, name: str, genome_hex: str, cluster_id: int, flags: int) -> bool {
+    if len(genome_hex) != 120 {
+        print("[ring_io] ERROR: genome_hex must be 120 chars, got " + to_string(len(genome_hex)))
+        return false
+    }
+    let py = "python3 -c 'import struct,os,sys,time,zlib; "
+    py = py + "p,pid,name,gh,cid,fl=sys.argv[1],int(sys.argv[2]),sys.argv[3],sys.argv[4],int(sys.argv[5]),int(sys.argv[6]); "
+    py = py + "g=bytes.fromhex(gh); assert len(g)==60; "
+    py = py + "HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"; "
+    py = py + "f=open(p,\"r+b\"); hdr=f.read(64); "
+    py = py + "_,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr); "
+    py = py + "idx=wi%sc; off=64+idx*ss; "
+    py = py + "nh=zlib.crc32(name.encode(\"utf-8\"))&0xffffffff; "
+    py = py + "f.seek(off); f.write(struct.pack(SLOT,time.time(),pid,nh,g,cid,fl)); "
+    py = py + "nwi=(wi+1)%sc; nwc=wc+(1 if nwi==0 else 0); "
+    py = py + "f.seek(0); f.write(struct.pack(HDR,b\"AG3R\",ver,ss,sc,nwi,nwc)); "
+    py = py + "f.flush(); os.fsync(f.fileno()); f.close(); print(\"ok\")' "
+    py = py + path + " " + to_string(pid) + " " + name + " " + genome_hex + " "
+    py = py + to_string(cluster_id) + " " + to_string(flags)
+    let out = run_at(remote, py).trim()
+    return out == "ok"
+}
+
+// ── ITER RECENT: od 로 각 슬롯 파싱 ─────────────────────────────────────
+fn parse_slot(b: auto) -> auto {
+    // ts f64LE(8) — hexa는 f64 파싱 primitive가 없어 python으로 위임하지 않고 raw hex만 보존.
+    let ts_hex = bytes_to_hex(b, 0, 8)
+    let pid = i32_le(b, 8)
+    let name_hash = u32_le(b, 12)
+    let genome = bytes_to_hex(b, 16, 60)
+    let cluster_id = i32_le(b, 76)
+    let flags = u32_le(b, 80)
+    let r = json_parse("{\"ts_hex\":\"\",\"pid\":0,\"name_hash\":0,\"genome\":\"\",\"cluster_id\":0,\"flags\":0}")
+    r["ts_hex"] = ts_hex
+    r["pid"] = pid
+    r["name_hash"] = name_hash
+    r["genome"] = genome
+    r["cluster_id"] = cluster_id
+    r["flags"] = flags
+    return r
+}
+
+fn iter_recent(remote: str, path: str, n: int) -> auto {
+    let h = read_header(remote, path)
+    if h["ok"] == false { return [] }
+    let sc = h["slot_count"]
+    let ss = h["slot_size"]
+    let wi = h["write_idx"]
+    let wc = h["wrap_count"]
+    let total = wc * sc + wi
+    let count = n
+    if total < count { count = total }
+    let out = []
+    let k = 0
+    while k < count {
+        let idx = ((wi - 1 - k) % sc + sc) % sc
+        let off = HEADER_SIZE + idx * ss
+        let b = dump_bytes(remote, path, off, ss)
+        if len(b) >= ss {
+            out = out + [parse_slot(b)]
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// ── CLI ─────────────────────────────────────────────────────────────────
+fn parse_flags(argv: auto) -> auto {
+    // returns { cmd, n, remote, path }
+    let cmd = ""
+    let n = 10
+    let remote = load_cfg("ssh_alias", "ubu")
+    let path = ring_path()
+    let argc = len(argv)
+    // find cmd keyword anywhere in argv
+    let cmd_idx = -1
+    let ci = 0
+    while ci < argc {
+        let a = argv[ci]
+        if a == "init" || a == "stats" || a == "tail" || a == "head" || a == "probe" {
+            cmd = a
+            cmd_idx = ci
+        }
+        ci = ci + 1
+    }
+    let i = cmd_idx + 1
+    while i < argc {
+        let a = argv[i]
+        if a == "-n" {
+            i = i + 1
+            if i < len(argv) { n = to_int(argv[i]) }
+        } else if a == "--path" {
+            i = i + 1
+            if i < len(argv) { path = argv[i] }
+        } else if a == "--remote" {
+            i = i + 1
+            if i < len(argv) { remote = argv[i] }
+        } else if a == "--local" {
+            remote = ""
+            // optional positional path after --local
+            if i + 1 < len(argv) {
+                let nxt = argv[i + 1]
+                if nxt.substring(0, 1) != "-" {
+                    path = nxt
+                    i = i + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    let r = json_parse("{\"cmd\":\"\",\"n\":0,\"remote\":\"\",\"path\":\"\"}")
+    r["cmd"] = cmd
+    r["n"] = n
+    r["remote"] = remote
+    r["path"] = path
+    return r
+}
+
+fn print_usage() {
+    println("ring_io v" + VERSION + " — AG3 genome ring I/O (HEXA)")
+    println("Usage: hexa run modules/ring_io.hexa <cmd> [opts]")
+    println("  cmd: init | stats | tail | probe")
+    println("  opts: -n N  --path P  --remote ALIAS  --local [P]")
+    println("  default remote: " + load_cfg("ssh_alias", "ubu"))
+    println("  default path:   " + ring_path())
+}
+
+fn cmd_stats(remote: str, path: str) {
+    if file_exists_at(remote, path) == false {
+        print("[ring_io] ERROR: not found: " + path + " (remote='" + remote + "')")
+        return
+    }
+    let h = read_header(remote, path)
+    if h["ok"] == false { return }
+    println(json_stringify(h))
+}
+
+fn cmd_tail(remote: str, path: str, n: int) {
+    let rows = iter_recent(remote, path, n)
+    let i = 0
+    while i < len(rows) {
+        println(json_stringify(rows[i]))
+        i = i + 1
+    }
+}
+
+fn cmd_probe(remote: str, path: str) {
+    // 60 bytes 0..59 → 120 hex chars
+    let hx = ""
+    let i = 0
+    while i < 60 {
+        hx = hx + hex_byte(i)
+        i = i + 1
+    }
+    let ok = append_genome(remote, path, 999999, "probe_test", hx, -1, 0)
+    if ok { println("appended probe genome") }
+    else { println("probe FAILED") }
+}
+
+fn cmd_init(remote: str, path: str) {
+    let p = init_ring(remote, path)
+    println("initialized " + p)
+}
+
+fn main() {
+    let argv = args()
+    let f = parse_flags(argv)
+    let cmd = f["cmd"]
+    if len(cmd) == 0 { print_usage(); return }
+    if cmd == "stats" { cmd_stats(f["remote"], f["path"]); return }
+    if cmd == "tail" || cmd == "head" { cmd_tail(f["remote"], f["path"], f["n"]); return }
+    if cmd == "probe" { cmd_probe(f["remote"], f["path"]); return }
+    if cmd == "init" { cmd_init(f["remote"], f["path"]); return }
+    println("[ring_io] unknown cmd: " + cmd)
+    print_usage()
+}
+
+main()

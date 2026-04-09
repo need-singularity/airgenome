@@ -1,0 +1,537 @@
+// linux_harvest.hexa — Linux /proc 기반 6축 게놈 수집기 (Ubuntu 네이티브, pure HEXA)
+//
+// Python linux_harvest.py 418행 → HEXA 포팅. HEXA-FIRST: Python 의존성 없음.
+// 바이너리 ring I/O 만 python3 one-liner 위임 (hexa 런타임 제약, ring_io.hexa 동일 패턴).
+//
+// 6축: CPU / RAM / Swap / Net / Disk / GPU
+//   CPU:  /proc/<pid>/stat  (utime + stime)
+//   RAM:  /proc/<pid>/stat  (rss pages × page_size)
+//   Swap: /proc/<pid>/status (VmSwap)
+//   Disk: /proc/<pid>/io    (read_bytes + write_bytes)
+//   Net:  /proc/net/dev     (system-wide rx+tx delta, cpu비중 배분)
+//   GPU:  nvidia-smi        (per-process GPU memory, 없으면 proxy)
+//
+// 출력: 120 hex char = 60 bytes genome (15쌍 × 4바이트, Mac genome_harvest.hexa 호환)
+//
+// Usage:
+//   hexa ubu_workers/linux_harvest.hexa once              # 1회 배치
+//   hexa ubu_workers/linux_harvest.hexa loop              # 연속 수집
+//   hexa ubu_workers/linux_harvest.hexa status            # 현재 통계
+//   hexa ubu_workers/linux_harvest.hexa once --ring-only  # ring_io만 기록
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOAD — nexus/shared/*.jsonl (하드코딩 금지)
+// ═══════════════════════════════════════════════════════════════════════
+
+let BASE_DIR = env("AG3_BASE")
+let BASE = if len(BASE_DIR) > 0 { BASE_DIR } else { env("HOME") + "/airgenome" }
+
+let HARVEST_CFG = env("AG3_CONFIG")
+let CFG_PATH = if len(HARVEST_CFG) > 0 { HARVEST_CFG } else { BASE + "/nexus/shared/genome_harvest.jsonl" }
+let GATE_CFG = BASE + "/nexus/shared/gate_config.jsonl"
+
+fn load_jsonl_map(path: str) -> auto {
+    let m = json_parse("{}")
+    if file_exists(path) == false { return m }
+    let content = read_file(path)
+    let lines = content.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                m[parsed["key"]] = parsed["value"]
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return m
+}
+
+fn load_all_cfg() -> auto {
+    let m = load_jsonl_map(CFG_PATH)
+    let g = load_jsonl_map(GATE_CFG)
+    // merge gate_config into m (harvest config takes precedence)
+    // hexa has no keys() — re-parse gate_config and set only missing keys
+    if file_exists(GATE_CFG) {
+        let content = read_file(GATE_CFG)
+        let lines = content.split("\n")
+        let mut i = 0
+        while i < len(lines) {
+            let line = lines[i].trim()
+            if len(line) > 2 {
+                try {
+                    let parsed = json_parse(line)
+                    let k = parsed["key"]
+                    // only set if not already in m
+                    try { let _ = m[k] } catch e { m[k] = parsed["value"] }
+                } catch e2 {}
+            }
+            i = i + 1
+        }
+    }
+    return m
+}
+
+fn cfg_int(cfg: auto, key: str, default_val: int) -> int {
+    try {
+        let v = cfg[key]
+        return to_int(to_float(to_string(v)))
+    } catch e { return default_val }
+}
+
+fn cfg_str(cfg: auto, key: str, default_val: str) -> str {
+    try {
+        let v = to_string(cfg[key])
+        if len(v) > 0 { return v }
+        return default_val
+    } catch e { return default_val }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYSTEM-WIDE SNAPSHOTS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_total_ram_kb() -> int {
+    let out = exec("awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null").trim()
+    try { return to_int(to_float(out)) } catch e {}
+    return 16777216  // fallback 16GB
+}
+
+fn read_net_totals() -> int {
+    // Sum rx_bytes + tx_bytes across all non-lo interfaces
+    let out = exec("awk 'NR>2 && $1!~\"lo:\" {split($1,a,\":\"); rx+=($2+0); tx+=($10+0)} END{print rx+tx+0}' /proc/net/dev 2>/dev/null").trim()
+    try { return to_int(to_float(out)) } catch e {}
+    return 0
+}
+
+fn read_gpu_pid_map() -> auto {
+    // nvidia-smi per-process GPU memory (MB). Returns map {pid_str: mem_mb}.
+    let result = json_parse("{}")
+    let out = exec("nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits 2>/dev/null").trim()
+    if len(out) == 0 { return result }
+    let lines = out.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = line.split(",")
+            if len(parts) >= 2 {
+                let pid_s = parts[0].trim()
+                let mem_s = parts[1].trim()
+                try { result[pid_s] = to_int(to_float(mem_s)) } catch e {}
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PER-PROCESS /proc READING
+// ═══════════════════════════════════════════════════════════════════════
+
+// Parse /proc/<pid>/stat — returns "utime,stime,rss_pages,nice,ppid,comm" or ""
+fn read_proc_stat(pid: str) -> str {
+    let data = exec("cat /proc/" + pid + "/stat 2>/dev/null").trim()
+    if len(data) == 0 { return "" }
+    // comm is inside parens; parse with awk to handle spaces in comm
+    // Extract fields after last ')': state ppid pgrp session tty_nr tpgid flags
+    //   ... utime(14) stime(15) ... nice(19) ... rss(24) from man proc
+    // Using awk: after last ')' split → fields[1]=state [2]=ppid [12]=utime [13]=stime [17]=nice [22]=rss
+    let parsed = exec("cat /proc/" + pid + "/stat 2>/dev/null | sed 's/.*) //' | awk '{print $12\",\"$13\",\"$22\",\"$17\",\"$2}'").trim()
+    if len(parsed) == 0 { return "" }
+    // extract comm from between parens
+    let comm = exec("cat /proc/" + pid + "/stat 2>/dev/null | sed 's/^[0-9]* (//;s/) .*//'").trim()
+    return parsed + "," + comm
+}
+
+fn read_proc_io(pid: str) -> str {
+    // Returns "read_bytes,write_bytes" or ""
+    let out = exec("awk '/^read_bytes:/{rb=$2} /^write_bytes:/{wb=$2} END{if(rb+0>0||wb+0>0) print rb+0\",\"wb+0}' /proc/" + pid + "/io 2>/dev/null").trim()
+    return out
+}
+
+fn read_proc_swap_kb(pid: str) -> int {
+    let out = exec("awk '/VmSwap/{print $2+0}' /proc/" + pid + "/status 2>/dev/null").trim()
+    try { return to_int(to_float(out)) } catch e {}
+    return 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  6-AXIS ENCODING — log2_x16 (bit-ladder, no floating-point log)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn log2_x16(v: int) -> int {
+    if v <= 1 { return 0 }
+    let mut hi = 0
+    let mut pw = 1
+    while pw * 2 <= v && hi < 30 { pw = pw * 2; hi = hi + 1 }
+    // Fractional part: linear interp between pw and 2*pw
+    let mut frac16 = 0
+    if pw >= 16 {
+        frac16 = (v - pw) / (pw / 16)
+    } else {
+        frac16 = (v - pw) * 16 / pw
+    }
+    return hi * 16 + frac16
+}
+
+fn log2_x16_clip(v: int) -> int {
+    let o = log2_x16(v)
+    if o > 255 { return 255 }
+    if o < 0 { return 0 }
+    return o
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CPU TOTAL TICKS (for net proportioning)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cpu_total_ticks_all() -> int {
+    // Sum utime+stime across all /proc/*/stat — bulk awk for speed
+    let out = exec("cat /proc/[0-9]*/stat 2>/dev/null | sed 's/.*) //' | awk '{s+=$12+$13} END{print s+0}'").trim()
+    try {
+        let v = to_int(to_float(out))
+        if v > 0 { return v }
+    } catch e {}
+    return 1
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SAMPLE ONE PROCESS → 6-AXIS VALUES
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sample_proc_6axis(pid: str, gpu_map: auto, net_total: int, cpu_total: int) -> str {
+    // Returns "cpu_v,ram_v,swp_v,net_v,dsk_v,gpu_v,comm" or ""
+    let stat_csv = read_proc_stat(pid)
+    if len(stat_csv) == 0 { return "" }
+
+    // stat_csv = "utime,stime,rss_pages,nice,ppid,comm"
+    let parts = stat_csv.split(",")
+    if len(parts) < 6 { return "" }
+
+    let mut utime = 0
+    let mut stime = 0
+    let mut rss_pages = 0
+    let mut nice_val = 0
+    let mut ppid = 0
+    try { utime = to_int(to_float(parts[0].trim())) } catch e {}
+    try { stime = to_int(to_float(parts[1].trim())) } catch e {}
+    try { rss_pages = to_int(to_float(parts[2].trim())) } catch e {}
+    try { nice_val = to_int(to_float(parts[3].trim())) } catch e {}
+    try { ppid = to_int(to_float(parts[4].trim())) } catch e {}
+    let comm = parts[5].trim()
+
+    // PAGE_SIZE typically 4096 on Linux
+    let page_size = 4096
+    let rss_kb = rss_pages * page_size / 1024
+    if rss_kb == 0 { return "" }
+
+    let cpu_ticks = utime + stime
+
+    // CPU: log2_x16(cpu_ticks + 1)
+    let cpu_v = log2_x16_clip(cpu_ticks + 1)
+
+    // RAM: log2_x16(rss_kb) with floor subtraction for spread
+    let ram_raw = log2_x16_clip(rss_kb)
+    let ram_floor = 128
+    let mut ram_v = 0
+    if ram_raw > ram_floor {
+        ram_v = (ram_raw - ram_floor) * 255 / (255 - ram_floor)
+    }
+    if ram_v > 255 { ram_v = 255 }
+
+    // SWAP: real VmSwap from /proc/<pid>/status
+    let swap_kb = read_proc_swap_kb(pid)
+    let swp_v = log2_x16_clip(swap_kb + 1)
+
+    // NET: cpu-proportional share of system net bytes
+    let mut net_v = 0
+    if cpu_total > 0 && net_total > 0 {
+        // share = (cpu_ticks / cpu_total) * net_total → avoid overflow
+        let share = (cpu_ticks * (net_total / 1024)) / (cpu_total + 1)
+        net_v = log2_x16_clip(share + 1)
+    } else {
+        net_v = (nice_val + 20) * 6
+        if net_v < 0 { net_v = 0 }
+        if net_v > 255 { net_v = 255 }
+    }
+
+    // DISK: real I/O bytes from /proc/<pid>/io
+    let mut dsk_v = 0
+    let io_csv = read_proc_io(pid)
+    if len(io_csv) > 0 {
+        let io_parts = io_csv.split(",")
+        let mut rb = 0
+        let mut wb = 0
+        try { rb = to_int(to_float(io_parts[0].trim())) } catch e {}
+        try { wb = to_int(to_float(io_parts[1].trim())) } catch e {}
+        dsk_v = log2_x16_clip(rb + wb + 1)
+    } else {
+        // fallback: pid hash
+        let pid_i = to_int(to_float(pid))
+        dsk_v = ((pid_i * 2654435761) / 64) % 64
+        if dsk_v < 0 { dsk_v = dsk_v + 64 }
+    }
+
+    // GPU: real nvidia-smi per-process memory
+    let mut gpu_v = 0
+    try {
+        let gpu_mb = gpu_map[pid]
+        if gpu_mb > 0 {
+            gpu_v = log2_x16_clip(gpu_mb * 1024 + 1)
+        } else {
+            let gpu_combo = cpu_ticks * 256 + (nice_val + 20)
+            gpu_v = log2_x16_clip(gpu_combo + 1)
+        }
+    } catch e {
+        // pid not in gpu_map → proxy
+        let gpu_combo = cpu_ticks * 256 + (nice_val + 20)
+        gpu_v = log2_x16_clip(gpu_combo + 1)
+    }
+
+    return to_string(cpu_v) + "," + to_string(ram_v) + "," + to_string(swp_v) + "," + to_string(net_v) + "," + to_string(dsk_v) + "," + to_string(gpu_v) + "," + comm
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GENOME ENCODING — 15 pairs × 4 bytes = 60 bytes → 120 hex
+// ═══════════════════════════════════════════════════════════════════════
+
+fn hex_byte(v: int) -> str {
+    let hx = "0123456789abcdef"
+    let hi = v / 16
+    let lo = v - hi * 16
+    return hx.substring(hi, hi + 1) + hx.substring(lo, lo + 1)
+}
+
+fn encode_genome(axes_csv: str) -> str {
+    let parts = axes_csv.split(",")
+    if len(parts) < 6 { return "" }
+    let mut a = [0, 0, 0, 0, 0, 0]
+    let mut i = 0
+    while i < 6 {
+        try { a[i] = to_int(to_float(parts[i])) & 255 } catch e {}
+        i = i + 1
+    }
+
+    let mut hex = ""
+    let mut x = 0
+    while x < 6 {
+        let mut y = x + 1
+        while y < 6 {
+            let r = (x + y) % 8
+            let xor_v = (a[x] ^ a[y]) & 255
+            // rotate-left r bits: pow2 table (hexa has no <<)
+            let mut pow_r = 1
+            let mut k = 0
+            while k < r { pow_r = pow_r * 2; k = k + 1 }
+            let mut pow_8r = 1
+            let mut k2 = 0
+            while k2 < (8 - r) { pow_8r = pow_8r * 2; k2 = k2 + 1 }
+            let hi = (xor_v * pow_r) & 255
+            let lo = xor_v / pow_8r
+            let rot = (hi + lo) & 255
+            hex = hex + hex_byte(a[x] & 255) + hex_byte(a[y] & 255) + hex_byte(xor_v) + hex_byte(rot)
+            y = y + 1
+        }
+        x = x + 1
+    }
+    return hex  // 15 pairs × 8 hex chars = 120
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RING I/O APPEND — python3 one-liner (binary struct.pack, ring_io.hexa 패턴)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ring_append(ring_path: str, pid: str, comm: str, genome_hex: str) -> bool {
+    if len(genome_hex) != 120 { return false }
+    if file_exists(ring_path) == false { return false }
+    let safe_comm = comm.replace("'", "").replace("\"", "").replace(" ", "_")
+    let py = "python3 -c 'import struct,os,sys,time,zlib; p,pid,name,gh=sys.argv[1],int(sys.argv[2]),sys.argv[3],sys.argv[4]; g=bytes.fromhex(gh); assert len(g)==60; HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"; f=open(p,\"r+b\"); hdr=f.read(64); _,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr); idx=wi%sc; off=64+idx*ss; nh=zlib.crc32(name.encode(\"utf-8\"))&0xffffffff; f.seek(off); f.write(struct.pack(SLOT,time.time(),pid,nh,g,0,0)); nwi=(wi+1)%sc; nwc=wc+(1 if nwi==0 else 0); f.seek(0); f.write(struct.pack(HDR,b\"AG3R\",ver,ss,sc,nwi,nwc)); f.flush(); os.fsync(f.fileno()); f.close(); print(\"ok\")' " + ring_path + " " + pid + " " + safe_comm + " " + genome_hex
+    let out = exec(py + " 2>/dev/null").trim()
+    return out == "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LCG PRNG — Fisher-Yates shuffle (kills τ=N self-revisit MI artifact)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn lcg_next(state: int) -> int {
+    return (state * 1103515245 + 12345) & 2147483647
+}
+
+fn shuffle_pids(pids: auto) -> auto {
+    let seed_s = exec("date +%s").trim()
+    let mut st = 1
+    try { st = to_int(to_float(seed_s)) & 2147483647 } catch e {}
+    if st <= 0 { st = 1 }
+    let n = len(pids)
+    let mut i = n - 1
+    while i > 0 {
+        st = lcg_next(st)
+        let j = st % (i + 1)
+        let tmp = pids[i]
+        pids[i] = pids[j]
+        pids[j] = tmp
+        i = i - 1
+    }
+    return pids
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HARVEST BATCH
+// ═══════════════════════════════════════════════════════════════════════
+
+fn count_existing(out_dir: str) -> int {
+    let c = exec("ls " + out_dir + "/*.genome 2>/dev/null | wc -l").trim()
+    try { return to_int(to_float(c)) } catch e { return 0 }
+}
+
+fn harvest_batch(cfg: auto, out_dir: str, index_file: str, batch_size: int, min_pid: int, ring_only: bool, ring_path: str) -> int {
+    let gpu_map = read_gpu_pid_map()
+    let net_total = read_net_totals()
+    let cpu_total = cpu_total_ticks_all()
+
+    // List PIDs from /proc
+    let raw = exec("ls /proc 2>/dev/null | grep -E '^[0-9]+$' | awk '$1>" + to_string(min_pid) + "'").trim()
+    if len(raw) == 0 { return 0 }
+    let mut pids = raw.split("\n")
+
+    // Shuffle if configured
+    let do_shuffle = cfg_int(cfg, "pid_shuffle", 1)
+    if do_shuffle != 0 {
+        pids = shuffle_pids(pids)
+    }
+
+    if ring_only == false {
+        exec("mkdir -p " + out_dir)
+    }
+
+    let mut added = 0
+    let mut i = 0
+    while i < len(pids) && added < batch_size {
+        let pid = pids[i].trim()
+        if len(pid) > 0 {
+            try {
+                let result = sample_proc_6axis(pid, gpu_map, net_total, cpu_total)
+                if len(result) > 0 {
+                    // result = "cpu_v,ram_v,swp_v,net_v,dsk_v,gpu_v,comm"
+                    let rparts = result.split(",")
+                    if len(rparts) >= 7 {
+                        let axes_csv = rparts[0] + "," + rparts[1] + "," + rparts[2] + "," + rparts[3] + "," + rparts[4] + "," + rparts[5]
+                        let comm = rparts[6]
+                        let genome_hex = encode_genome(axes_csv)
+
+                        if len(genome_hex) == 120 {
+                            let ts = exec("date +%s%N 2>/dev/null || date +%s").trim()
+
+                            // ring_io append
+                            if len(ring_path) > 0 {
+                                ring_append(ring_path, pid, comm, genome_hex)
+                            }
+
+                            // file-based output
+                            if ring_only == false {
+                                let fname = out_dir + "/" + ts + "_" + pid + ".genome"
+                                try { write_file(fname, genome_hex) } catch e {}
+
+                                let safe_comm = comm.replace("\"", "").replace("\\", "")
+                                let idx_line = "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm + "\",\"axes\":\"" + axes_csv + "\",\"file\":\"" + fname + "\",\"encoding_ver\":2,\"platform\":\"linux\"}\n"
+                                try { append_file(index_file, idx_line) } catch e {}
+                            }
+
+                            added = added + 1
+                        }
+                    }
+                }
+            } catch proc_err {
+                // PID vanished mid-sample — skip silently
+            }
+        }
+        i = i + 1
+    }
+    return added
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN — consciousness entry point
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness LinuxHarvest {
+    let cfg = load_all_cfg()
+
+    let target     = cfg_int(cfg, "target_count", 9999)
+    let batch_size = cfg_int(cfg, "batch_size", 100)
+    let sleep_sec  = cfg_int(cfg, "sleep_between_batches_sec", 2)
+    let out_dir_r  = cfg_str(cfg, "output_dir", "forge/genomes")
+    let idx_file_r = cfg_str(cfg, "index_file", "forge/genomes.index.jsonl")
+    let min_pid    = cfg_int(cfg, "min_pid", 100)
+
+    // Resolve relative paths to absolute
+    let mut out_dir = out_dir_r
+    if out_dir.substring(0, 1) != "/" { out_dir = BASE + "/" + out_dir }
+    let mut index_file = idx_file_r
+    if index_file.substring(0, 1) != "/" { index_file = BASE + "/" + index_file }
+
+    // Ring path
+    let ring_env = env("AG3_RING")
+    let ring_path = if len(ring_env) > 0 { ring_env } else { cfg_str(cfg, "ubu_tmpfs", "/mnt/ramdisk/airgenome") + "/genome.ring" }
+
+    // Parse CLI args
+    let argv = args()
+    let mut mode = "once"
+    let mut ring_only = false
+    let mut ai = 0
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v == "loop" { mode = "loop" }
+        if v == "once" { mode = "once" }
+        if v == "status" { mode = "status" }
+        if v == "--ring-only" { ring_only = true }
+        ai = ai + 1
+    }
+
+    println("  linux_harvest -- target=" + to_string(target) + " batch=" + to_string(batch_size) + " mode=" + mode + " ring_only=" + to_string(ring_only))
+    println("  out_dir=" + out_dir)
+    if len(ring_path) > 0 { println("  ring_path=" + ring_path) }
+
+    // STATUS mode
+    if mode == "status" {
+        let have = count_existing(out_dir)
+        println("  existing: " + to_string(have) + "  remaining: " + to_string(target - have))
+        exit(0)
+    }
+
+    let mut have = 0
+    if ring_only == false { have = count_existing(out_dir) }
+    println("  existing: " + to_string(have))
+
+    let mut loops = 0
+    let max_loops = if mode == "once" { 1 } else { 999999999 }
+    let mut done = false
+
+    while done == false && loops < max_loops {
+        if ring_only == false && have >= target {
+            println("  reached target (" + to_string(have) + " >= " + to_string(target) + ")")
+            done = true
+        }
+
+        if done == false {
+            let added = harvest_batch(cfg, out_dir, index_file, batch_size, min_pid, ring_only, ring_path)
+            if ring_only {
+                have = have + added
+            } else {
+                have = count_existing(out_dir)
+            }
+            println("  batch+" + to_string(added) + " total=" + to_string(have))
+
+            loops = loops + 1
+            if mode == "once" { done = true }
+            if done == false { exec("sleep " + to_string(sleep_sec)) }
+        }
+    }
+
+    println("  done. genomes=" + to_string(have))
+}

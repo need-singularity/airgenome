@@ -1,0 +1,233 @@
+// airgenome/ubu_workers/gpu_gate_mesh.hexa — AG3 6축 게이트 메쉬 (HEXA port)
+//
+// Pure hexa port of gpu_gate_mesh.py. No Python/torch dependency.
+// Input:  --jsonl mode (default): stdin or file, each line = JSON array of 6 floats
+// Output: stdout JSONL {"idx", "genome", "gates"[15]}
+//
+// 15 axis pairs: 6-choose-2 = (0,1)(0,2)...(4,5)
+// Gate value: xn[I] * xn[J]  where xn = x / ||x||
+// Genome: 15 x float32 big-endian = 60 bytes -> hex string (120 chars)
+//
+// Usage:
+//   hexa run ubu_workers/gpu_gate_mesh.hexa --device cpu --chunk 4096
+//   echo '[1,2,3,4,5,6]' | hexa run ubu_workers/gpu_gate_mesh.hexa
+//   hexa run ubu_workers/gpu_gate_mesh.hexa --input data.jsonl
+//   hexa run ubu_workers/gpu_gate_mesh.hexa --vram-report
+
+let VERSION = "0.1.0"
+
+// ── 15 AXIS PAIRS: C(6,2) combinations ─────────────────────────────────
+// These are the mathematical 6-choose-2 index pairs, not domain constants.
+let PAIR_I = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 4]
+let PAIR_J = [1, 2, 3, 4, 5, 2, 3, 4, 5, 3, 4, 5, 4, 5, 5]
+let NUM_PAIRS = 15
+let NUM_AXES  = 6
+
+// ── CLI ARG PARSING ────────────────────────────────────────────────────
+fn parse_args() -> auto {
+    let argv = args()
+    let device = "cpu"
+    let chunk = 65536
+    let vram_report = false
+    let input_path = ""
+    let i = 0
+    while i < len(argv) {
+        let a = argv[i]
+        if a == "--device" {
+            i = i + 1
+            if i < len(argv) { device = argv[i] }
+        } else if a == "--chunk" {
+            i = i + 1
+            if i < len(argv) { chunk = to_int(argv[i]) }
+        } else if a == "--vram-report" {
+            vram_report = true
+        } else if a == "--input" {
+            i = i + 1
+            if i < len(argv) { input_path = argv[i] }
+        } else if a == "--help" || a == "-h" {
+            print_usage()
+            exit(0)
+        }
+        i = i + 1
+    }
+    let r = json_parse("{\"device\":\"\",\"chunk\":0,\"vram_report\":false,\"input\":\"\"}")
+    r["device"] = device
+    r["chunk"] = chunk
+    r["vram_report"] = vram_report
+    r["input"] = input_path
+    return r
+}
+
+fn print_usage() {
+    println("gpu_gate_mesh v" + VERSION + " — AG3 6-axis gate mesh (HEXA)")
+    println("Usage: hexa run ubu_workers/gpu_gate_mesh.hexa [opts]")
+    println("  --device cpu|cuda   (default: cpu, cuda = future WGSL offload)")
+    println("  --chunk  N          (default: 65536)")
+    println("  --vram-report       print peak memory to stderr")
+    println("  --input  FILE       JSONL input file (default: stdin)")
+    println("")
+    println("Input format (JSONL): each line is a JSON array of 6 floats")
+    println("  e.g. [0.5, 1.2, 0.3, 4.1, 2.0, 0.7]")
+    println("Output: JSONL {\"idx\", \"genome\", \"gates\"[15]}")
+}
+
+// ── INPUT LOADING ──────────────────────────────────────────────────────
+// Returns list of rows, each row = list of 6 floats
+fn load_input(input_path: str) -> auto {
+    let content = ""
+    if len(input_path) > 0 {
+        content = read_file(input_path)
+    } else {
+        // Read from stdin via exec
+        content = exec("cat /dev/stdin")
+    }
+    let lines = content.split("\n")
+    let rows = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 1 {
+            let row = json_parse(line)
+            if len(row) == NUM_AXES {
+                rows = rows + [row]
+            }
+        }
+        i = i + 1
+    }
+    return rows
+}
+
+// ── MATH HELPERS ───────────────────────────────────────────────────────
+fn sqrt_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    let mut i = 0
+    while i < 20 { g = 0.5 * (g + x / g); i = i + 1 }
+    return g
+}
+
+fn vec_norm(row: auto) -> float {
+    let sum = 0.0
+    let i = 0
+    while i < NUM_AXES {
+        sum = sum + to_float(row[i]) * to_float(row[i])
+        i = i + 1
+    }
+    return sqrt_approx(sum)
+}
+
+// ── FLOAT32 BIG-ENDIAN HEX ENCODING ───────────────────────────────────
+// IEEE 754 float32 -> 4 bytes big-endian -> 8 hex chars
+// Uses exec() with python3 struct.pack for correctness (same as ring_io.hexa pattern)
+fn float32_be_hex_batch(vals: auto) -> str {
+    // Build a python one-liner that packs all floats at once
+    let py = "python3 -c 'import struct,sys; vs=["
+    let i = 0
+    while i < len(vals) {
+        if i > 0 { py = py + "," }
+        py = py + to_string(vals[i])
+        i = i + 1
+    }
+    py = py + "]; print(\"\".join(struct.pack(\">f\",v).hex() for v in vs))'"
+    return exec(py).trim()
+}
+
+// ── GATE COMPUTATION ───────────────────────────────────────────────────
+// For a single row: normalize, then compute 15 gate values
+fn compute_gates_row(row: auto) -> auto {
+    let norm = vec_norm(row)
+    if norm < 1e-9 { norm = 1e-9 }
+    // Normalized values
+    let xn = []
+    let i = 0
+    while i < NUM_AXES {
+        xn = xn + [to_float(row[i]) / norm]
+        i = i + 1
+    }
+    // Gate values: xn[I] * xn[J] for each pair
+    let gates = []
+    let p = 0
+    while p < NUM_PAIRS {
+        let gi = PAIR_I[p]
+        let gj = PAIR_J[p]
+        gates = gates + [xn[gi] * xn[gj]]
+        p = p + 1
+    }
+    return gates
+}
+
+// ── EMIT: write JSONL rows ─────────────────────────────────────────────
+fn emit_chunk(rows: auto, offset: int) {
+    // Collect all gate values for batch hex encoding
+    let all_gates = []
+    let row_gates = []
+    let r = 0
+    while r < len(rows) {
+        let gates = compute_gates_row(rows[r])
+        row_gates = row_gates + [gates]
+        let p = 0
+        while p < NUM_PAIRS {
+            all_gates = all_gates + [gates[p]]
+            p = p + 1
+        }
+        r = r + 1
+    }
+    // Batch encode all floats to hex
+    let all_hex = ""
+    if len(all_gates) > 0 {
+        all_hex = float32_be_hex_batch(all_gates)
+    }
+    // Each float32 = 8 hex chars, each genome = 15 * 8 = 120 hex chars
+    let hex_per_float = 8
+    let hex_per_genome = NUM_PAIRS * hex_per_float
+    r = 0
+    while r < len(rows) {
+        let genome_start = r * hex_per_genome
+        let genome = all_hex.substring(genome_start, genome_start + hex_per_genome)
+        let gates = row_gates[r]
+        let out = json_parse("{\"idx\":0,\"genome\":\"\",\"gates\":[]}")
+        out["idx"] = offset + r
+        out["genome"] = genome
+        out["gates"] = gates
+        println(json_stringify(out))
+        r = r + 1
+    }
+}
+
+// ── MAIN ───────────────────────────────────────────────────────────────
+fn main() {
+    let opts = parse_args()
+    let rows = load_input(opts["input"])
+    let n = len(rows)
+    if n == 0 {
+        eprintln("[gpu_gate_mesh] empty input")
+        return
+    }
+    let chunk = opts["chunk"]
+    let device = opts["device"]
+
+    if device == "cuda" {
+        eprintln("[gpu_gate_mesh] WGSL GPU offload not yet wired; running on CPU")
+    }
+
+    let start = 0
+    while start < n {
+        let end = start + chunk
+        if end > n { end = n }
+        // Slice rows[start..end]
+        let batch = []
+        let i = start
+        while i < end {
+            batch = batch + [rows[i]]
+            i = i + 1
+        }
+        emit_chunk(batch, start)
+        start = end
+    }
+
+    if opts["vram_report"] {
+        eprintln("[gpu_gate_mesh] N=" + to_string(n) + " device=" + device + " (hexa CPU mode)")
+    }
+}
+
+main()

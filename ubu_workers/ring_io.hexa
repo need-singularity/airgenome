@@ -1,0 +1,28 @@
+// ubu_workers/ring_io.hexa — thin wrapper delegating to modules/ring_io.hexa
+//
+// ubu_workers/ 디렉토리에서 .hexa 대응 파일 제공.
+// 모든 로직은 modules/ring_io.hexa 에 구현됨.
+// Usage: hexa run ubu_workers/ring_io.hexa <cmd> [opts]
+
+let base = env("HOME") + "/Dev/airgenome"
+let argv = args()
+let cmd_parts = ""
+let i = 0
+while i < len(argv) {
+    let a = argv[i]
+    // skip hexa runtime args (script path itself)
+    if a.contains("ring_io") {
+        i = i + 1
+        continue
+    }
+    if len(cmd_parts) > 0 { cmd_parts = cmd_parts + " " }
+    cmd_parts = cmd_parts + a
+    i = i + 1
+}
+
+let hexa = env("HEXA")
+if len(hexa) == 0 { hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
+
+let full = hexa + " run " + base + "/modules/ring_io.hexa " + cmd_parts
+let out = exec(full)
+if len(out) > 0 { print(out) }

@@ -25,36 +25,38 @@ fn read_config_val(path: str, key: str, default_val: int) -> int {
 }
 
 let mut prev_level = "ok"
+let mut prev_net_bytes = 0
+let mut prev_net_ts = 0
+let mut prev_disk_kb = 0
+let mut prev_disk_ts = 0
 
 while true {
-    // ── MEASURE ──
-    let top_out = exec("top -l1 -n0 2>/dev/null")
+    // ── MEASURE ── (정밀도 <1%: 단일 top 호출 + vm_stat 페이지 단위)
 
-    // CPU
+    // CPU — top -l2 평균(첫 샘플은 부팅 이래 누적이라 부정확), 소수 1자리 유지
+    let cpu_str = exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
     let mut cpu = 0
-    if top_out.contains("CPU usage") {
-        let cpu_line = exec("echo '" + top_out.replace("'", "") + "' | grep 'CPU usage'").trim()
-        let cpu_str = exec("echo '" + cpu_line.replace("'", "") + "' | awk '{gsub(/%/,\"\"); printf \"%d\",$3+$5}'").trim()
-        try { cpu = to_int(to_float(cpu_str)) } catch e {}
+    let mut cpu_f = 0.0
+    try { cpu_f = to_float(cpu_str) } catch e {}
+    if cpu_f <= 0.0 {
+        let cpu_total = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim()
+        try { cpu_f = to_float(cpu_total) / to_float(to_string(NCPU)) } catch e {}
     }
-    if cpu == 0 {
-        let cpu_total = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim()
-        try { cpu = to_int(to_float(cpu_total)) / NCPU } catch e {}
-    }
+    cpu = to_int(cpu_f)
 
-    // RAM
-    let mut ram_used_mb = 0
-    if top_out.contains("PhysMem") {
-        let ram_str = exec("echo '" + top_out.replace("'", "") + "' | awk '/PhysMem/{v=$2;u=substr(v,length(v));n=substr(v,1,length(v)-1)+0;if(u==\"G\")n*=1024;else if(u!=\"M\")n=0;printf \"%d\",n}'").trim()
-        try { ram_used_mb = to_int(to_float(ram_str)) } catch e {}
-    }
+    // RAM — vm_stat 페이지 단위 (active+wired+compressor). top "23G"는 해상도 1GB(~4% 오차).
+    let ram_str = exec("vm_stat 2>/dev/null | awk 'BEGIN{ps=16384} /page size of/{ps=$8} /Pages active/{a=$3} /Pages wired down/{w=$4} /Pages occupied by compressor/{c=$5} END{gsub(/\\./,\"\",a); gsub(/\\./,\"\",w); gsub(/\\./,\"\",c); printf \"%.1f\",(a+w+c)*ps/1048576}'").trim()
+    let mut ram_used_f = 0.0
+    try { ram_used_f = to_float(ram_str) } catch e {}
+    let ram_used_mb = to_int(ram_used_f)
     let free_mb = if TOTAL_RAM_MB > ram_used_mb { TOTAL_RAM_MB - ram_used_mb } else { 0 }
     let ram = if TOTAL_RAM_MB > 0 { ram_used_mb * 100 / TOTAL_RAM_MB } else { 0 }
 
-    // Swap
-    let swap_str = exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.0f\",$3}'").trim()
-    let mut swap_mb = 0
-    try { swap_mb = to_int(to_float(swap_str)) } catch e {}
+    // Swap — vm.swapusage used 필드, 소수 정밀도 유지
+    let swap_str = exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.1f\",$3}'").trim()
+    let mut swap_f = 0.0
+    try { swap_f = to_float(swap_str) } catch e {}
+    let swap_mb = to_int(swap_f)
     let swap = if TOTAL_RAM_MB > 0 { swap_mb * 100 / TOTAL_RAM_MB } else { 0 }
 
     // Load
@@ -62,11 +64,61 @@ while true {
     let mut load = 0
     try { load = to_int(to_float(load_str)) } catch e {}
 
+    // Net — netstat -ibn 델타, MB/s (1% 미만 정밀도 유지 위해 bytes 단위)
+    let net_now_str = exec("netstat -ibn 2>/dev/null | awk 'NR>1 && $1!~/^lo/ && $1!~/^utun/ && $4!~/:/{ib+=$7; ob+=$10} END{printf \"%.0f\",ib+ob}'").trim()
+    let ts_str = exec("date +%s").trim()
+    let mut net_now = 0
+    let mut ts_now = 0
+    try { net_now = to_int(to_float(net_now_str)) } catch e {}
+    try { ts_now = to_int(to_float(ts_str)) } catch e {}
+    let mut net_mbps = 0
+    let mut net_kbps_f = 0.0
+    if prev_net_bytes > 0 && ts_now > prev_net_ts {
+        let dt = ts_now - prev_net_ts
+        let db = if net_now > prev_net_bytes { net_now - prev_net_bytes } else { 0 }
+        if dt > 0 {
+            net_mbps = (db / dt) / 1048576
+            try { net_kbps_f = to_float(to_string(db)) / to_float(to_string(dt)) / 1024.0 } catch e {}
+        }
+    }
+    prev_net_bytes = net_now
+    prev_net_ts = ts_now
+
+    // Disk — iostat 1초 샘플, MB/s (nonblocking 단발)
+    let disk_now_str = exec("iostat -d -c 2 disk0 2>/dev/null | awk 'END{printf \"%.1f\",$3}'").trim()
+    let mut disk_mbps_f = 0.0
+    try { disk_mbps_f = to_float(disk_now_str) } catch e {}
+    let disk_mbps = to_int(disk_mbps_f)
+
+    // GPU (로컬 Apple Silicon) — ioreg 기반 IOGPU 사용률 (powermetrics sudo 필요없이)
+    let gpu_local_str = exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim()
+    let mut gpu_local = 0
+    try { gpu_local = to_int(to_float(gpu_local_str)) } catch e {}
+
     // ── CONFIG ──
     let cpu_ceil = read_config_val(CONFIG, "cpu_ceil", 90)
     let ram_ceil = read_config_val(CONFIG, "ram_ceil", 80)
     let swap_ceil = read_config_val(CONFIG, "swap_ceil", 50)
-    let bridge_max = read_config_val(CONFIG, "bridge_max", 4)
+    let mut bridge_max = read_config_val(CONFIG, "bridge_max", 4)
+
+    // ── DYNAMIC BRIDGE_MAX (vitals L5c NMI 기반 자동조절) ──
+    let vitals_path = DIR + "/forge/state.json"
+    if file_exists(vitals_path) {
+        let vraw = read_file(vitals_path)
+        if vraw.contains("\"l5c_nmi\"") {
+            let nmi_s = vraw.split("\"l5c_nmi\"")[1].split(":")[1].split(",")[0].split("}")[0].trim()
+            let mut l5c_nmi = 0.0
+            try { l5c_nmi = to_float(nmi_s) } catch e {}
+            if l5c_nmi > 0.3 && ram > 60 {
+                // 높은 temporal persistence + RAM 부하 → 브릿지 반감
+                bridge_max = bridge_max / 2
+                if bridge_max < 1 { bridge_max = 1 }
+            } else if prev_level == "ok" && l5c_nmi < 0.15 {
+                // 안정 상태 → 브릿지 여유 +2
+                bridge_max = bridge_max + 2
+            }
+        }
+    }
 
     // ── BRIDGE LIMITER ──
     let bridge_pids = exec("ps -eo pid=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | awk '{print $1}'").trim()
@@ -103,6 +155,21 @@ while true {
         }
     } else if ram > ram_ceil || cpu > cpu_ceil || swap > swap_ceil {
         level = "warn"
+        // ── PREDICTIVE PURGE (RAM→Swap 캐스케이드 예방) ──
+        if ram > 70 {
+            let mut pred_nmi = 0.0
+            if file_exists(vitals_path) {
+                let vr2 = read_file(vitals_path)
+                if vr2.contains("\"l5c_nmi\"") {
+                    let ns2 = vr2.split("\"l5c_nmi\"")[1].split(":")[1].split(",")[0].split("}")[0].trim()
+                    try { pred_nmi = to_float(ns2) } catch e {}
+                }
+            }
+            if pred_nmi > 0.4 {
+                // L5c NMI 높음 = RAM 압박 지속적 → 조기 purge
+                exec("purge 2>/dev/null")
+            }
+        }
     } else {
         if file_exists(THROTTLE_FILE) {
             exec("sort -u " + THROTTLE_FILE + " | while read RPID; do taskpolicy -d default -p $RPID 2>/dev/null; done")
@@ -202,8 +269,14 @@ while true {
     }
 
     // ── WRITE STATE ──
-    let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"ram\":" + to_string(ram) + ",\"swap\":" + to_string(swap) + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\"}"
+    let mut disk_kbps_f = 0.0
+    try { disk_kbps_f = to_float(disk_now_str) * 1024.0 } catch e {}
+    let gpu_local_f_str = if len(gpu_local_str) > 0 { gpu_local_str } else { "0" }
+    let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"cpu_f\":" + cpu_str + ",\"ram\":" + to_string(ram) + ",\"ram_f\":" + ram_str + ",\"ram_used_mb\":" + to_string(ram_used_mb) + ",\"swap\":" + to_string(swap) + ",\"swap_f\":" + swap_str + ",\"swap_mb\":" + to_string(swap_mb) + ",\"net_mbps\":" + to_string(net_mbps) + ",\"net_mbps_f\":" + to_string(net_kbps_f) + ",\"disk_mbps\":" + to_string(disk_mbps) + ",\"disk_mbps_f\":" + to_string(disk_kbps_f) + ",\"gpu_local\":" + to_string(gpu_local) + ",\"gpu_local_f\":" + gpu_local_f_str + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\"}"
     try { write_file(STATE, state_json + "\n") } catch e {}
+
+    // vitals_ring tick — 6축 push
+    exec("$HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + to_string(cpu) + " " + to_string(ram) + " " + to_string(swap) + " " + to_string(net_mbps) + " " + to_string(disk_mbps) + " " + to_string(gpu_local))
 
     prev_level = level
     exec("sleep 5")

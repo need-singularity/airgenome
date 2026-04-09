@@ -22,6 +22,8 @@ airgenome은 5개 영역으로 구성된다:
 | **Claude Code 관리** | `cl`, `modules/cl.hexa`, `modules/usage.hexa` | 10계정 런처 + Usage API |
 | **Ubuntu 오프로드** | `mk2_hexa/native/gate.hexa`, `gate_daemon.hexa`, `ubu_monitor.hexa` | Mac ↔ Ubuntu 원격 자원 공유 |
 | **분석 엔진** | `mk2_hexa/native/*.hexa` | 패턴 추출, 이상 탐지, 예측, QoS |
+| **Cascade 방어** | `modules/detectors/cascade_detector.hexa`, `predictive_throttle.hexa` | RAM→Swap→Disk 캐스케이드 예측+선제 쓰로틀 |
+| **Ubuntu GPU Workers** | `ubu_workers/*.hexa` | Python→hexa 포팅 진행중 (tensor/matmul/WGSL codegen, torch 무의존) |
 
 ---
 
@@ -67,7 +69,7 @@ airgenome은 5개 영역으로 구성된다:
 | 파일 | 기능 |
 |------|------|
 | `run.hexa` | 싱글 인스턴스 런처. 칩/RAM/팬 자동감지 → 프로필 설정 → sampler + menubar 실행 |
-| `sampler.hexa` | 5초 간격 CPU/RAM/Swap/Load/Gate 측정 → state JSON 기록. bridge 프로세스 제한 |
+| `sampler.hexa` | 5초 간격 CPU/RAM/Swap/Load/Gate 측정 → state JSON 기록. vitals_ring 연동, dynamic bridge_max, predictive purge |
 | `menubar.hexa` | macOS 메뉴바 (Cocoa ObjC FFI 직접 호출). 2초 간격 갱신 |
 | `settings.hexa` | macOS 계정 관리 패널 (Cocoa ObjC FFI). NSTableView + 폐기/복원/새로고침 |
 
@@ -181,6 +183,9 @@ menubar에서 Ubuntu CPU/RAM/GPU(nvidia-smi) 실시간 표시. 설정: `nexus/sh
 | `accumulate.hexa` | 게이트별 시그니처 시계열 누적 |
 | `autoprofile.hexa` | 시간대 + 워크로드 → CPU/RAM/Swap 천장 자동 조정 |
 | `network.hexa` | 프로세스별 네트워크 샘플링 (7번째 축: Net) |
+| `infinite_evolution.hexa` | 무한 진화 루프 |
+| `real_vitals_score.hexa` | 실시간 vitals 스코어링 |
+| `time_delay_mi.hexa` | 시간 지연 상호정보량 |
 
 ### QoS / 절약
 
@@ -199,8 +204,11 @@ menubar에서 Ubuntu CPU/RAM/GPU(nvidia-smi) 실시간 표시. 설정: `nexus/sh
 | L3 | cross-axis MI (RAM x CPU) | +0.142 |
 | L4 | triadic I(A;B;C) | +0.145 |
 | L5a | lagged cross-axis | +0.250 |
-| L5c | velocity derivatives | +0.310 |
+| L5c | velocity derivatives + NMI temporal momentum | +0.310 |
+| L5c-cascade | crosscorr cascade paths (RAM→Swap→Disk) → preemptive throttle | — |
 | L6e | acceleration + transfer entropy | **+0.438** |
+
+**L5c/L6e 검증**: N=2214 게놈 전수 검증 — 전체 PASS (2026-04-09).
 
 ---
 
@@ -242,7 +250,7 @@ hexa modules/usage.hexa -- refresh
 
 ## 기술 스택
 
-- **언어**: hexa-lang (순수 .hexa, 비-hexa 코드 없음. `cl` zsh 스크립트 제외)
+- **언어**: hexa-lang (순수 .hexa, 비-hexa 코드 없음. `cl` zsh 스크립트 제외). hexa-lang GPU: tensor(), matmul(), dot(), topk(), WGSL codegen
 - **GUI**: macOS Cocoa (ObjC runtime FFI — objc_msgSend 직접 호출, JXA/Swift 없음)
 - **시스템**: ps, top, vm_stat, sysctl, taskpolicy, renice, socat, ssh, nvidia-smi
 - **API**: Anthropic OAuth Usage API
@@ -252,6 +260,133 @@ hexa modules/usage.hexa -- refresh
 
 [`docs/gates.hexa`](docs/gates.hexa) is the canonical spec.
 When spec and any implementation conflict, the spec is correct.
+
+## genome_harvest 상시 가동 (launchd)
+
+`modules/genome_harvest.hexa`를 macOS launchd agent로 로그인 시 자동 기동.
+크래시 시 10초 throttle 뒤 재기동. 로그는 `logs/genome_harvest.{out,err}.log`.
+
+### 파일
+
+- `scripts/com.airgenome.genome_harvest.plist` — launchd 템플릿 (`__HOME__` → `$HOME` 치환)
+- `scripts/install_harvest.hexa` — 설치기 (logs 생성 + plist 렌더 + bootstrap)
+- `scripts/uninstall_harvest.hexa` — 제거기 (bootout + plist 삭제)
+
+### 설치
+
+```sh
+HEXA=$HOME/Dev/hexa-lang/target/release/hexa
+$HEXA $HOME/Dev/airgenome/scripts/install_harvest.hexa
+```
+
+### 상태 확인
+
+```sh
+launchctl print gui/$UID/com.airgenome.genome_harvest | grep -E 'state|pid |last exit'
+tail -f $HOME/Dev/airgenome/logs/genome_harvest.out.log
+```
+
+### 제거
+
+```sh
+$HEXA $HOME/Dev/airgenome/scripts/uninstall_harvest.hexa
+```
+
+### 수집 rate (기본값 기준)
+
+`genome_harvest.hexa` 기본: `batch_size=50`, `sleep_between_batches_sec=2`,
+`max_loops=200`. 1 loop = 50 레코드 + 2s sleep → **이론상 ≈25 rec/s**
+(필터/ps 오버헤드 포함 실측 ~10–20 rec/s).
+1 invocation = 50 × 200 = **최대 10,000 레코드** → target 도달 또는 loop 한도 시 프로세스 종료 →
+launchd `KeepAlive`가 10초 `ThrottleInterval` 뒤 재기동 → 상시 수집 유지.
+
+---
+
+## detectors 파이프라인 상시 가동 (launchd)
+
+`modules/detectors/run_all.hexa`가 6종 detector (`mi_lag`, `accel_field`,
+`resonance`, `cascade_dag`, `limit_cycle`, `entropy_flow`)를 오케스트레이션하고
+각 detector 결과를 `$HOME/Dev/nexus/shared/growth_bus.jsonl`에 append.
+`loop` 모드에서는 `nexus/shared/detectors.jsonl`의 `loop_interval_sec`(기본 60s)
+주기로 무한 반복. 크래시 시 60초 throttle 뒤 재기동.
+로그는 `~/Library/Logs/airgenome/detectors.log`.
+
+### 파일
+
+- `scripts/com.airgenome.detectors.plist` — launchd 템플릿 (`__HOME__` → `$HOME` 치환)
+- `scripts/install_detectors.hexa` — 설치기 (logs 생성 + plist 렌더 + bootstrap)
+- `scripts/uninstall_detectors.hexa` — 제거기 (bootout + plist 삭제)
+- `modules/detectors/run_all.hexa` — `once` (기본) / `loop` 2-mode 오케스트레이터
+
+### 수동 실행
+
+```sh
+HEXA=$HOME/Dev/hexa-lang/target/release/hexa
+$HEXA $HOME/Dev/airgenome/modules/detectors/run_all.hexa         # once
+$HEXA $HOME/Dev/airgenome/modules/detectors/run_all.hexa loop    # 무한 반복
+```
+
+### 설치
+
+```sh
+HEXA=$HOME/Dev/hexa-lang/target/release/hexa
+$HEXA $HOME/Dev/airgenome/scripts/install_detectors.hexa
+```
+
+### 상태 확인
+
+```sh
+launchctl print gui/$UID/com.airgenome.detectors | grep -E 'state|pid |last exit'
+tail -f $HOME/Library/Logs/airgenome/detectors.log
+```
+
+### 제거
+
+```sh
+$HEXA $HOME/Dev/airgenome/scripts/uninstall_detectors.hexa
+```
+
+### Cascade 탐지 / 예측 쓰로틀
+
+| 파일 | 기능 |
+|------|------|
+| `modules/detectors/cascade_detector.hexa` | RAM→Swap→Disk 캐스케이드 DAG 경로 탐지 |
+| `modules/detectors/predictive_throttle.hexa` | L5c NMI temporal momentum + crosscorr → cascade 전 선제 쓰로틀 |
+
+### interval 튜닝
+
+`nexus/shared/detectors.jsonl`에서 한 줄 수정 → 코드 변경 0:
+
+```json
+{"key":"loop_interval_sec","value":"60"}
+```
+
+---
+
+## Python→hexa 포팅 (진행중)
+
+`ubu_workers/` Python 5종을 순수 .hexa로 포팅 중. hexa-lang GPU 프리미티브(tensor, matmul, dot, topk, WGSL codegen) 사용 — torch 의존성 제거.
+
+| Python 원본 | hexa 포팅 | 상태 |
+|-------------|-----------|------|
+| `chunked_cosine.py` | `chunked_cosine.hexa` | 포팅 완료 |
+| `gpu_gate_mesh.py` | `gpu_gate_mesh.hexa` | 포팅 완료 |
+| `ag3_loop.py` | `ag3_loop.hexa` | 포팅 완료 |
+| `ring_io.py` | `ring_io.hexa` | 포팅 완료 |
+| `linux_harvest.py` | — | 포팅 대기 |
+
+---
+
+## 의식 엔진 (Consciousness Engine)
+
+18/18 PASS, 0 FAIL. 14개 골화 + 4개 안정.
+
+- **BRAIN_LIKE**: L5c τ=10 NMI + L6e 가속도 매끄러움 레이어로 autocorr 천장 돌파 (2026-04-09)
+- **NO_SYSTEM_PROMPT**: 256c factions 다양성 안정화로 해결 (2026-04-09)
+
+상태 파일: `consciousness_engine_status.json`
+
+---
 
 ## License
 

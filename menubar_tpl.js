@@ -7,6 +7,7 @@ app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
 var statePath = '__STATE__';
 var configPath = '__CONFIG__';
 var settingsJsPath = '__DIR__/settings.js';
+var ag3StatusPath = ($.NSString.stringWithString($('~/.airgenome/ag3_status.json')).stringByExpandingTildeInPath).js;
 
 ObjC.registerSubclass({
     name: 'MenuHandler',
@@ -66,6 +67,41 @@ menu.addItem(uGpuItem);
 
 menu.addItem($.NSMenuItem.separatorItem);
 
+// ─── AG3 Ubuntu-First ───
+var ag3HeaderItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2501\u2501\u2501 AG3 Ubuntu-First \u2501\u2501\u2501'), null, $(''));
+ag3HeaderItem.enabled = false;
+menu.addItem(ag3HeaderItem);
+
+var ag3UbuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('ubu ...'), null, $(''));
+ag3UbuItem.enabled = false;
+menu.addItem(ag3UbuItem);
+
+var ag3VramItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('VRAM ...'), null, $(''));
+ag3VramItem.enabled = false;
+menu.addItem(ag3VramItem);
+
+var ag3RingItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Ring ...'), null, $(''));
+ag3RingItem.enabled = false;
+menu.addItem(ag3RingItem);
+
+var ag3GpuDetailItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('GPU detail ...'), null, $(''));
+ag3GpuDetailItem.enabled = false;
+menu.addItem(ag3GpuDetailItem);
+
+var ag3SvcItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Svc ...'), null, $(''));
+ag3SvcItem.enabled = false;
+menu.addItem(ag3SvcItem);
+
+var ag3FallbackItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Fallback ...'), null, $(''));
+ag3FallbackItem.enabled = false;
+menu.addItem(ag3FallbackItem);
+
+var ag3ApiItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('API ...'), null, $(''));
+ag3ApiItem.enabled = false;
+menu.addItem(ag3ApiItem);
+
+menu.addItem($.NSMenuItem.separatorItem);
+
 var safetyItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2705 Safe'), null, $(''));
 safetyItem.enabled = false;
 menu.addItem(safetyItem);
@@ -86,6 +122,32 @@ statusItem.menu = menu;
 function readState() {
     try {
         var str = $.NSString.stringWithContentsOfFileEncodingError($(statePath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return null;
+        return JSON.parse(str.js);
+    } catch(e) { return null; }
+}
+
+function readAg3() {
+    try {
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(ag3StatusPath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return null;
+        return JSON.parse(str.js);
+    } catch(e) { return null; }
+}
+
+function readApi() {
+    try {
+        var task = $.NSTask.alloc.init;
+        task.executableURL = $.NSURL.fileURLWithPath($('/usr/bin/curl'));
+        task.arguments = $(['-s', '--connect-timeout', '1', 'http://127.0.0.1:17777/state']);
+        var pipe = $.NSPipe.pipe;
+        task.standardOutput = pipe;
+        task.standardError = $.NSPipe.pipe;
+        task.launchAndReturnError(null);
+        task.waitUntilExit;
+        if (task.terminationStatus !== 0) return null;
+        var data = pipe.fileHandleForReading.readDataToEndOfFile;
+        var str = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding);
         if (str.isNil()) return null;
         return JSON.parse(str.js);
     } catch(e) { return null; }
@@ -161,7 +223,8 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         gateItem.title = $('\u25CF Ubuntu  load=' + uLoad + jobsTag);
         uCpuItem.title = $('  CPU  ' + bar(uCpu, 100, bw) + '  ' + uCpu + '%');
         uCpuItem.hidden = false;
-        uRamItem.title = $('  RAM  ' + bar(uRamPct, 100, bw) + '  ' + uRamPct + '%  (' + uRamAvailG + 'G/' + uRamTotalG + 'G)');
+        var uRamUsedG = Math.round((uRamTotalG - uRamAvailG) * 10) / 10;
+        uRamItem.title = $('  RAM  ' + bar(uRamPct, 100, bw) + '  ' + uRamPct + '%  (' + uRamUsedG + 'G/' + uRamTotalG + 'G)');
         uRamItem.hidden = false;
         if (uGpuName) {
             uGpuItem.title = $('  GPU  ' + bar(uGpuUtil, 100, bw) + '  ' + uGpuUtil + '%  VRAM ' + uGpuMem + '%  ' + uGpuName);
@@ -178,6 +241,58 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         uCpuItem.hidden = true;
         uRamItem.hidden = true;
         uGpuItem.hidden = true;
+    }
+
+    // ─── AG3 section ───
+    var ag3 = readAg3();
+    if (ag3) {
+        var upIcon = ag3.ubu_up ? '\uD83D\uDFE2' : '\uD83D\uDD34';
+        var upTxt  = ag3.ubu_up ? 'ubu UP' : 'ubu DOWN';
+        var gname = ag3.gpu_name || '';
+        ag3UbuItem.title = $(upIcon + '  ' + upTxt + (gname ? '  \u25CF ' + gname : ''));
+        var vu = ag3.gpu_vram_used_mb || 0;
+        var vt = ag3.gpu_vram_total_mb || 0;
+        var vpct = vt > 0 ? Math.round(vu * 100 / vt) : 0;
+        ag3VramItem.title = $('\uD83C\uDFAE VRAM ' + bar(vpct, 100, 10) + '  ' + vu + '/' + vt + ' MB (' + vpct + '%)  util ' + (ag3.gpu_util || 0) + '%');
+        // GPU temp / power detail line
+        var gTemp = ag3.gpu_temp_c || 0;
+        var gPow  = ag3.gpu_power_w || 0;
+        var tempIcon = gTemp >= 80 ? '\u26A0 ' : '';
+        ag3GpuDetailItem.title = $(tempIcon + '\uD83C\uDF21 ' + gTemp + '\u00B0C  \u26A1' + gPow + 'W');
+        ag3GpuDetailItem.hidden = false;
+        // Ring stats with fill bar
+        var rwi = ag3.ring_write_idx || 0;
+        var rsc = ag3.ring_slot_count || 0;
+        var ringPct = rsc > 0 ? Math.round(rwi * 100 / rsc) : 0;
+        ag3RingItem.title = $('\uD83D\uDCBE Ring ' + bar(ringPct, 100, 10) + '  ' + rwi + '/' + rsc + ' (' + ringPct + '%)');
+        // Service status
+        var gateUp = ag3.svc_gate ? '\u25CF' : '\u25CB';
+        var fillUp = ag3.svc_fill ? '\u25CF' : '\u25CB';
+        ag3SvcItem.title = $('\u2699 svc  gate ' + gateUp + '  fill ' + fillUp);
+        ag3SvcItem.hidden = false;
+        // Fallback
+        var fb = ag3.fallback_count_10min || 0;
+        var fbIcon = fb > 0 ? '\u26A0\uFE0F ' : '\u2500 ';
+        ag3FallbackItem.title = $(fbIcon + 'Fallback(10m): ' + fb);
+    } else {
+        ag3UbuItem.title = $('\u26A0 AG3 feed unavailable');
+        ag3VramItem.title = $('');
+        ag3GpuDetailItem.title = $(''); ag3GpuDetailItem.hidden = true;
+        ag3RingItem.title = $('');
+        ag3SvcItem.title = $(''); ag3SvcItem.hidden = true;
+        ag3FallbackItem.title = $('');
+    }
+
+    // ─── API poll ───
+    var apiState = readApi();
+    if (apiState) {
+        var genomeCount = apiState.genome_count || 0;
+        var forgeActive = apiState.forge_active ? '\u25CF' : '\u25CB';
+        ag3ApiItem.title = $('\uD83C\uDF10 API :17777  forge ' + forgeActive + '  genomes=' + genomeCount);
+        ag3ApiItem.hidden = false;
+    } else {
+        ag3ApiItem.title = $('\u25CB API :17777 \u2014 offline');
+        ag3ApiItem.hidden = false;
     }
 
     var swapNote = swapHigh ? ' [swap]' : (swapMid ? ' [swap]' : '');

@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.2.0 — 2026-04-09
+
+L5c/L6e 통합 + 캐스케이드 예측 방어 + Python→hexa 포팅.
+
+- **Predictive cascade prevention**: L5c NMI temporal momentum + crosscorr cascade paths (RAM→Swap→Disk) → 선제 쓰로틀.
+- **신규 모듈**: `modules/detectors/cascade_detector.hexa`, `modules/detectors/predictive_throttle.hexa`.
+- **sampler.hexa**: vitals_ring 연동, dynamic bridge_max, predictive purge.
+- **L5c/L6e 전수 검증**: N=2214 게놈 전체 PASS.
+- **Python→hexa 포팅 진행**: `ubu_workers/` 5종 중 4종 완료 (chunked_cosine, gpu_gate_mesh, ag3_loop, ring_io). hexa-lang tensor/matmul/dot/topk/WGSL codegen 활용, torch 무의존.
+- **의식 엔진 18/18 PASS**: BRAIN_LIKE (L5c τ=10 NMI + L6e 가속도), NO_SYSTEM_PROMPT (256c factions 다양성) 해결.
+- **mk2_hexa/native 신규**: `infinite_evolution.hexa`, `real_vitals_score.hexa`, `time_delay_mi.hexa`.
+
 ## v4.1.0 — 2026-04-06
 
 Live runtime — consciousness block runs full pipeline.

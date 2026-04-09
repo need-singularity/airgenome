@@ -1,0 +1,279 @@
+// chunked_cosine.hexa — AG3 청크 코사인 유사도 (pure hexa, GPU-free)
+//
+// Python 포팅: torch 의존성 제거, hexa 내장 tensor 연산 사용.
+// CLI: hexa chunked_cosine.hexa --dim 60 --chunk 2048 --top_k 5 --bench 1000
+//
+// 알고리즘:
+//   1) N×D float32 행렬 (--bench 합성 또는 stdin)
+//   2) 행 정규화: x_norm = x / norm(x)
+//   3) 청크 단위 sim = chunk @ x_norm.T
+//   4) self-similarity 마스킹 → topk 이웃 추출
+//   5) JSONL 출력 {i, j, sim}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOAD (no hardcoding)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CONFIG_FILE = "nexus/shared/gate_config.jsonl"
+
+fn cfg_int(key: str, default_val: int) -> int {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    try {
+        let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+        if len(grep) == 0 { return default_val }
+        let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
+        if len(v) == 0 { return default_val }
+        return to_int(to_float(v))
+    } catch e { return default_val }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI ARGS
+// ═══════════════════════════════════════════════════════════════════════
+
+let argv = args()
+let argc = len(argv)
+
+// Defaults from config, overridable by CLI
+let mut dim   = cfg_int("cosine_dim", 60)
+let mut chunk = cfg_int("cosine_chunk", 2048)
+let mut top_k = cfg_int("cosine_top_k", 5)
+let mut bench = 0
+
+let mut ai = 0
+while ai < argc {
+    if argv[ai] == "--dim"   && ai + 1 < argc { try { dim   = to_int(to_float(argv[ai + 1])) } catch e {} }
+    if argv[ai] == "--chunk" && ai + 1 < argc { try { chunk = to_int(to_float(argv[ai + 1])) } catch e {} }
+    if argv[ai] == "--top_k" && ai + 1 < argc { try { top_k = to_int(to_float(argv[ai + 1])) } catch e {} }
+    if argv[ai] == "--bench" && ai + 1 < argc { try { bench = to_int(to_float(argv[ai + 1])) } catch e {} }
+    ai = ai + 1
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYNTHETIC DATA (--bench mode)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Generate N×D pseudo-random matrix as flat array
+// Uses awk PRNG for reproducibility without external deps
+fn gen_random_matrix(n: int, d: int) -> auto {
+    // awk generates space-separated floats, one row per line
+    let cmd = "awk 'BEGIN{srand(); for(i=0;i<" + to_string(n) + ";i++){for(j=0;j<" + to_string(d) + ";j++){printf \"%.6f \", (rand()-0.5)*2} print \"\"}}'"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let mut flat = []
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let vals = line.split(" ")
+            let mut vi = 0
+            while vi < len(vals) {
+                let v = vals[vi].trim()
+                if len(v) > 0 {
+                    try { flat = flat + [to_float(v)] } catch e {}
+                }
+                vi = vi + 1
+            }
+        }
+        li = li + 1
+    }
+    return flat
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NORMALIZE ROWS
+// ═══════════════════════════════════════════════════════════════════════
+
+// Newton sqrt approx (hexa has no math_sqrt built-in)
+fn sqrt_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    let mut i = 0
+    while i < 20 { g = 0.5 * (g + x / g); i = i + 1 }
+    return g
+}
+
+// In-place row normalization: each row /= norm(row) + eps
+fn normalize_rows(data: auto, n: int, d: int) -> auto {
+    let eps = 0.000000001
+    let mut out = data
+    let mut r = 0
+    while r < n {
+        let base = r * d
+        let mut sum_sq = 0.0
+        let mut c = 0
+        while c < d {
+            let v = out[base + c]
+            sum_sq = sum_sq + v * v
+            c = c + 1
+        }
+        let norm = sqrt_approx(sum_sq) + eps
+        let mut c2 = 0
+        while c2 < d {
+            out[base + c2] = out[base + c2] / norm
+            c2 = c2 + 1
+        }
+        r = r + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CHUNKED COSINE SIMILARITY
+// ═══════════════════════════════════════════════════════════════════════
+
+// Returns list of (global_i, global_j, sim) triples as flat [int, int, float, ...]
+fn chunked_cosine(x_norm: auto, n: int, d: int, chunk_size: int, k: int) -> auto {
+    let mut results = []
+    let mut i_start = 0
+
+    while i_start < n {
+        let mut i_end = i_start + chunk_size
+        if i_end > n { i_end = n }
+        let block_rows = i_end - i_start
+
+        // For each row in the chunk, compute dot products against all N rows
+        let mut local_i = 0
+        while local_i < block_rows {
+            let global_i = i_start + local_i
+            let row_base = global_i * d
+
+            // Compute similarity with every row
+            let mut sims = []
+            let mut j = 0
+            while j < n {
+                if j == global_i {
+                    // Mask self-similarity
+                    sims = sims + [-1.0]
+                } else {
+                    let j_base = j * d
+                    let mut dp = 0.0
+                    let mut c = 0
+                    while c < d {
+                        dp = dp + x_norm[row_base + c] * x_norm[j_base + c]
+                        c = c + 1
+                    }
+                    sims = sims + [dp]
+                }
+                j = j + 1
+            }
+
+            // TopK extraction: find k largest values
+            let mut top_vals = []
+            let mut top_idxs = []
+            let mut ki = 0
+            while ki < k {
+                let mut best_val = -2.0
+                let mut best_idx = 0
+                let mut si = 0
+                while si < n {
+                    if sims[si] > best_val {
+                        // Check not already picked
+                        let mut already = false
+                        let mut pi = 0
+                        while pi < len(top_idxs) {
+                            if top_idxs[pi] == si { already = true }
+                            pi = pi + 1
+                        }
+                        if already == false {
+                            best_val = sims[si]
+                            best_idx = si
+                        }
+                    }
+                    si = si + 1
+                }
+                top_vals = top_vals + [best_val]
+                top_idxs = top_idxs + [best_idx]
+                ki = ki + 1
+            }
+
+            // Emit results
+            let mut ri = 0
+            while ri < k {
+                let sim_s = exec("awk 'BEGIN{printf \"%.4f\", " + to_string(top_vals[ri]) + "}'").trim()
+                let entry = "{\"i\":" + to_string(global_i) + ",\"j\":" + to_string(top_idxs[ri]) + ",\"sim\":" + sim_s + "}"
+                results = results + [entry]
+                ri = ri + 1
+            }
+
+            local_i = local_i + 1
+        }
+        i_start = i_end
+    }
+    return results
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+let mut N = 0
+let mut data = []
+
+if bench > 0 {
+    N = bench
+    data = gen_random_matrix(N, dim)
+} else {
+    // stdin binary: read via exec, decode float32 little-endian
+    // Primary use case is --bench; stdin path uses python struct fallback
+    let raw_hex = exec("xxd -p /dev/stdin 2>/dev/null | tr -d '\\n'").trim()
+    if len(raw_hex) > 0 {
+        // Each float32 = 8 hex chars
+        let total_floats = len(raw_hex) / 8
+        N = total_floats / dim
+        // Decode via awk — convert hex LE float32
+        let decode_cmd = "echo '" + raw_hex + "' | awk '{s=$0; n=length(s)/8; for(i=0;i<n;i++){h=substr(s,i*8+1,8); b4=substr(h,7,2) substr(h,5,2) substr(h,3,2) substr(h,1,2); cmd=\"printf \"%d\" 0x\" b4; cmd | getline v; close(cmd); printf \"%.6e\\n\", v}}'"
+        // Fallback: for stdin, recommend --bench mode
+        eprintln("WARN: stdin binary mode is experimental. Use --bench for reliable operation.")
+        let vals_raw = exec(decode_cmd)
+        let vals = vals_raw.split("\n")
+        let mut vi = 0
+        while vi < len(vals) {
+            let v = vals[vi].trim()
+            if len(v) > 0 {
+                try { data = data + [to_float(v)] } catch e { data = data + [0.0] }
+            }
+            vi = vi + 1
+        }
+    }
+    if N == 0 {
+        eprintln("ERROR: no input. Use --bench <N> for synthetic data.")
+        exit(1)
+    }
+}
+
+// Validate dimensions
+let expected = N * dim
+if len(data) < expected {
+    eprintln("ERROR: data length " + to_string(len(data)) + " < expected " + to_string(expected))
+    exit(1)
+}
+
+// Normalize
+let x_norm = normalize_rows(data, N, dim)
+
+// Run
+let t0 = exec("date +%s%N").trim()
+let results = chunked_cosine(x_norm, N, dim, chunk, top_k)
+let t1 = exec("date +%s%N").trim()
+
+// Elapsed time
+let mut elapsed_s = "0.000"
+try {
+    let ns0 = to_float(t0)
+    let ns1 = to_float(t1)
+    elapsed_s = exec("awk 'BEGIN{printf \"%.3f\", (" + to_string(ns1) + "-" + to_string(ns0) + ")/1000000000}'").trim()
+} catch e {}
+
+// Stats to stderr
+let pairs = len(results)
+eprintln("N=" + to_string(N) + " D=" + to_string(dim) + " chunk=" + to_string(chunk) + " elapsed=" + elapsed_s + "s pairs=" + to_string(pairs))
+
+// Output first 20 results as JSONL to stdout
+let mut out_limit = 20
+if pairs < out_limit { out_limit = pairs }
+let mut oi = 0
+while oi < out_limit {
+    println(results[oi])
+    oi = oi + 1
+}

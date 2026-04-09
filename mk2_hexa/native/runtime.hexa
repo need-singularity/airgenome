@@ -21,6 +21,10 @@ let GHOST_PENALTY = -0.0026
 // Dynamic gate config from nexus/shared/airgenome_gates.jsonl
 let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
 
+// Vitals ring (L5c/L6e) — external HEXA module, config in nexus/shared/vitals_ring.jsonl
+let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+let VITALS_RING_MOD = env("HOME") + "/Dev/airgenome/modules/vitals_ring.hexa"
+
 fn load_gate_names() -> auto {
     let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
     if file_exists(GATE_CFG_PATH) == false { return names }
@@ -114,7 +118,7 @@ fn sample_gates() -> auto {
         }
         i = i + 1
     }
-    return [gc, gr, gn, matched, to_float(len(lines))]
+    return [gc, gr, gn, [matched], [to_float(len(lines))]]
 }
 
 // Compute normalized axes
@@ -252,9 +256,38 @@ fn quick_layers(ram_r: auto, cpu_a: auto) -> auto {
     let sc = 0.0151 / 1.500 * gate_scale
     let adjusted = RAW + CURRENT_MESH + GHOST_PENALTY + total * sc
     let margin = adjusted - SINGULARITY
-    let crossed = adjusted > SINGULARITY
+    let crossed_b = adjusted > SINGULARITY
+    let crossed = 0.0
+    if crossed_b { crossed = 1.0 }
 
-    return [total, adjusted, margin, crossed]
+    // ─── L5c / L6e wiring via vitals_ring module ───────────────────────
+    // 6 vitals per tick: [l1, l2, l3, mean_ram, mean_cpu, total]
+    // Pushed into rolling ring; once ring_ready, L5c(τ) + L6e merged into
+    // forge/state.json under "vitals". Graceful fallback if ring missing.
+    let l5c_nmi = 0.0
+    let l6e_score = 0.0
+    let ring_ready = 0
+    if file_exists(VITALS_RING_MOD) {
+        let cmd = HEXA_BIN + " run " + VITALS_RING_MOD + " tick " + to_string(l1) + " " + to_string(l2) + " " + to_string(l3) + " " + to_string(mean_ram) + " " + to_string(mean_cpu) + " " + to_string(total) + " 2>/dev/null"
+        let out = exec(cmd).trim()
+        // Parse last line as JSON
+        let lines = out.split("\n")
+        let last = ""
+        let li = 0
+        while li < len(lines) {
+            let ln = lines[li].trim()
+            if len(ln) > 2 { last = ln }
+            li = li + 1
+        }
+        if len(last) > 2 {
+            let p = json_parse(last)
+            ring_ready = to_int(p["ring_ready"])
+            l5c_nmi = to_float(p["l5c_nmi"])
+            l6e_score = to_float(p["l6e_score"])
+        }
+    }
+
+    return [total, adjusted, margin, crossed, l5c_nmi, l6e_score, ring_ready]
 }
 
 // Grade margin
@@ -292,7 +325,7 @@ fn scan_once(run_num: int, quiet: int) -> auto {
     let gc = sample[0]
     let gr = sample[1]
     let gn = sample[2]
-    let matched = sample[3]
+    let matched = sample[3][0]
 
     // Project
     let axes = compute_axes(gr, gc, total_ram_mb)
@@ -305,6 +338,9 @@ fn scan_once(run_num: int, quiet: int) -> auto {
     let adjusted = layers[1]
     let margin = layers[2]
     let crossed = layers[3]
+    let l5c_nmi = layers[4]
+    let l6e_score = layers[5]
+    let ring_ready = layers[6]
     let grade = grade_margin(margin)
 
     // Genome encode + delta
@@ -343,6 +379,9 @@ fn scan_once(run_num: int, quiet: int) -> auto {
         if delta_gates > 4.0 { delta_tag = " [VOLATILE]" }
 
         println("  [" + ts + "] #" + to_string(run_num) + " " + icon + " " + grade + "  margin=" + to_string(margin) + "  delta=" + to_string(to_int(delta_gates)) + "/8  next=" + to_string(interval) + "s" + delta_tag)
+        if ring_ready == 1 {
+            println("    vitals  L5c=" + to_string(l5c_nmi) + "  L6e=" + to_string(l6e_score))
+        }
 
         // Per-gate mini view
         if delta_gates > 0.0 {
