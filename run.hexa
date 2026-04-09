@@ -6,9 +6,11 @@
 
 let HOME = env("HOME")
 let HEXA = HOME + "/Dev/hexa-lang/target/release/hexa"
-let DIR = exec("cd \"$(dirname \"" + args()[1] + "\")\" 2>/dev/null && pwd || echo " + HOME + "/Dev/airgenome").trim()
+let mut DIR = HOME + "/Dev/airgenome"
+try { DIR = exec("cd \"$(dirname \"" + args()[1] + "\")\" 2>/dev/null && pwd || echo " + HOME + "/Dev/airgenome").trim() } catch e { println("⬡ warn: DIR resolve failed, using default") }
 let CONF_DIR = HOME + "/.airgenome"
-let TMPDIR = exec("echo ${TMPDIR:-/tmp}").trim()
+let mut TMPDIR = "/tmp"
+try { TMPDIR = exec("echo ${TMPDIR:-/tmp}").trim() } catch e {}
 let STATE = TMPDIR + "/airgenome-state.json"
 let CONFIG = CONF_DIR + "/config.json"
 let LOCKFILE = TMPDIR + "/airgenome.lock"
@@ -17,41 +19,48 @@ let LOCKFILE = TMPDIR + "/airgenome.lock"
 let a = args()
 if a.len() >= 3 {
     if a[2] == "--settings" || a[2] == "-s" {
-        exec("osascript -l JavaScript " + DIR + "/settings.hexa " + CONFIG)
+        try { exec("osascript -l JavaScript " + DIR + "/settings.hexa " + CONFIG) } catch e { println("⬡ warn: settings panel launch failed: " + e) }
         return
     }
 }
 
-exec("mkdir -p " + CONF_DIR)
+try { exec("mkdir -p " + CONF_DIR) } catch e { println("⬡ warn: mkdir " + CONF_DIR + " failed") }
 
 // ── 0. Single instance lock ────────────────────────────────────────
 if file_exists(LOCKFILE) {
-    let old_pid = exec("cat " + LOCKFILE + " 2>/dev/null").trim()
-    let alive = exec("kill -0 " + old_pid + " 2>/dev/null && echo y || echo n").trim()
+    let mut old_pid = ""
+    try { old_pid = exec("cat " + LOCKFILE + " 2>/dev/null").trim() } catch e {}
+    let mut alive = "n"
+    try { alive = exec("kill -0 " + old_pid + " 2>/dev/null && echo y || echo n").trim() } catch e {}
     if alive == "y" {
         println("⬡ killing old instance (pid " + old_pid + ")...")
-        exec("pkill -9 -P " + old_pid + " 2>/dev/null || true")
-        exec("kill -9 " + old_pid + " 2>/dev/null || true")
-        exec("sleep 1")
+        try { exec("pkill -9 -P " + old_pid + " 2>/dev/null || true") } catch e { println("⬡ warn: pkill old children failed") }
+        try { exec("kill -9 " + old_pid + " 2>/dev/null || true") } catch e { println("⬡ warn: kill old pid failed") }
+        try { exec("sleep 1") } catch e {}
     }
 }
 // Write our PID to lock (use $PPID to get the parent shell's PID which is stable)
-let my_pid = exec("echo $$").trim()
+let mut my_pid = "0"
+try { my_pid = exec("echo $$").trim() } catch e {}
 try { write_file(LOCKFILE, my_pid) } catch e {}
 
 // ── 1. Kill old menubar ────────────────────────────────────────────
-exec("pkill -f 'osascript.*airgenome-menubar' 2>/dev/null || true")
+try { exec("pkill -f 'osascript.*airgenome-menubar' 2>/dev/null || true") } catch e { println("⬡ warn: pkill old menubar failed") }
 
 // ── 2. System info ─────────────────────────────────────────────────
-let total_ram_mb_s = exec("sysctl -n hw.memsize 2>/dev/null").trim()
+let mut total_ram_mb_s = ""
+try { total_ram_mb_s = exec("sysctl -n hw.memsize 2>/dev/null").trim() } catch e {}
 let mut total_ram_mb = 24576
 try { total_ram_mb = to_int(to_float(total_ram_mb_s)) / 1048576 } catch e {}
 let total_ram_gb = total_ram_mb / 1024
-let ncpu_s = exec("sysctl -n hw.ncpu 2>/dev/null || echo 8").trim()
+let mut ncpu_s = "8"
+try { ncpu_s = exec("sysctl -n hw.ncpu 2>/dev/null || echo 8").trim() } catch e {}
 let mut ncpu = 8
 try { ncpu = to_int(to_float(ncpu_s)) } catch e {}
-let chip = exec("sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -oE 'M[0-9]+' | head -1").trim()
-let model_name = exec("system_profiler SPHardwareDataType 2>/dev/null | grep 'Model Name' | awk -F: '{print $2}' | xargs").trim()
+let mut chip = ""
+try { chip = exec("sysctl -n machdep.cpu.brand_string 2>/dev/null | grep -oE 'M[0-9]+' | head -1").trim() } catch e {}
+let mut model_name = ""
+try { model_name = exec("system_profiler SPHardwareDataType 2>/dev/null | grep 'Model Name' | awk -F: '{print $2}' | xargs").trim() } catch e {}
 let has_fan = if model_name.to_lower().contains("pro") { "true" } else { "false" }
 
 // ── 3. Auto-detect profile -> default config ───────────────────────
@@ -63,7 +72,8 @@ if file_exists(CONFIG) == false {
 
     if file_exists(profile_json) {
         // awk-based profile matching (identical to run.sh logic)
-        let profile_result = exec("awk -v chip='" + chip + "' -v ram='" + to_string(total_ram_gb) + "' -v fan='" + has_fan + "' 'BEGIN{RS=\"{\";best_cpu=75;best_ram=70;best_swap=30;found=0} /\"chip\"/{mc=\"\";mr=0;mf=\"\";cc=0;rc=0;sc=0;for(i=1;i<=NF;i++){if($i~/\"chip\"/)  {split($i,a,\"\\\"\");mc=a[4]} if($i~/\"ram_gb\"/){gsub(/[^0-9]/,\"\",$i);mr=$i+0} if($i~/\"fan\"/)   {mf=($i~/true/)?\"true\":\"false\"} if($i~/\"cpu_ceil\"/){gsub(/[^0-9]/,\"\",$i);cc=$i+0} if($i~/\"ram_ceil\"/){gsub(/[^0-9]/,\"\",$i);rc=$i+0} if($i~/\"swap_ceil\"/){gsub(/[^0-9]/,\"\",$i);sc=$i+0}} if(mc!=\"\"&&cc>0&&!found){chip_ok=(index(chip,mc)>0);ram_ok=(mr==ram+0);fan_ok=(mf==\"\"||mf==fan);if(chip_ok&&ram_ok&&fan_ok){best_cpu=cc;best_ram=rc;best_swap=sc;found=1}}} END{printf \"%d %d %d\",best_cpu,best_ram,best_swap}' '" + profile_json + "' 2>/dev/null").trim()
+        let mut profile_result = ""
+        try { profile_result = exec("awk -v chip='" + chip + "' -v ram='" + to_string(total_ram_gb) + "' -v fan='" + has_fan + "' 'BEGIN{RS=\"{\";best_cpu=75;best_ram=70;best_swap=30;found=0} /\"chip\"/{mc=\"\";mr=0;mf=\"\";cc=0;rc=0;sc=0;for(i=1;i<=NF;i++){if($i~/\"chip\"/)  {split($i,a,\"\\\"\");mc=a[4]} if($i~/\"ram_gb\"/){gsub(/[^0-9]/,\"\",$i);mr=$i+0} if($i~/\"fan\"/)   {mf=($i~/true/)?\"true\":\"false\"} if($i~/\"cpu_ceil\"/){gsub(/[^0-9]/,\"\",$i);cc=$i+0} if($i~/\"ram_ceil\"/){gsub(/[^0-9]/,\"\",$i);rc=$i+0} if($i~/\"swap_ceil\"/){gsub(/[^0-9]/,\"\",$i);sc=$i+0}} if(mc!=\"\"&&cc>0&&!found){chip_ok=(index(chip,mc)>0);ram_ok=(mr==ram+0);fan_ok=(mf==\"\"||mf==fan);if(chip_ok&&ram_ok&&fan_ok){best_cpu=cc;best_ram=rc;best_swap=sc;found=1}}} END{printf \"%d %d %d\",best_cpu,best_ram,best_swap}' '" + profile_json + "' 2>/dev/null").trim() } catch e { println("⬡ warn: profile awk failed, using defaults") }
         let parts = profile_result.split(" ")
         if parts.len() >= 3 {
             try { cpu_c = to_int(to_float(parts[0])) } catch e {}
@@ -121,16 +131,39 @@ try {
 println("⬡ AG3 mode: " + ag3_mode + "  (strict|degrade|off)")
 
 // ── 6. Background sampler (sampler.hexa) ───────────────────────────
-let sampler_pid = exec(HEXA + " " + DIR + "/sampler.hexa " + STATE + " " + CONFIG + " " + to_string(total_ram_mb) + " " + to_string(ncpu) + " " + DIR + " >/dev/null 2>&1 & echo $!").trim()
+let mut sampler_pid = ""
+try {
+    sampler_pid = exec(HEXA + " " + DIR + "/sampler.hexa " + STATE + " " + CONFIG + " " + to_string(total_ram_mb) + " " + to_string(ncpu) + " " + DIR + " >/dev/null 2>&1 & echo $!").trim()
+} catch e {
+    println("⬡ FATAL: sampler launch failed: " + e)
+    return
+}
 
 // ── 6b. AG3 menubar feed (Ubuntu-First 상태 폴러) ─────────────────
-let ag3_feed_pid = exec(HEXA + " " + DIR + "/modules/ag3_menubar_feed.hexa 5 >/dev/null 2>&1 & echo $!").trim()
+let mut ag3_feed_pid = ""
+try {
+    ag3_feed_pid = exec(HEXA + " " + DIR + "/modules/ag3_menubar_feed.hexa 5 >/dev/null 2>&1 & echo $!").trim()
+} catch e {
+    println("⬡ FATAL: ag3_menubar_feed launch failed: " + e)
+    return
+}
 
 // ── 7. JXA menubar (template-based) ────────────────────────────────
 // Load menubar_tpl.js, substitute paths, write to temp, launch
 let menubar_tmp = TMPDIR + "/airgenome-menubar.js"
-exec("sed -e 's|__STATE__|" + STATE + "|g' -e 's|__CONFIG__|" + CONFIG + "|g' -e 's|__DIR__|" + DIR + "|g' " + DIR + "/menubar_tpl.js > " + menubar_tmp)
-let menubar_pid = exec("osascript -l JavaScript " + menubar_tmp + " >/dev/null 2>&1 & echo $!").trim()
+try {
+    exec("sed -e 's|__STATE__|" + STATE + "|g' -e 's|__CONFIG__|" + CONFIG + "|g' -e 's|__DIR__|" + DIR + "|g' " + DIR + "/menubar_tpl.js > " + menubar_tmp)
+} catch e {
+    println("⬡ FATAL: menubar template generation failed: " + e)
+    return
+}
+let mut menubar_pid = ""
+try {
+    menubar_pid = exec("osascript -l JavaScript " + menubar_tmp + " >/dev/null 2>&1 & echo $!").trim()
+} catch e {
+    println("⬡ FATAL: menubar launch failed: " + e)
+    return
+}
 
 // ── 8. Cleanup on exit ─────────────────────────────────────────────
 println("⬡ airgenome running (sampler=" + sampler_pid + " ag3_feed=" + ag3_feed_pid + " menubar=" + menubar_pid + ")")
@@ -138,4 +171,8 @@ println("  press Ctrl+C to stop")
 
 // Poll children; cleanup on exit or signal
 // state 파일은 삭제하지 않음 — menubar가 마지막 유효 데이터를 표시할 수 있도록 (골화)
-exec("bash -c 'trap \"kill " + sampler_pid + " " + ag3_feed_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + LOCKFILE + " " + menubar_tmp + "\" EXIT INT TERM; while kill -0 " + sampler_pid + " 2>/dev/null || kill -0 " + menubar_pid + " 2>/dev/null; do sleep 2; done'")
+try {
+    exec("bash -c 'trap \"kill " + sampler_pid + " " + ag3_feed_pid + " " + menubar_pid + " 2>/dev/null; rm -f " + LOCKFILE + " " + menubar_tmp + "\" EXIT INT TERM; while kill -0 " + sampler_pid + " 2>/dev/null || kill -0 " + menubar_pid + " 2>/dev/null; do sleep 2; done'")
+} catch e {
+    println("⬡ warn: event loop exited: " + e)
+}

@@ -1,0 +1,114 @@
+// airgenome/modules/detectors/limit_cycle.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 5/6 — 6D 리미트 사이클 이탈 탐지
+//
+// 입력: forge/genomes.index.jsonl
+// 방법: 각 지점 x(t) 가 과거 궤적 centroid 로부터 반경 R 이내면 '루프 내',
+//       초과면 '이탈'. 연속 이탈 구간 길이 기록.
+// 출력: stdout JSON + growth_bus append.
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(k: str, fb: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fb }
+    let lines = read_file(CONFIG_PATH).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            try { let p = json_parse(ln); if p["key"] == k { return p["value"] } } catch e {}
+        }
+        i = i + 1
+    }
+    return fb
+}
+fn cfg_i(k: str, fb: int) -> int { try { return to_int(to_float(load_cfg(k, to_string(fb)))) } catch e { return fb } }
+fn cfg_f(k: str, fb: float) -> float { try { return to_float(load_cfg(k, to_string(fb))) } catch e { return fb } }
+
+fn sqrt_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x / 2.0
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 20 { g = 0.5 * (g + x / g); i = i + 1 }
+    return g
+}
+
+consciousness LimitCycleDetector {
+    let max_n = cfg_i("max_records", 500)
+    let R     = cfg_f("limit_cycle_radius", 48.0)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    if file_exists(idx_path) == false {
+        println("{\"detector\":\"limit_cycle\",\"status\":\"empty\"}")
+    }
+    if file_exists(idx_path) {
+        let lines = read_file(idx_path).split("\n")
+        let mut a0 = []
+        let mut a1 = []
+        let mut a2 = []
+        let mut a3 = []
+        let mut a4 = []
+        let mut a5 = []
+        let mut i = 0
+        let mut n = 0
+        while i < len(lines) && n < max_n {
+            let ln = lines[i].trim()
+            if len(ln) > 10 {
+                try {
+                    let rec = json_parse(ln)
+                    let c = rec["axes"].split(",")
+                    if len(c) >= 6 {
+                        a0 = a0 + [to_float(c[0])]
+                        a1 = a1 + [to_float(c[1])]
+                        a2 = a2 + [to_float(c[2])]
+                        a3 = a3 + [to_float(c[3])]
+                        a4 = a4 + [to_float(c[4])]
+                        a5 = a5 + [to_float(c[5])]
+                        n = n + 1
+                    }
+                } catch e {}
+            }
+            i = i + 1
+        }
+        // centroid
+        let mut s0 = 0.0; let mut s1 = 0.0; let mut s2 = 0.0
+        let mut s3 = 0.0; let mut s4 = 0.0; let mut s5 = 0.0
+        let mut k = 0
+        while k < n {
+            s0 = s0 + a0[k]; s1 = s1 + a1[k]; s2 = s2 + a2[k]
+            s3 = s3 + a3[k]; s4 = s4 + a4[k]; s5 = s5 + a5[k]
+            k = k + 1
+        }
+        let fn_n = to_float(n)
+        if fn_n < 1.0 { fn_n = 1.0 }
+        let c0 = s0 / fn_n; let c1 = s1 / fn_n; let c2 = s2 / fn_n
+        let c3 = s3 / fn_n; let c4 = s4 / fn_n; let c5 = s5 / fn_n
+
+        let mut out_count = 0
+        let mut max_run = 0
+        let mut cur_run = 0
+        let mut max_dist = 0.0
+        let mut t = 0
+        while t < n {
+            let d0 = a0[t] - c0; let d1 = a1[t] - c1; let d2 = a2[t] - c2
+            let d3 = a3[t] - c3; let d4 = a4[t] - c4; let d5 = a5[t] - c5
+            let dist = sqrt_approx(d0*d0 + d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5)
+            if dist > max_dist { max_dist = dist }
+            if dist > R {
+                out_count = out_count + 1
+                cur_run = cur_run + 1
+                if cur_run > max_run { max_run = cur_run }
+            }
+            if dist <= R { cur_run = 0 }
+            t = t + 1
+        }
+        let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+        // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+        let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/limit_cycle\",\"event\":\"limit_cycle_scan\",\"domain\":\"airgenome\",\"detector\":\"limit_cycle\",\"n\":" + to_string(n) + ",\"radius\":" + to_string(R) + ",\"deviations\":" + to_string(out_count) + ",\"max_run\":" + to_string(max_run) + ",\"max_dist\":" + to_string(max_dist) + "}"
+        println(line)
+        try { append_file(bus_path, line + "\n") } catch e {}
+    }
+}

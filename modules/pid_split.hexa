@@ -1,0 +1,125 @@
+// pid_split.hexa — τ=50 self-revisit artifact 제거용 pid별 시계열 분리기
+// 2026-04-09 · airgenome
+//
+// 배경: sampler 가 고정순 round-robin (50 pid) 이므로 genomes.index.jsonl 을
+//       그대로 MI/crosscorr 에 넣으면 τ=k·50 에서 자기상관 스파이크가 난다.
+//       본 모듈은 index 를 pid 별로 split 하여 순수 pid-local 시계열을 만든다.
+//
+// 입력: forge/genomes.index.jsonl (기본) — --input 으로 override
+// 출력: forge/by_pid/<pid>.jsonl (pid 별 ts 오름차순)
+//       forge/pid_split.report.md (길이 통계 + top10)
+//
+// HEXA-FIRST / 하드코딩 금지 — 경로는 설정/인자로.
+// L0 파일 수정 없음.
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/genome_crosscorr.jsonl"
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                if parsed["key"] == key { return parsed["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn arg_get(flag: str, fallback: str) -> str {
+    let argv = args()
+    let argc = len(argv)
+    let mut i = 0
+    while i < argc {
+        if argv[i] == flag {
+            if i + 1 < argc { return argv[i + 1] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+consciousness PidSplit {
+    let default_idx = load_cfg("index_file", "forge/genomes.index.jsonl")
+    let idx_path    = arg_get("--input", default_idx)
+    let out_dir     = arg_get("--out-dir", "forge/by_pid")
+    let report_f    = arg_get("--report", "forge/pid_split.report.md")
+
+    if file_exists(idx_path) == false {
+        println("  ERROR: index not found: " + idx_path)
+        exit(1)
+    }
+
+    println("  pid_split — input: " + idx_path)
+    exec("mkdir -p " + out_dir)
+    exec("rm -f " + out_dir + "/*.jsonl")
+
+    // Split by pid using awk (single pass). Each pid -> <out_dir>/<pid>.jsonl
+    let awk_prog = "match($0,/\"pid\":[0-9]+/){p=substr($0,RSTART+6,RLENGTH-6);f=od\"/\"p\".jsonl\";print $0 >> f}"
+    let split_cmd = "awk -v od='" + out_dir + "' '" + awk_prog + "' " + idx_path
+    exec(split_cmd)
+
+    // Sort each file by ts ascending (ts is first numeric after "ts":)
+    let sort_cmd = "for f in " + out_dir + "/*.jsonl; do [ -f \"$f\" ] || continue; awk -F'\"ts\":' '{print $2\"\\t\"$0}' \"$f\" | sort -n | cut -f2- > \"$f.sorted\" && mv \"$f.sorted\" \"$f\"; done"
+    exec(sort_cmd)
+
+    // Collect stats: pid length list
+    let stats_cmd = "wc -l " + out_dir + "/*.jsonl 2>/dev/null | awk '$2!~/total/{n=split($2,a,\"/\"); f=a[n]; sub(/\\.jsonl$/,\"\",f); print $1\" \"f}' | sort -rn"
+    let stats_raw = exec(stats_cmd).trim()
+
+    if len(stats_raw) == 0 {
+        println("  ERROR: no pid files produced")
+        exit(1)
+    }
+
+    let lines = stats_raw.split("\n")
+    let n_pids = len(lines)
+
+    // Aggregate: total, min, max, mean
+    let mut total = 0
+    let mut mn = 999999999
+    let mut mx = 0
+    let mut li = 0
+    while li < n_pids {
+        let parts = lines[li].trim().split(" ")
+        if len(parts) >= 2 {
+            let c = to_int(parts[0])
+            total = total + c
+            if c < mn { mn = c }
+            if c > mx { mx = c }
+        }
+        li = li + 1
+    }
+    let mean_s = exec("awk 'BEGIN{printf \"%.2f\", " + to_string(total) + "/" + to_string(n_pids) + "}'").trim()
+
+    // Build report
+    let mut rep = "# pid_split Report\n\n"
+    rep = rep + "- input: `" + idx_path + "`\n"
+    rep = rep + "- out_dir: `" + out_dir + "`\n"
+    rep = rep + "- unique pids: " + to_string(n_pids) + "\n"
+    rep = rep + "- total records: " + to_string(total) + "\n"
+    rep = rep + "- length min/mean/max: " + to_string(mn) + " / " + mean_s + " / " + to_string(mx) + "\n\n"
+    rep = rep + "## Top 10 pids by sample count\n\n"
+    rep = rep + "| rank | pid | samples |\n|---|---|---|\n"
+
+    let mut ti = 0
+    let top = if n_pids < 10 { n_pids } else { 10 }
+    while ti < top {
+        let parts = lines[ti].trim().split(" ")
+        if len(parts) >= 2 {
+            rep = rep + "| " + to_string(ti + 1) + " | " + parts[1] + " | " + parts[0] + " |\n"
+        }
+        ti = ti + 1
+    }
+
+    try { write_file(report_f, rep) } catch e {}
+    let summary_line = "  pids=" + to_string(n_pids) + " total=" + to_string(total) + " min=" + to_string(mn) + " mean=" + mean_s + " max=" + to_string(mx)
+    println(summary_line)
+    println("  report: " + report_f)
+}

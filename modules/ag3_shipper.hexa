@@ -49,8 +49,8 @@ let NET_BASELINE = "/tmp/_ag3_net_baseline"
 fn sample_net_kbs() -> float {
     // netstat -ib 는 인터페이스별 누적 bytes, 중복 라인 포함 → !seen 로 dedup
     let cmd = "netstat -ib 2>/dev/null | awk 'NR>1 && !seen[$1]++ {ib+=$7; ob+=$10} END {print ib+ob}'"
-    let now_bytes = to_float(exec(cmd).trim())
-    let now_ts = to_float(exec("date +%s").trim())
+    let now_bytes = to_float(try { exec(cmd).trim() } catch e { "0" })
+    let now_ts = to_float(try { exec("date +%s").trim() } catch e { "0" })
     if file_exists(NET_BASELINE) == false {
         write_file(NET_BASELINE, to_string(now_ts) + " " + to_string(now_bytes))
         return 0.0
@@ -71,7 +71,7 @@ fn sample_swap_mb() -> float {
     // vm.swapusage 토큰: total = X.XXM  used = Y.YYM  free = Z.ZZM  (encrypted)
     //                    1     2 3      4    5 6     7    8 9      10
     let cmd = "sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$6); print $6+0}'"
-    let out = exec(cmd).trim()
+    let out = try { exec(cmd).trim() } catch e { "" }
     if len(out) == 0 { return 0.0 }
     return to_float(out)
 }
@@ -81,7 +81,7 @@ fn collect_mac(n: int) -> auto {
     let swap_mb = sample_swap_mb()
     let limit = to_string(n + 1)
     // awk로 필드 사이를 단일 공백으로 정규화 후 hexa에서 split(" ")
-    let out = exec("ps -eo pid,pcpu,pmem,rss,vsz,comm -r | head -" + limit + " | awk '{printf \"%s %s %s %s %s %s\\n\",$1,$2,$3,$4,$5,$6}'")
+    let out = try { exec("ps -eo pid,pcpu,pmem,rss,vsz,comm -r | head -" + limit + " | awk '{printf \"%s %s %s %s %s %s\\n\",$1,$2,$3,$4,$5,$6}'").trim() } catch e { "" }
     let lines = out.split("\n")
     let rows = []
     let i = 1   // skip header
@@ -109,8 +109,18 @@ fn ship(rows: auto) -> int {
     // hexa에 binary write primitive가 없으면 python one-liner로 패킹
     let py = "python3 -c 'import struct,sys,json; rows=json.loads(sys.argv[1]); open(\"" + TMP_BIN + "\",\"wb\").write(b\"\".join(struct.pack(\"<f\",v) for r in rows for v in r))' "
     let payload = json_stringify(rows)
-    exec(py + "'" + payload + "'")
-    exec("timeout 30 scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
+    try {
+        exec(py + "'" + payload + "'")
+    } catch e {
+        println("[warn] ag3_shipper: python pack failed — " + to_string(e))
+        return 0
+    }
+    try {
+        exec("timeout 30 scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
+    } catch e {
+        println("[warn] ag3_shipper: scp failed — " + to_string(e))
+        return 0
+    }
     try {
         let result = exec("timeout 30 ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
         print("[AG3-SHIP] consumer: " + result)

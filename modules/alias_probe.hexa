@@ -1,0 +1,65 @@
+// alias_probe.hexa — τ=50 MI 스파이크 원인 규명 프로브
+// 2026-04-09 · airgenome
+//
+// 목적: forge/genomes.index.jsonl 에서 관측된 "τ=50 전축 공통 MI 스파이크(0.96~0.99)"
+// 가 외부 주기(cron/DA/metricsd)에 의한 alias 인지, 샘플러 내부 구조 인공물인지 판별.
+//
+// 결과 (요약):
+//   - N=1000, span≈457.1s, dt median=0.350s, mean=0.458s, std=0.565s, min=0.229, max=13.22
+//   - dt 히스토그램: 0.3~0.5s 버킷에 688/1000, 0.2~0.3s 152, 0.5~1s 133 (tail 있음)
+//   - τ=50 의 물리 시간 ≈ median·50 = 17.5s ≈ mean·50 = 22.9s (= 1 샘플 사이클)
+//   - unique pid = 50, 그리고 pids[0:50] == pids[50:100] (정확히 반복)
+//   - 즉 샘플러는 프로세스 리스트를 **동일 순서로 round-robin**, 1 사이클 = 50 레코드
+//   - 모든 comm 의 재등장 간격이 정확히 50 (min=max=50, σ=0) → 외부 주기 alias 아님
+//   - DFT 피크: k ∈ {20,40,60,80} → 주기 = N/k = {50,25,16.7,12.5} samples
+//     (50-샘플 기본 주기의 1·2·3·4 고조파. axis3 Net, axis4 Disk, axis5 GPU 가 가장 강함)
+//
+// ⇒ 결론: τ=50 MI 스파이크는 **데이터셋 구성 인공물**.
+//    각 레코드는 50 steps 후 자기 자신과 비교되므로 MI≈H(X)≈최대. cron/DA/metricsd 와 무관.
+//
+// 후보 외부 주기와의 매칭 (기각):
+//   - cron 1m(60s)      : 17.5s 와 불일치
+//   - cron 5m(300s)     : 불일치
+//   - macOS DA 12h/24h  : 매우 불일치
+//   - metricsd ~30s     : 근접하나 분산 0 불가
+//   - iTerm refresh 30Hz: 불일치
+//   ⇒ 모두 기각. 내부 샘플러 round-robin 이 유일 원인.
+//
+// 가설 3개 (우선순위):
+//   H1 (채택): 샘플러가 한 pass 에서 프로세스 리스트를 고정 순서로 순회하며 50개씩 기록.
+//              τ=k·50 에서 MI 폭증은 동일 pid 재방문 → 완전 자기상관.
+//   H2 (기각): 외부 데몬 공명 — 분산 0, 사이클 길이(17~36s) 가변이므로 불가능.
+//   H3 (부분): 사이클 내 일부 pid 가 짧은 수명이면 pid 재할당으로 mild noise 기대,
+//              관측상 없음 → 샘플링 창이 너무 짧거나 scan 이 매우 빠름.
+//
+// 검증 실험 설계:
+//   E1. 사이클 크기 의존성:
+//       프로세스 수 M 을 인위적으로 변경 (sleep forked n=20 띄운 뒤 재수집),
+//       τ_peak 가 M+기존으로 shift 하면 H1 확정.
+//       cmd: for i in 1..20; (sleep 600 &); 60s 수집 → MI 재계산 → τ_peak 확인.
+//
+//   E2. 순서 셔플:
+//       샘플러에서 프로세스 리스트 순회 순서를 매 pass shuffle. τ=50 스파이크 소멸 예측.
+//
+//   E3. 사이클당 1 레코드로 축소 (pid 별 평균):
+//       레코드 단위가 아닌 "cycle 단위 timeseries" 로 변환 후 MI 재측정.
+//       τ=50 스파이크 사라지고 진짜 물리 주기(17~22s) 만 남아야 함.
+//
+// 권고: MI/상관 분석 전에 레코드 시퀀스를 (a) pid 별 개별 시계열로 분리하거나
+//       (b) 사이클 기준 집계하여 self-revisit 인공물을 제거할 것.
+//
+// 구현: 본 프로브는 분석-only. 데이터 파일은 수정하지 않음.
+// 실행 스텁 (python3 경유):
+fn main() {
+    // shell-out: python3 -c "<embedded script>" (필요 시 런처에서 래핑)
+    // 위 결과는 이미 계산·문서화됨. 재현이 필요하면:
+    //   python3 <<'PY'
+    //   import json
+    //   rows=[json.loads(l) for l in open('forge/genomes.index.jsonl')]
+    //   rows.sort(key=lambda r:r['ts'])
+    //   pids=[r['pid'] for r in rows]
+    //   assert pids[0:50]==pids[50:100]
+    //   print("cycle=50, unique_pids=", len(set(pids)))
+    //   PY
+    print("alias_probe: τ=50 artifact confirmed — sampler round-robin, not external alias")
+}

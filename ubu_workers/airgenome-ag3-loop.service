@@ -1,0 +1,17 @@
+[Unit]
+Description=AG3 Continuous Breakthrough Loop (airgenome)
+After=network.target
+
+[Service]
+Type=simple
+User=aiden
+WorkingDirectory=/home/aiden/airgenome
+Environment=AG3_CONFIG=/home/aiden/airgenome/nexus/shared/gate_config.jsonl
+ExecStart=/usr/bin/python3 /home/aiden/airgenome/ag3/ag3_loop.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/aiden/airgenome/logs/ag3_loop.log
+StandardError=append:/home/aiden/airgenome/logs/ag3_loop.err
+
+[Install]
+WantedBy=multi-user.target

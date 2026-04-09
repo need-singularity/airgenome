@@ -1,0 +1,113 @@
+// airgenome/modules/detectors/accel_field.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 2/6 — 가속장 (Acceleration field) 변곡점 탐지
+//
+// 입력: forge/genomes.index.jsonl (6축)
+// 방법: 각 축 1차 차분 dx, 2차 차분 d2x 계산,
+//       ‖d²x‖ (6축 L2) > accel_threshold 인 t 를 변곡점으로 마킹.
+// 출력: stdout JSON + growth_bus append.
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(key: str, fb: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fb }
+    let lines = read_file(CONFIG_PATH).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            try {
+                let p = json_parse(ln)
+                if p["key"] == key { return p["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fb
+}
+fn cfg_i(k: str, fb: int) -> int {
+    try { return to_int(to_float(load_cfg(k, to_string(fb)))) } catch e { return fb }
+}
+fn cfg_f(k: str, fb: float) -> float {
+    try { return to_float(load_cfg(k, to_string(fb))) } catch e { return fb }
+}
+
+fn sqrt_approx(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x / 2.0
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 20 { g = 0.5 * (g + x / g); i = i + 1 }
+    return g
+}
+
+consciousness AccelDetector {
+    let max_n = cfg_i("max_records", 500)
+    let thr   = cfg_f("accel_threshold", 12.0)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    if file_exists(idx_path) == false {
+        println("{\"detector\":\"accel_field\",\"status\":\"empty\"}")
+    }
+    if file_exists(idx_path) {
+        let lines = read_file(idx_path).split("\n")
+        // Collect up to max_n rows as parallel arrays
+        let mut a0 = []
+        let mut a1 = []
+        let mut a2 = []
+        let mut a3 = []
+        let mut a4 = []
+        let mut a5 = []
+        let mut i = 0
+        let mut n = 0
+        while i < len(lines) && n < max_n {
+            let ln = lines[i].trim()
+            if len(ln) > 10 {
+                try {
+                    let rec = json_parse(ln)
+                    let axes = rec["axes"]
+                    let c = axes.split(",")
+                    if len(c) >= 6 {
+                        a0 = a0 + [to_float(c[0])]
+                        a1 = a1 + [to_float(c[1])]
+                        a2 = a2 + [to_float(c[2])]
+                        a3 = a3 + [to_float(c[3])]
+                        a4 = a4 + [to_float(c[4])]
+                        a5 = a5 + [to_float(c[5])]
+                        n = n + 1
+                    }
+                } catch e {}
+            }
+            i = i + 1
+        }
+        let mut inflections = 0
+        let mut max_mag = 0.0
+        let mut sum_mag = 0.0
+        let mut t = 2
+        while t < n {
+            let d0 = a0[t] - 2.0 * a0[t-1] + a0[t-2]
+            let d1 = a1[t] - 2.0 * a1[t-1] + a1[t-2]
+            let d2 = a2[t] - 2.0 * a2[t-1] + a2[t-2]
+            let d3 = a3[t] - 2.0 * a3[t-1] + a3[t-2]
+            let d4 = a4[t] - 2.0 * a4[t-1] + a4[t-2]
+            let d5 = a5[t] - 2.0 * a5[t-1] + a5[t-2]
+            let mag = sqrt_approx(d0*d0 + d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5)
+            sum_mag = sum_mag + mag
+            if mag > max_mag { max_mag = mag }
+            if mag > thr { inflections = inflections + 1 }
+            t = t + 1
+        }
+        let mean_mag = 0.0
+        if n > 2 {
+            let denom = to_float(n - 2)
+            let mean_mag2 = sum_mag / denom
+            let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+            // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+            let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/accel_field\",\"event\":\"accel_field_scan\",\"domain\":\"airgenome\",\"detector\":\"accel_field\",\"n\":" + to_string(n) + ",\"inflections\":" + to_string(inflections) + ",\"max_mag\":" + to_string(max_mag) + ",\"mean_mag\":" + to_string(mean_mag2) + ",\"threshold\":" + to_string(thr) + "}"
+            println(line)
+            try { append_file(bus_path, line + "\n") } catch e {}
+        }
+    }
+}

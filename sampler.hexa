@@ -13,7 +13,7 @@ let CONFIG = a[3]
 let TOTAL_RAM_MB = to_int(to_float(a[4]))
 let NCPU = to_int(to_float(a[5]))
 let DIR = a[6]
-let THROTTLE_FILE = exec("echo ${TMPDIR:-/tmp}").trim() + "/airgenome-throttled.pids"
+let THROTTLE_FILE = try { exec("echo ${TMPDIR:-/tmp}").trim() } catch e { "/tmp" } + "/airgenome-throttled.pids"
 
 fn read_config_val(path: str, key: str, default_val: int) -> int {
     if file_exists(path) == false { return default_val }
@@ -26,7 +26,7 @@ fn read_config_val(path: str, key: str, default_val: int) -> int {
 
 fn read_jsonl_val(path: str, key: str, default_val: int) -> int {
     if file_exists(path) == false { return default_val }
-    let v = exec("awk -F'\"' '/\"" + key + "\"/{print $8}' " + path + " 2>/dev/null").trim()
+    let v = try { exec("awk -F'\"' '/\"" + key + "\"/{print $8}' " + path + " 2>/dev/null").trim() } catch e { "" }
     if len(v) == 0 { return default_val }
     try { return to_int(to_float(v)) } catch e { return default_val }
 }
@@ -50,18 +50,18 @@ while true {
     let mut cpu = 0
     let mut cpu_f = 0.0
     if lite_scan == false {
-        cpu_str = exec("timeout 10 top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim()
+        cpu_str = try { exec("timeout 10 top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim() } catch e { "0" }
         try { cpu_f = to_float(cpu_str) } catch e {}
     }
     if cpu_f <= 0.0 {
-        let cpu_total = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim()
+        let cpu_total = try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim() } catch e { "0" }
         try { cpu_f = to_float(cpu_total) / to_float(to_string(NCPU)) } catch e {}
         cpu_str = to_string(cpu_f)
     }
     cpu = to_int(cpu_f)
 
     // RAM — vm_stat 페이지 단위 (active+wired+compressor). top "23G"는 해상도 1GB(~4% 오차).
-    let ram_str = exec("vm_stat 2>/dev/null | awk 'BEGIN{ps=16384} /page size of/{ps=$8} /Pages active/{a=$3} /Pages wired down/{w=$4} /Pages occupied by compressor/{c=$5} END{gsub(/\\./,\"\",a); gsub(/\\./,\"\",w); gsub(/\\./,\"\",c); printf \"%.1f\",(a+w+c)*ps/1048576}'").trim()
+    let ram_str = try { exec("vm_stat 2>/dev/null | awk 'BEGIN{ps=16384} /page size of/{ps=$8} /Pages active/{a=$3} /Pages wired down/{w=$4} /Pages occupied by compressor/{c=$5} END{gsub(/\\./,\"\",a); gsub(/\\./,\"\",w); gsub(/\\./,\"\",c); printf \"%.1f\",(a+w+c)*ps/1048576}'").trim() } catch e { "0" }
     let mut ram_used_f = 0.0
     try { ram_used_f = to_float(ram_str) } catch e {}
     let ram_used_mb = to_int(ram_used_f)
@@ -69,20 +69,20 @@ while true {
     let ram = if TOTAL_RAM_MB > 0 { ram_used_mb * 100 / TOTAL_RAM_MB } else { 0 }
 
     // Swap — vm.swapusage used 필드, 소수 정밀도 유지
-    let swap_str = exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.1f\",$3}'").trim()
+    let swap_str = try { exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.1f\",$3}'").trim() } catch e { "0" }
     let mut swap_f = 0.0
     try { swap_f = to_float(swap_str) } catch e {}
     let swap_mb = to_int(swap_f)
     let swap = if TOTAL_RAM_MB > 0 { swap_mb * 100 / TOTAL_RAM_MB } else { 0 }
 
     // Load
-    let load_str = exec("sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,\"\"); printf \"%.0f\",$1}'").trim()
+    let load_str = try { exec("sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,\"\"); printf \"%.0f\",$1}'").trim() } catch e { "0" }
     let mut load = 0
     try { load = to_int(to_float(load_str)) } catch e {}
 
     // Net — netstat -ibn 델타, MB/s (1% 미만 정밀도 유지 위해 bytes 단위)
-    let net_now_str = exec("netstat -ibn 2>/dev/null | awk 'NR>1 && $1!~/^lo/ && $1!~/^utun/ && $4!~/:/{ib+=$7; ob+=$10} END{printf \"%.0f\",ib+ob}'").trim()
-    let ts_str = exec("date +%s").trim()
+    let net_now_str = try { exec("netstat -ibn 2>/dev/null | awk 'NR>1 && $1!~/^lo/ && $1!~/^utun/ && $4!~/:/{ib+=$7; ob+=$10} END{printf \"%.0f\",ib+ob}'").trim() } catch e { "0" }
+    let ts_str = try { exec("date +%s").trim() } catch e { "0" }
     let mut net_now = 0
     let mut ts_now = 0
     try { net_now = to_int(to_float(net_now_str)) } catch e {}
@@ -105,7 +105,7 @@ while true {
     let mut disk_mbps = 0
     let mut disk_mbps_f = 0.0
     if lite_scan == false {
-        let disk_cum_str = exec("iostat -Id disk0 2>/dev/null | awk 'NR==3{printf \"%.0f\",$3}'").trim()
+        let disk_cum_str = try { exec("iostat -Id disk0 2>/dev/null | awk 'NR==3{printf \"%.0f\",$3}'").trim() } catch e { "0" }
         try { disk_cum = to_int(to_float(disk_cum_str)) } catch e {}
     }
     if prev_disk_kb > 0 && ts_now > prev_disk_ts {
@@ -125,7 +125,7 @@ while true {
     let mut gpu_local_str = ""
     let mut gpu_local = 0
     if lite_scan == false {
-        gpu_local_str = exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim()
+        gpu_local_str = try { exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim() } catch e { "" }
         try { gpu_local = to_int(to_float(gpu_local_str)) } catch e {}
     }
 
@@ -155,14 +155,14 @@ while true {
     }
 
     // ── BRIDGE LIMITER ──
-    let bridge_pids = exec("ps -eo pid=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | awk '{print $1}'").trim()
-    let bridge_count_str = exec("echo '" + bridge_pids.replace("'", "") + "' | grep -c . 2>/dev/null || echo 0").trim()
+    let bridge_pids = try { exec("ps -eo pid=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | awk '{print $1}'").trim() } catch e { "" }
+    let bridge_count_str = try { exec("echo '" + bridge_pids.replace("'", "") + "' | grep -c . 2>/dev/null || echo 0").trim() } catch e { "0" }
     let mut bridge_count = 0
     try { bridge_count = to_int(to_float(bridge_count_str)) } catch e {}
 
     if bridge_max > 0 && bridge_count > bridge_max {
         let kill_n = bridge_count - bridge_max
-        exec("echo '" + bridge_pids + "' | head -" + to_string(kill_n) + " | while read BPID; do kill $BPID 2>/dev/null; done")
+        try { exec("echo '" + bridge_pids + "' | head -" + to_string(kill_n) + " | while read BPID; do kill $BPID 2>/dev/null; done") } catch e { println("[warn] sampler: bridge kill failed — " + e) }
     }
 
     // ── LEVEL ──
@@ -175,17 +175,17 @@ while true {
     if free_mb < 200 || swap_thrash {
         level = "critical"
         throttled = "true"
-        exec("purge 2>/dev/null")
+        try { exec("purge 2>/dev/null") } catch e { println("[warn] sampler: purge failed — " + e) }
         if bridge_count > 0 {
-            exec("echo '" + bridge_pids + "' | while read BPID; do kill $BPID 2>/dev/null; done")
+            try { exec("echo '" + bridge_pids + "' | while read BPID; do kill $BPID 2>/dev/null; done") } catch e { println("[warn] sampler: bridge kill failed — " + e) }
         }
-        exec("ps -eo pid=,rss=,comm= | sort -rnk2 | head -5 | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null; echo $TPID >> " + THROTTLE_FILE + "; done")
+        try { exec("ps -eo pid=,rss=,comm= | sort -rnk2 | head -5 | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in kernel_task|WindowServer|launchd|loginwindow|opendirectoryd) continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null; echo $TPID >> " + THROTTLE_FILE + "; done") } catch e { println("[warn] sampler: taskpolicy throttle failed — " + e) }
     } else if free_mb < 512 || load_saturated {
         level = "danger"
         throttled = "true"
-        exec("purge 2>/dev/null")
+        try { exec("purge 2>/dev/null") } catch e { println("[warn] sampler: purge failed — " + e) }
         if bridge_count > 1 {
-            exec("echo '" + bridge_pids + "' | head -" + to_string(bridge_count - 1) + " | while read BPID; do kill $BPID 2>/dev/null; done")
+            try { exec("echo '" + bridge_pids + "' | head -" + to_string(bridge_count - 1) + " | while read BPID; do kill $BPID 2>/dev/null; done") } catch e { println("[warn] sampler: bridge kill failed — " + e) }
         }
     } else if ram > ram_ceil || cpu > cpu_ceil || swap > swap_ceil {
         level = "warn"
@@ -201,19 +201,21 @@ while true {
             }
             if pred_nmi > 0.4 {
                 // L5c NMI 높음 = RAM 압박 지속적 → 조기 purge
-                exec("purge 2>/dev/null")
+                try { exec("purge 2>/dev/null") } catch e { println("[warn] sampler: predictive purge failed — " + e) }
             }
         }
     } else {
         if file_exists(THROTTLE_FILE) {
-            exec("sort -u " + THROTTLE_FILE + " | while read RPID; do taskpolicy -d default -p $RPID 2>/dev/null; done")
-            exec("rm -f " + THROTTLE_FILE)
+            try {
+                exec("sort -u " + THROTTLE_FILE + " | while read RPID; do taskpolicy -d default -p $RPID 2>/dev/null; done")
+                exec("rm -f " + THROTTLE_FILE)
+            } catch e { println("[warn] sampler: taskpolicy restore failed — " + e) }
         }
     }
 
     // ── SAVINGS ──
-    let sys_cpu_total_s = exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim()
-    let sys_ram_total_s = exec("ps -A -o rss= | awk '{s+=$1}END{printf \"%.0f\",s/1024}'").trim()
+    let sys_cpu_total_s = try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim() } catch e { "1" }
+    let sys_ram_total_s = try { exec("ps -A -o rss= | awk '{s+=$1}END{printf \"%.0f\",s/1024}'").trim() } catch e { "1" }
     let mut sys_cpu_total = 1
     let mut sys_ram_total = 1
     try { sys_cpu_total = to_int(to_float(sys_cpu_total_s)) } catch e {}
@@ -221,10 +223,10 @@ while true {
     if sys_cpu_total < 1 { sys_cpu_total = 1 }
     if sys_ram_total < 1 { sys_ram_total = 1 }
 
-    let hog_cpu_s = exec("ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=$2*0.30} END{printf \"%.0f\",s}'").trim()
-    let hog_ram_s = exec("ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
-    let claude_s = exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
-    let webkit_s = exec("ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim()
+    let hog_cpu_s = try { exec("ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=$2*0.30} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+    let hog_ram_s = try { exec("ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+    let claude_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+    let webkit_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
 
     let mut hog_cpu = 0
     let mut hog_ram = 0
@@ -242,8 +244,8 @@ while true {
     if save_ram > 99 { save_ram = 99 }
 
     // ── GHOST PROCESS DETECTION (detect-only, Prime Directive safe) ──
-    let ghost_sh_s = exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim()
-    let ghost_grep_s = exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim()
+    let ghost_sh_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
+    let ghost_grep_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
     let mut ghost_sh = 0
     let mut ghost_grep = 0
     try { ghost_sh = to_int(to_float(ghost_sh_s)) } catch e {}
@@ -264,12 +266,12 @@ while true {
     let mut ubu_host = ""
     let mut ubu_port = "9900"
     if file_exists(gate_cfg) {
-        let gh = exec("awk -F'\"' '/\"remote_host\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim()
-        let gp = exec("awk -F'\"' '/\"remote_port\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim()
+        let gh = try { exec("awk -F'\"' '/\"remote_host\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim() } catch e { "" }
+        let gp = try { exec("awk -F'\"' '/\"remote_port\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim() } catch e { "" }
         if len(gh) > 0 { ubu_host = gh }
         if len(gp) > 0 { ubu_port = gp }
     }
-    if len(ubu_host) == 0 { ubu_host = exec("printenv AG3_UBU_HOST 2>/dev/null || echo 192.168.50.119").trim() }
+    if len(ubu_host) == 0 { ubu_host = try { exec("printenv AG3_UBU_HOST 2>/dev/null || echo 192.168.50.119").trim() } catch e { "192.168.50.119" } }
 
     let mut gate = "offline"
     let mut ubu_load = "0"
@@ -283,24 +285,24 @@ while true {
     let mut ubu_gpu_mem = 0
     let mut ubu_gpu_name = ""
 
-    let gate_check = exec("nc -z -w 1 " + ubu_host + " " + ubu_port + " 2>/dev/null && echo y || echo n").trim()
+    let gate_check = try { exec("nc -z -w 1 " + ubu_host + " " + ubu_port + " 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
     if gate_check == "y" {
         gate = "online"
-        let ubu_status = exec("echo STATUS | nc -w 2 " + ubu_host + " " + ubu_port + " 2>/dev/null").trim()
+        let ubu_status = try { exec("echo STATUS | nc -w 2 " + ubu_host + " " + ubu_port + " 2>/dev/null").trim() } catch e { "" }
         if len(ubu_status) > 0 {
-            let ul = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'load=[^ ]*' | cut -d= -f2 | awk '{print $1}'").trim()
+            let ul = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'load=[^ ]*' | cut -d= -f2 | awk '{print $1}'").trim() } catch e { "" }
             if len(ul) > 0 { ubu_load = ul }
-            let uru = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d= -f2 | cut -d/ -f1").trim()
-            let urt = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d/ -f2 | sed 's/MB.*//'").trim()
-            let ura = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'avail=[^ ]*' | cut -d= -f2 | sed 's/MB.*//'").trim()
+            let uru = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d= -f2 | cut -d/ -f1").trim() } catch e { "" }
+            let urt = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d/ -f2 | sed 's/MB.*//'").trim() } catch e { "" }
+            let ura = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'avail=[^ ]*' | cut -d= -f2 | sed 's/MB.*//'").trim() } catch e { "" }
             try { ubu_ram_used = to_int(to_float(uru)) } catch e {}
             try { ubu_ram_total = to_int(to_float(urt)) } catch e {}
             try { ubu_ram_avail = to_int(to_float(ura)) } catch e {}
             if ubu_ram_total > 0 { ubu_ram_pct = ubu_ram_used * 100 / ubu_ram_total }
             // jobs/cpu/gpu 모두 STATUS 응답에서 파싱 (SSH 제거 — 렉 방지)
-            let uj = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'jobs=[^ ]*' | cut -d= -f2").trim()
+            let uj = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'jobs=[^ ]*' | cut -d= -f2").trim() } catch e { "" }
             try { ubu_jobs = to_int(to_float(uj)) } catch e {}
-            let uc = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'cpu=[^ ]*' | cut -d= -f2").trim()
+            let uc = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'cpu=[^ ]*' | cut -d= -f2").trim() } catch e { "" }
             try { ubu_cpu = to_int(to_float(uc)) } catch e {}
             // GPU: "gpu=<util>, <mem>, <name>" — 첫 gpu= 이후 전부
             if ubu_status.contains("gpu=") {
@@ -341,7 +343,7 @@ while true {
     let vr_net = to_string(net_kbps_f / 1024.0)
     let vr_disk = to_string(disk_mbps_f)
     let vr_gpu = gpu_local_f_str
-    exec("timeout 30 $HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu)
+    try { exec("timeout 30 $HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu) } catch e { println("[warn] sampler: vitals_ring tick failed — " + e) }
 
     prev_level = level
 
@@ -353,5 +355,5 @@ while true {
     if level == "ok" { sleep_sec = scan_ok_sec }
     if level == "warn" { sleep_sec = scan_warn_sec }
     if level == "critical" || level == "danger" { sleep_sec = scan_critical_sec }
-    exec("sleep " + to_string(sleep_sec))
+    try { exec("sleep " + to_string(sleep_sec)) } catch e {}
 }

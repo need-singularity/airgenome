@@ -1,0 +1,146 @@
+// airgenome/modules/detectors/entropy_flow.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 6/6 — 엔트로피 흐름 (dH/dt)
+//
+// 입력: forge/genomes.index.jsonl
+// 방법: 슬라이딩 윈도우 (entropy_window) 마다 각 축의 Shannon 엔트로피
+//       H = -Σ p log2 p (8 bin 양자화) 계산,
+//       H(t) − H(t-1) 시계열의 평균/피크 기록.
+// 출력: stdout JSON + growth_bus append.
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(k: str, fb: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fb }
+    let lines = read_file(CONFIG_PATH).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            try { let p = json_parse(ln); if p["key"] == k { return p["value"] } } catch e {}
+        }
+        i = i + 1
+    }
+    return fb
+}
+fn cfg_i(k: str, fb: int) -> int { try { return to_int(to_float(load_cfg(k, to_string(fb)))) } catch e { return fb } }
+
+fn ln_approx(x: float) -> float {
+    if x <= 0.0 { return -1000.0 }
+    let mut k = 0.0
+    let mut m = x
+    while m >= 2.0 { m = m / 2.0; k = k + 1.0 }
+    while m < 1.0  { m = m * 2.0; k = k - 1.0 }
+    let u = m - 1.0
+    let u2 = u*u; let u3 = u2*u; let u4 = u3*u; let u5 = u4*u
+    return k * 0.6931471805599453 + (u - u2/2.0 + u3/3.0 - u4/4.0 + u5/5.0)
+}
+fn log2_approx(x: float) -> float { return ln_approx(x) / 0.6931471805599453 }
+
+fn entropy_window(arr: float_array, start: int, w: int) -> float {
+    let mut c = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut i = 0
+    while i < w {
+        let v = arr[start + i]
+        let mut b = to_int(v * 8.0 / 256.0)
+        if b < 0 { b = 0 }
+        if b > 7 { b = 7 }
+        c[b] = c[b] + 1.0
+        i = i + 1
+    }
+    let total = to_float(w)
+    let mut H = 0.0
+    let mut j = 0
+    while j < 8 {
+        if c[j] > 0.0 {
+            let p = c[j] / total
+            H = H - p * log2_approx(p)
+        }
+        j = j + 1
+    }
+    return H
+}
+
+consciousness EntropyFlowDetector {
+    let max_n = cfg_i("max_records", 500)
+    let W     = cfg_i("entropy_window", 32)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    if file_exists(idx_path) == false {
+        println("{\"detector\":\"entropy_flow\",\"status\":\"empty\"}")
+    }
+    if file_exists(idx_path) {
+        let lines = read_file(idx_path).split("\n")
+        let mut a0 = []
+        let mut a1 = []
+        let mut a2 = []
+        let mut a3 = []
+        let mut a4 = []
+        let mut a5 = []
+        let mut i = 0
+        let mut n = 0
+        while i < len(lines) && n < max_n {
+            let ln = lines[i].trim()
+            if len(ln) > 10 {
+                try {
+                    let rec = json_parse(ln)
+                    let c = rec["axes"].split(",")
+                    if len(c) >= 6 {
+                        a0 = a0 + [to_float(c[0])]
+                        a1 = a1 + [to_float(c[1])]
+                        a2 = a2 + [to_float(c[2])]
+                        a3 = a3 + [to_float(c[3])]
+                        a4 = a4 + [to_float(c[4])]
+                        a5 = a5 + [to_float(c[5])]
+                        n = n + 1
+                    }
+                } catch e {}
+            }
+            i = i + 1
+        }
+        if n < W + 2 {
+            println("{\"detector\":\"entropy_flow\",\"status\":\"insufficient\",\"n\":" + to_string(n) + "}")
+        }
+        if n >= W + 2 {
+            // dH/dt per axis (mean absolute)
+            let mut flows = ""
+            let mut axis = 0
+            while axis < 6 {
+                let mut arr = a0
+                if axis == 1 { arr = a1 }
+                if axis == 2 { arr = a2 }
+                if axis == 3 { arr = a3 }
+                if axis == 4 { arr = a4 }
+                if axis == 5 { arr = a5 }
+                let mut prev_H = entropy_window(arr, 0, W)
+                let mut sum_abs = 0.0
+                let mut peak = 0.0
+                let mut steps = 0
+                let mut s = 1
+                while s + W <= n {
+                    let H = entropy_window(arr, s, W)
+                    let dH = H - prev_H
+                    let ab = dH
+                    if ab < 0.0 { ab = 0.0 - ab }
+                    sum_abs = sum_abs + ab
+                    if ab > peak { peak = ab }
+                    prev_H = H
+                    steps = steps + 1
+                    s = s + 1
+                }
+                let mean_abs = 0.0
+                if steps > 0 { mean_abs = sum_abs / to_float(steps) }
+                if len(flows) > 0 { flows = flows + "," }
+                flows = flows + "{\"axis\":" + to_string(axis) + ",\"mean_abs_dH\":" + to_string(mean_abs) + ",\"peak_abs_dH\":" + to_string(peak) + "}"
+                axis = axis + 1
+            }
+            let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+            // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+            let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/entropy_flow\",\"event\":\"entropy_flow_scan\",\"domain\":\"airgenome\",\"detector\":\"entropy_flow\",\"n\":" + to_string(n) + ",\"window\":" + to_string(W) + ",\"flows\":[" + flows + "]}"
+            println(line)
+            try { append_file(bus_path, line + "\n") } catch e {}
+        }
+    }
+}

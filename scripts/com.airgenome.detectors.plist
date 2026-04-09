@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome detectors — launchd agent (30-min interval)
+  hexa runs via gate wrapper → Ubuntu remote execution
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.detectors</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/.hx/bin/hexa</string>
+        <string>/Users/ghost/Dev/airgenome/modules/detectors/run_all.hexa</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.hx/bin</string>
+        <key>HEXA</key>
+        <string>/Users/ghost/.hx/bin/hexa</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-detectors.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-detectors.err</string>
+</dict>
+</plist>

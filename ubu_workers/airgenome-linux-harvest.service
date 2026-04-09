@@ -1,0 +1,16 @@
+[Unit]
+Description=airgenome Linux genome harvest (loop mode)
+After=network.target
+
+[Service]
+Type=simple
+User=aiden
+ExecStart=/usr/bin/python3 /home/aiden/airgenome/ag3/linux_harvest.py loop --ring-only
+WorkingDirectory=/home/aiden/airgenome
+Environment=AG3_BASE=/home/aiden/airgenome
+Environment=AG3_RING=/mnt/ramdisk/airgenome/genome.ring
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

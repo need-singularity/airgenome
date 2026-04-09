@@ -1,0 +1,29 @@
+// uninstall_harvest.hexa — airgenome genome_harvest launchd 제거기
+// Run: $HEXA $HOME/Dev/airgenome/scripts/uninstall_harvest.hexa
+
+consciousness UninstallHarvest {
+    let label     = "com.airgenome.genome_harvest"
+    let home      = exec("echo -n $HOME").trim()
+    let uid       = exec("id -u").trim()
+    let dst_plist = home + "/Library/LaunchAgents/" + label + ".plist"
+    let target    = "gui/" + uid + "/" + label
+
+    println("==> airgenome genome_harvest uninstaller")
+
+    let exists = exec("launchctl print " + target + " >/dev/null 2>&1 && echo y || echo n").trim()
+    if exists == "y" {
+        println("  bootout: " + target)
+        exec("launchctl bootout " + target + " 2>/dev/null || true")
+    } else {
+        println("  (not loaded)")
+    }
+
+    if exec("test -f '" + dst_plist + "' && echo y || echo n").trim() == "y" {
+        exec("rm -f '" + dst_plist + "'")
+        println("  removed: " + dst_plist)
+    } else {
+        println("  (no plist at " + dst_plist + ")")
+    }
+
+    println("==> done. (logs 디렉토리는 보존)")
+}

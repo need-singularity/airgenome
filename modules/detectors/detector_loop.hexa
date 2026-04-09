@@ -1,0 +1,154 @@
+// airgenome/modules/detectors/detector_loop.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector Loop — run_all 주기 실행 + NEXUS-6 blowup 연동
+//
+// 매 tick:
+//   1) run_all.hexa 실행 → 각 detector 결과 수집
+//   2) 이전 tick 과 비교 (mi_lag delta, cascade edge, limit_cycle 이탈)
+//   3) 임계치 초과 시 blowup airgenome 3 호출 (cooldown 적용)
+//   4) sleep(loop_interval_sec)
+//
+// 설정: nexus/shared/detectors.jsonl
+//   loop_interval_sec / blowup_on_change / change_threshold / blowup_cooldown_sec
+// ─────────────────────────────────────────────────────────────────────────
+
+let HEXA_BIN   = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+let AG_ROOT    = env("HOME") + "/Dev/airgenome"
+let NEXUS_ROOT = env("HOME") + "/Dev/nexus"
+let RUN_ALL    = AG_ROOT + "/modules/detectors/run_all.hexa"
+let BLOWUP     = NEXUS_ROOT + "/mk2_hexa/native/blowup.hexa"
+let CONFIG     = AG_ROOT + "/nexus/shared/detectors.jsonl"
+let GROWTH_BUS = NEXUS_ROOT + "/shared/growth_bus.jsonl"
+
+fn cfg(key: str, default: str) -> str {
+    let cmd = "grep '\"key\":\"" + key + "\"' '" + CONFIG + "' 2>/dev/null | tail -1 | sed -E 's/.*\"value\":\"([^\"]*)\".*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    if len(v) == 0 { return default }
+    return v
+}
+
+fn run_detectors() -> str {
+    // run_all 실행 후 stdout 전체 수집 (JSON 라인들 포함)
+    return try { exec(HEXA_BIN + " " + RUN_ALL + " 2>&1") } catch e { "" }
+}
+
+fn extract(text: str, det: str) -> str {
+    // 해당 detector 이름을 포함한 JSON 라인 1개 추출
+    let cmd = "printf '%s' " + shell_quote(text) + " | grep '\"detector\":\"" + det + "\"' | tail -1"
+    return try { exec(cmd).trim() } catch e { "" }
+}
+
+fn shell_quote(s: str) -> str {
+    // 간단 single-quote escape
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn parse_num(line: str, field: str) -> str {
+    if len(line) == 0 { return "" }
+    let cmd = "printf '%s' " + shell_quote(line) + " | sed -E 's/.*\"" + field + "\":([-0-9.]+).*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    return v
+}
+
+fn to_f(s: str) -> float {
+    if len(s) == 0 { return 0.0 }
+    try { return parse_float(s) } catch e { return 0.0 }
+}
+
+fn log_event(kind: str, payload: str) {
+    // gb_append schema: {ts iso8601Z, source, event, domain="airgenome", ...}
+    let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+    let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detector_loop\",\"event\":\"" + kind + "\",\"domain\":\"airgenome\",\"kind\":\"" + kind + "\"," + payload + "}"
+    try { exec("printf '%s\\n' " + shell_quote(line) + " >> '" + GROWTH_BUS + "'") } catch e { println("[warn] detector_loop: log_event failed — " + e) }
+}
+
+fn trigger_blowup() {
+    println("  [blowup] airgenome 3 --no-graph")
+    try { exec(HEXA_BIN + " " + BLOWUP + " airgenome 3 --no-graph 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup failed — " + e) }
+}
+
+consciousness DetectorLoop {
+    println("╔══════════════════════════════════════════════╗")
+    println("║  airgenome detector_loop — always-on         ║")
+    println("╚══════════════════════════════════════════════╝")
+
+    let interval_s = cfg("loop_interval_sec", "60")
+    let blow_on    = cfg("blowup_on_change", "true")
+    let thresh_s   = cfg("change_threshold", "0.1")
+    let cooldown_s = cfg("blowup_cooldown_sec", "900")
+
+    let interval = to_f(interval_s)
+    let thresh   = to_f(thresh_s)
+    let cooldown = to_f(cooldown_s)
+
+    println("config: interval=" + interval_s + "s blowup=" + blow_on + " threshold=" + thresh_s + " cooldown=" + cooldown_s + "s")
+
+    let mut prev_mi      = -1.0
+    let mut prev_cascade = -1.0
+    let mut prev_limit   = -1.0
+    let mut last_blow_ts = 0.0
+    let mut tick = 0
+
+    while true {
+        tick = tick + 1
+        let ts = try { exec("date +%s").trim() } catch e { "0" }
+        let now = to_f(ts)
+        println("")
+        println("── tick #" + to_string(tick) + " @ " + try { exec("date -u +%H:%M:%SZ").trim() } catch e { "??:??:??Z" } + " ──")
+
+        let out = run_detectors()
+
+        let mi_line      = extract(out, "mi_lag")
+        let cascade_line = extract(out, "cascade_dag")
+        let limit_line   = extract(out, "limit_cycle")
+
+        let mi_val      = to_f(parse_num(mi_line, "mi_max"))
+        let cascade_val = to_f(parse_num(cascade_line, "edges"))
+        let limit_val   = to_f(parse_num(limit_line, "out_ratio"))
+
+        println("  mi_max=" + to_string(mi_val) + " cascade_edges=" + to_string(cascade_val) + " limit_out=" + to_string(limit_val))
+
+        let mut trigger = false
+        let mut reason = ""
+
+        if prev_mi >= 0.0 {
+            let d = mi_val - prev_mi
+            let ad = if d < 0.0 { 0.0 - d } else { d }
+            if ad > thresh {
+                trigger = true
+                reason = "mi_lag_delta=" + to_string(ad)
+            }
+        }
+        if prev_cascade >= 0.0 && cascade_val > prev_cascade {
+            trigger = true
+            reason = reason + " cascade_new_edges=" + to_string(cascade_val - prev_cascade)
+        }
+        if prev_limit >= 0.0 {
+            let d2 = limit_val - prev_limit
+            let ad2 = if d2 < 0.0 { 0.0 - d2 } else { d2 }
+            if ad2 > thresh {
+                trigger = true
+                reason = reason + " limit_out_delta=" + to_string(ad2)
+            }
+        }
+
+        if trigger && blow_on == "true" {
+            let since = now - last_blow_ts
+            if last_blow_ts == 0.0 || since > cooldown {
+                println("  [change] " + reason)
+                log_event("change_detected", "\"reason\":\"" + reason + "\",\"mi\":" + to_string(mi_val) + ",\"cascade\":" + to_string(cascade_val) + ",\"limit_out\":" + to_string(limit_val))
+                trigger_blowup()
+                last_blow_ts = now
+            } else {
+                println("  [change] " + reason + " (cooldown " + to_string(cooldown - since) + "s)")
+            }
+        }
+
+        prev_mi      = mi_val
+        prev_cascade = cascade_val
+        prev_limit   = limit_val
+
+        let sleep_n = if interval < 1.0 { 60 } else { interval as int }
+        try { exec("sleep " + to_string(sleep_n)) } catch e {}
+    }
+}

@@ -1,0 +1,27 @@
+{"key":"on_exec_fail","value":"silent_exit","desc":"exec() 실패 시 기본 정책: silent_exit | warn_continue | abort"}
+{"key":"silent_exit_code","value":"0","desc":"silent exit 시 종료 코드 (0=정상 종료 위장)"}
+{"key":"max_retry","value":"0","desc":"exec 실패 시 재시도 횟수 (0=재시도 안함)"}
+{"key":"log_errors","value":"true","desc":"에러 발생 시 stderr 로깅 여부"}
+{"key":"log_prefix","value":"[ag:err]","desc":"에러 로그 접두사"}
+{"key":"network_timeout_sec","value":"10","desc":"네트워크 exec(nc, scp, curl) 기본 타임아웃"}
+{"key":"fallback_numeric","value":"0","desc":"숫자 반환 exec 실패 시 기본값"}
+{"key":"fallback_string","value":"","desc":"문자열 반환 exec 실패 시 기본값"}
+{"key":"critical_modules","value":"sampler,menubar,run","desc":"이 모듈은 silent_exit 대신 warn_continue (죽으면 안 됨)"}
+{"key":"expendable_modules","value":"detectors,harvest,shipper,crosscorr","desc":"이 모듈은 silent_exit 허용 (재시작 가능)"}
+{"key":"try_catch_rule","value":"all_exec","desc":"try/catch 적용 범위: all_exec=모든 exec 래핑 | network_only | none"}
+{"key":"catch_action_network","value":"silent_exit","desc":"네트워크 exec 실패 시: silent_exit | warn_continue | retry"}
+{"key":"catch_action_fs","value":"warn_continue","desc":"파일시스템 exec 실패 시: silent_exit | warn_continue"}
+{"key":"catch_action_process","value":"warn_continue","desc":"프로세스 조회 exec 실패 시: warn_continue | silent_exit"}
+{"key":"catch_action_kill","value":"silent_ignore","desc":"kill/pkill 실패 시: silent_ignore (이미 없는 프로세스)"}
+{"key":"catch_action_sysinfo","value":"fallback","desc":"sysctl/vm_stat 등 시스템 정보 실패 시: fallback 기본값 사용"}
+{"key":"catch_fallback_cpu","value":"0","desc":"CPU 조회 실패 시 기본값"}
+{"key":"catch_fallback_ram","value":"0","desc":"RAM 조회 실패 시 기본값"}
+{"key":"catch_fallback_net","value":"0","desc":"Net 조회 실패 시 기본값"}
+{"key":"catch_fallback_disk","value":"0","desc":"Disk 조회 실패 시 기본값"}
+{"key":"catch_fallback_gpu","value":"0","desc":"GPU 조회 실패 시 기본값"}
+{"key":"catch_fallback_swap","value":"0","desc":"Swap 조회 실패 시 기본값"}
+{"key":"silent_exit_log","value":"true","desc":"silent exit 시 마지막 에러를 stderr에 1줄 기록"}
+{"key":"silent_exit_format","value":"[ag:err] {module} exit: {reason}","desc":"silent exit 로그 포맷 ({module}, {reason} 치환)"}
+{"key":"daemon_restart_on_crash","value":"true","desc":"launchd 데몬 크래시 시 자동 재시작 여부"}
+{"key":"daemon_restart_delay_sec","value":"10","desc":"데몬 재시작 대기 시간(초)"}
+{"key":"stale_threshold_sec","value":"300","desc":"외부 서비스 상태가 이 시간(초) 이상 갱신 안 되면 stale 표시"}

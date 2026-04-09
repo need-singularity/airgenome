@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airgenome — Hexagonal Projection 3D · Process Genomes</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070c;color:#cfe;font-family:-apple-system,Menlo,monospace;overflow:hidden}
+  #hud{position:fixed;top:10px;left:12px;z-index:10;font-size:12px;line-height:1.6;
+       background:rgba(8,14,22,.78);padding:12px 16px;border:1px solid #1b3550;border-radius:6px;backdrop-filter:blur(6px);max-width:320px}
+  #hud h1{margin:0 0 8px;font-size:13px;color:#6df;letter-spacing:.5px}
+  #hud .info{color:#8a8;font-size:11px;margin:2px 0}
+  #hud .info .num{color:#fe8;font-weight:700}
+  #controls{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  #controls button{background:#0b1a2a;color:#cfe;border:1px solid #1b3550;border-radius:4px;
+                   padding:4px 10px;font:11px -apple-system,Menlo;cursor:pointer;transition:.15s}
+  #controls button:hover{border-color:#6df;color:#6df}
+  #controls button.on{background:#1b3550;color:#6df;border-color:#6df}
+  #tooltip{position:fixed;z-index:20;pointer-events:none;display:none;
+           background:rgba(8,14,22,.92);border:1px solid #6df;border-radius:5px;
+           padding:8px 12px;font-size:11px;line-height:1.5;backdrop-filter:blur(8px);max-width:360px}
+  #tooltip .tt-comm{color:#6df;font-weight:700;margin-bottom:4px;word-break:break-all}
+  #tooltip .tt-axis{display:flex;gap:8px}
+  #tooltip .tt-axis .lbl{color:#9cf;width:36px}
+  #tooltip .tt-axis .bar{flex:1;height:10px;background:#0a1420;border-radius:2px;overflow:hidden}
+  #tooltip .tt-axis .bar-fill{height:100%;border-radius:2px;transition:width .2s}
+  #tooltip .tt-axis .val{color:#fe8;width:28px;text-align:right;font-variant-numeric:tabular-nums}
+  #vitals{position:fixed;top:10px;right:12px;z-index:10;font-size:12px;
+          background:rgba(8,14,22,.72);padding:10px 14px;border:1px solid #1b3550;
+          border-radius:6px;backdrop-filter:blur(6px);min-width:140px}
+  #vitals h2{margin:0 0 6px;font-size:12px;color:#6df;letter-spacing:.4px}
+  #vitals .vrow{display:flex;justify-content:space-between;gap:12px;margin:2px 0}
+  #vitals .vlbl{color:#9cf;font-size:11px}
+  #vitals .vnum{color:#fe8;font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+  #vitals .vnum.na{color:#556;font-weight:400}
+  #legend{position:fixed;bottom:10px;right:12px;z-index:10;font-size:11px;color:#688;
+          background:rgba(8,14,22,.6);padding:6px 10px;border:1px solid #1b3550;border-radius:6px}
+  #file-drop{position:fixed;top:0;left:0;width:100%;height:100%;z-index:100;display:none;
+             background:rgba(5,7,12,.85);align-items:center;justify-content:center}
+  #file-drop.show{display:flex}
+  #file-drop span{color:#6df;font-size:18px;border:2px dashed #6df;padding:40px 60px;border-radius:12px}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>HEXA PROJECTION 3D · PROCESS GENOMES</h1>
+  <div class="info">6-axis hexagonal polygon per process</div>
+  <div class="info" id="status">loading...</div>
+  <div class="info" id="count-info"></div>
+  <div id="controls">
+    <button id="btn-file" class="on">File</button>
+    <button id="btn-api">API</button>
+    <button id="btn-top20">Top 20</button>
+    <button id="btn-all">All</button>
+    <button id="btn-anim">Animate</button>
+  </div>
+</div>
+<div id="vitals">
+  <h2>VITALS</h2>
+  <div class="vrow"><span class="vlbl">L5c NMI</span><span class="vnum na" id="v-l5c">--</span></div>
+  <div class="vrow"><span class="vlbl">L6e Score</span><span class="vnum na" id="v-l6e">--</span></div>
+  <div class="vrow"><span class="vlbl">Genomes</span><span class="vnum na" id="v-cnt">--</span></div>
+  <div class="vrow"><span class="vlbl">Mean CPU</span><span class="vnum na" id="v-cpu">--</span></div>
+  <div class="vrow"><span class="vlbl">Mean RAM</span><span class="vnum na" id="v-ram">--</span></div>
+</div>
+<div id="tooltip"></div>
+<div id="legend">drag = rotate | scroll = zoom | hover polygon = inspect process | Top20 = biggest footprint</div>
+<div id="file-drop"><span>Drop genomes.index.jsonl here</span></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --- Constants ---
+const AXES = ['CPU','RAM','Swap','Net','Disk','GPU'];
+const COLORS = [0xff5577, 0xffaa33, 0xffee55, 0x55ff88, 0x55ccff, 0xaa77ff];
+const POLY_PALETTE = [
+  '#ff557744','#ffaa3344','#ffee5544','#55ff8844','#55ccff44','#aa77ff44',
+  '#ff88aa44','#aaddff44','#66ffcc44','#ffcc6644','#88ff9944','#cc99ff44',
+  '#ff667744','#77ddaa44','#aaeeff44','#ddff7744','#ff99cc44','#99eeff44',
+  '#ccff8844','#ff77aa44'
+];
+const HEX_R = 5;       // hexagon radius on the floor
+const HMAX = 8;         // max bar/polygon height
+const Y_LAYER = 0.04;   // vertical offset between stacked polygons
+const API_BASE_DEFAULT = 'http://localhost:17777';
+
+// --- Scene setup ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070c);
+scene.fog = new THREE.Fog(0x05070c, 30, 80);
+
+const cam = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 200);
+cam.position.set(0, 16, 18);
+
+const renderer = new THREE.WebGLRenderer({antialias:true, alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const ctrls = new OrbitControls(cam, renderer.domElement);
+ctrls.enableDamping = true;
+ctrls.dampingFactor = 0.08;
+ctrls.target.set(0, 3, 0);
+
+// --- Lights ---
+scene.add(new THREE.AmbientLight(0x557788, 0.6));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+keyLight.position.set(8, 14, 6);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x66aaff, 0.5);
+rimLight.position.set(-6, 4, -8);
+scene.add(rimLight);
+
+// --- Floor hexagon outline ---
+const floorPts = [];
+for (let i = 0; i <= 6; i++) {
+  const a = (Math.PI / 3) * i - Math.PI / 2;
+  floorPts.push(new THREE.Vector3(Math.cos(a) * HEX_R, 0, Math.sin(a) * HEX_R));
+}
+const floorGeo = new THREE.BufferGeometry().setFromPoints(floorPts);
+const floorLine = new THREE.Line(floorGeo, new THREE.LineBasicMaterial({color: 0x244058}));
+scene.add(floorLine);
+
+// --- Grid ---
+const grid = new THREE.GridHelper(24, 24, 0x122033, 0x0a1420);
+grid.position.y = -0.01;
+scene.add(grid);
+
+// --- Axis labels + vertex markers ---
+const hexVerts = AXES.map((_, i) => {
+  const a = (Math.PI / 3) * i - Math.PI / 2;
+  return new THREE.Vector3(Math.cos(a) * HEX_R, 0, Math.sin(a) * HEX_R);
+});
+
+hexVerts.forEach((v, i) => {
+  // Small pillar at each vertex
+  const pillarGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.6, 6);
+  const pillarMat = new THREE.MeshPhongMaterial({color: COLORS[i], emissive: COLORS[i], emissiveIntensity: 0.3});
+  const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+  pillar.position.set(v.x, 0.3, v.z);
+  scene.add(pillar);
+
+  // Label sprite
+  const cvs = document.createElement('canvas');
+  cvs.width = 128; cvs.height = 64;
+  const ctx = cvs.getContext('2d');
+  ctx.fillStyle = '#cfe';
+  ctx.font = 'bold 26px -apple-system, Menlo, monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(AXES[i], 64, 38);
+  const tex = new THREE.CanvasTexture(cvs);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map: tex, transparent: true}));
+  sp.position.set(v.x * 1.25, 0.5, v.z * 1.25);
+  sp.scale.set(2.2, 1.1, 1);
+  scene.add(sp);
+});
+
+// --- Axis reference lines (faint vertical from each vertex) ---
+hexVerts.forEach((v, i) => {
+  const pts = [v.clone(), v.clone().setY(HMAX)];
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({color: COLORS[i], transparent: true, opacity: 0.15});
+  scene.add(new THREE.Line(geo, mat));
+});
+
+// --- Data state ---
+let allGenomes = [];
+let displayGenomes = [];
+let polyMeshes = [];   // THREE.Mesh objects currently in scene
+let polyMeta = [];     // parallel metadata array for tooltip
+let mode = 'file';     // 'file' | 'api'
+let filterMode = 'top20';
+let animating = false;
+let animPhase = 0;
+
+// --- UI refs ---
+const statusEl = document.getElementById('status');
+const countEl = document.getElementById('count-info');
+const tooltipEl = document.getElementById('tooltip');
+const btnFile = document.getElementById('btn-file');
+const btnApi = document.getElementById('btn-api');
+const btnTop20 = document.getElementById('btn-top20');
+const btnAll = document.getElementById('btn-all');
+const btnAnim = document.getElementById('btn-anim');
+const vL5c = document.getElementById('v-l5c');
+const vL6e = document.getElementById('v-l6e');
+const vCnt = document.getElementById('v-cnt');
+const vCpu = document.getElementById('v-cpu');
+const vRam = document.getElementById('v-ram');
+
+btnFile.onclick = () => { mode = 'file'; updateButtons(); };
+btnApi.onclick = () => { mode = 'api'; updateButtons(); fetchFromApi(); };
+btnTop20.onclick = () => { filterMode = 'top20'; updateButtons(); rebuildPolygons(); };
+btnAll.onclick = () => { filterMode = 'all'; updateButtons(); rebuildPolygons(); };
+btnAnim.onclick = () => { animating = !animating; animPhase = 0; updateButtons(); };
+
+function updateButtons() {
+  btnFile.classList.toggle('on', mode === 'file');
+  btnApi.classList.toggle('on', mode === 'api');
+  btnTop20.classList.toggle('on', filterMode === 'top20');
+  btnAll.classList.toggle('on', filterMode === 'all');
+  btnAnim.classList.toggle('on', animating);
+}
+
+// --- Parse JSONL ---
+function parseJsonl(text) {
+  const lines = text.trim().split('\n');
+  const items = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const obj = JSON.parse(line);
+      const axesArr = (obj.axes || '').split(',').map(Number);
+      if (axesArr.length === 6) {
+        items.push({
+          pid: obj.pid,
+          comm: obj.comm || `pid:${obj.pid}`,
+          axes: axesArr,     // raw 0-255
+          ts: obj.ts,
+          file: obj.file
+        });
+      }
+    } catch (e) { /* skip malformed */ }
+  }
+  return items;
+}
+
+// --- Build one hex polygon mesh for a process ---
+function makePolygonMesh(axes255, yBase, colorHex) {
+  // axes255: [cpu,ram,swap,net,disk,gpu] each 0-255
+  // Map each axis value to a radius fraction (0..1) of HEX_R
+  const shape = new THREE.Shape();
+  const pts3d = [];
+
+  for (let i = 0; i < 6; i++) {
+    const frac = axes255[i] / 255;
+    const r = frac * HEX_R * 0.95;  // slightly inside the hex boundary
+    const a = (Math.PI / 3) * i - Math.PI / 2;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    pts3d.push(new THREE.Vector3(x, yBase, z));
+    if (i === 0) shape.moveTo(x, z);
+    else shape.lineTo(x, z);
+  }
+  shape.closePath();
+
+  const shapeGeo = new THREE.ShapeGeometry(shape);
+  // Rotate to lie on XZ plane (ShapeGeometry creates in XY)
+  shapeGeo.rotateX(-Math.PI / 2);
+  shapeGeo.translate(0, yBase, 0);
+
+  const color = new THREE.Color(colorHex.slice(0, 7));
+  const mat = new THREE.MeshPhongMaterial({
+    color: color,
+    emissive: color,
+    emissiveIntensity: 0.15,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.NormalBlending
+  });
+
+  const mesh = new THREE.Mesh(shapeGeo, mat);
+
+  // Add wireframe edge
+  const edgePts = [...pts3d, pts3d[0]];
+  const edgeGeo = new THREE.BufferGeometry().setFromPoints(edgePts);
+  const edgeMat = new THREE.LineBasicMaterial({color: color, transparent: true, opacity: 0.6});
+  const edgeLine = new THREE.Line(edgeGeo, edgeMat);
+  mesh.add(edgeLine);
+
+  return mesh;
+}
+
+// --- Clear + rebuild polygon meshes ---
+function rebuildPolygons() {
+  // Remove old
+  for (const m of polyMeshes) {
+    scene.remove(m);
+    m.geometry.dispose();
+    m.material.dispose();
+  }
+  polyMeshes = [];
+  polyMeta = [];
+
+  if (allGenomes.length === 0) return;
+
+  // Deduplicate: keep latest genome per PID
+  const byPid = new Map();
+  for (const g of allGenomes) {
+    const existing = byPid.get(g.pid);
+    if (!existing || g.ts > existing.ts) byPid.set(g.pid, g);
+  }
+  let unique = [...byPid.values()];
+
+  // Sort by total footprint descending
+  unique.sort((a, b) => {
+    const sa = a.axes.reduce((s, v) => s + v, 0);
+    const sb = b.axes.reduce((s, v) => s + v, 0);
+    return sb - sa;
+  });
+
+  displayGenomes = filterMode === 'top20' ? unique.slice(0, 20) : unique.slice(0, 200);
+
+  // Build meshes
+  displayGenomes.forEach((g, idx) => {
+    const colorIdx = idx % POLY_PALETTE.length;
+    const yBase = 0.1 + idx * Y_LAYER;
+    const mesh = makePolygonMesh(g.axes, yBase, POLY_PALETTE[colorIdx]);
+    scene.add(mesh);
+    polyMeshes.push(mesh);
+    polyMeta.push(g);
+  });
+
+  // Update stats
+  const n = displayGenomes.length;
+  countEl.textContent = `showing ${n} / ${unique.length} unique PIDs (${allGenomes.length} total records)`;
+  vCnt.textContent = String(unique.length);
+  vCnt.className = 'vnum';
+
+  if (n > 0) {
+    const meanCpu = displayGenomes.reduce((s, g) => s + g.axes[0], 0) / n;
+    const meanRam = displayGenomes.reduce((s, g) => s + g.axes[1], 0) / n;
+    vCpu.textContent = (meanCpu * 100 / 255).toFixed(1) + '%';
+    vCpu.className = 'vnum';
+    vRam.textContent = (meanRam * 100 / 255).toFixed(1) + '%';
+    vRam.className = 'vnum';
+  }
+}
+
+// --- Load from local JSONL file ---
+async function loadLocalFile(file) {
+  statusEl.textContent = 'loading file...';
+  const text = await file.text();
+  allGenomes = parseJsonl(text);
+  statusEl.textContent = `source: ${file.name}`;
+  rebuildPolygons();
+}
+
+// --- Load from default path (relative) ---
+async function tryDefaultFile() {
+  statusEl.textContent = 'trying forge/genomes.index.jsonl...';
+  try {
+    const resp = await fetch('../forge/genomes.index.jsonl');
+    if (!resp.ok) throw new Error(resp.status);
+    const text = await resp.text();
+    allGenomes = parseJsonl(text);
+    statusEl.textContent = 'source: forge/genomes.index.jsonl';
+    rebuildPolygons();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// --- Load from API ---
+async function fetchFromApi() {
+  const qs = new URLSearchParams(location.search);
+  const base = (qs.get('api') || API_BASE_DEFAULT).replace(/\/$/, '');
+  statusEl.textContent = `connecting ${base}...`;
+  try {
+    const resp = await fetch(base + '/genomes', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('http ' + resp.status);
+    const j = await resp.json();
+    const items = j.items || [];
+    allGenomes = items.map(it => ({
+      pid: it.pid,
+      comm: it.comm || `pid:${it.pid}`,
+      axes: (Array.isArray(it.axes) ? it.axes : (it.axes || '').split(',')).map(Number),
+      ts: it.ts,
+      file: it.file
+    }));
+    statusEl.textContent = `source: API ${base} (${allGenomes.length} genomes)`;
+
+    // Try vitals
+    try {
+      const vr = await fetch(base + '/state', {cache: 'no-store'});
+      if (vr.ok) {
+        const vs = await vr.json();
+        if (vs.vitals) {
+          if (vs.vitals.l5c_nmi != null) { vL5c.textContent = Number(vs.vitals.l5c_nmi).toFixed(4); vL5c.className = 'vnum'; }
+          if (vs.vitals.l6e_score != null) { vL6e.textContent = Number(vs.vitals.l6e_score).toFixed(4); vL6e.className = 'vnum'; }
+        }
+      }
+    } catch (_) {}
+
+    rebuildPolygons();
+  } catch (e) {
+    statusEl.textContent = `api error: ${e.message}`;
+  }
+}
+
+// --- Drag & drop JSONL ---
+const fileDrop = document.getElementById('file-drop');
+document.body.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('show'); });
+fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('show'));
+fileDrop.addEventListener('drop', e => {
+  e.preventDefault();
+  fileDrop.classList.remove('show');
+  if (e.dataTransfer.files.length > 0) {
+    mode = 'file';
+    updateButtons();
+    loadLocalFile(e.dataTransfer.files[0]);
+  }
+});
+
+// --- Also support <input> for file pick ---
+btnFile.addEventListener('dblclick', () => {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.jsonl,.json,.txt';
+  inp.onchange = () => { if (inp.files[0]) loadLocalFile(inp.files[0]); };
+  inp.click();
+});
+
+// --- Raycaster for tooltip ---
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let hoveredIdx = -1;
+
+renderer.domElement.addEventListener('pointermove', e => {
+  mouse.x = (e.clientX / innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+
+  if (polyMeshes.length === 0) { tooltipEl.style.display = 'none'; return; }
+
+  raycaster.setFromCamera(mouse, cam);
+  const hits = raycaster.intersectObjects(polyMeshes, false);
+
+  if (hits.length > 0) {
+    const mesh = hits[0].object;
+    const idx = polyMeshes.indexOf(mesh);
+    if (idx >= 0 && idx !== hoveredIdx) {
+      hoveredIdx = idx;
+      // Highlight
+      polyMeshes.forEach((m, mi) => {
+        m.material.opacity = mi === idx ? 0.7 : 0.15;
+        if (m.children[0]) m.children[0].material.opacity = mi === idx ? 1.0 : 0.2;
+      });
+      const g = polyMeta[idx];
+      const shortComm = g.comm.split('/').pop();
+      let html = `<div class="tt-comm">PID ${g.pid} · ${shortComm}</div>`;
+      const barColors = ['#ff5577','#ffaa33','#ffee55','#55ff88','#55ccff','#aa77ff'];
+      AXES.forEach((ax, ai) => {
+        const pct = (g.axes[ai] / 255 * 100).toFixed(1);
+        html += `<div class="tt-axis">
+          <span class="lbl">${ax}</span>
+          <span class="bar"><span class="bar-fill" style="width:${pct}%;background:${barColors[ai]}"></span></span>
+          <span class="val">${pct}</span>
+        </div>`;
+      });
+      tooltipEl.innerHTML = html;
+    }
+    tooltipEl.style.display = 'block';
+    tooltipEl.style.left = (e.clientX + 16) + 'px';
+    tooltipEl.style.top = (e.clientY - 10) + 'px';
+    // Keep tooltip within viewport
+    const rect = tooltipEl.getBoundingClientRect();
+    if (rect.right > innerWidth - 8) tooltipEl.style.left = (e.clientX - rect.width - 16) + 'px';
+    if (rect.bottom > innerHeight - 8) tooltipEl.style.top = (innerHeight - rect.height - 8) + 'px';
+  } else {
+    if (hoveredIdx >= 0) {
+      hoveredIdx = -1;
+      polyMeshes.forEach(m => {
+        m.material.opacity = 0.35;
+        if (m.children[0]) m.children[0].material.opacity = 0.6;
+      });
+    }
+    tooltipEl.style.display = 'none';
+  }
+});
+
+// --- Resize handler ---
+addEventListener('resize', () => {
+  cam.aspect = innerWidth / innerHeight;
+  cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// --- Animation loop ---
+function animate(t) {
+  requestAnimationFrame(animate);
+
+  // Gentle pulse animation when enabled
+  if (animating && polyMeshes.length > 0) {
+    animPhase += 0.015;
+    polyMeshes.forEach((mesh, idx) => {
+      const wave = Math.sin(animPhase + idx * 0.3) * 0.5 + 0.5;
+      const yTarget = 0.1 + idx * Y_LAYER + wave * 2.0;
+      mesh.position.y = yTarget - (0.1 + idx * Y_LAYER); // offset from geo
+      mesh.material.opacity = hoveredIdx >= 0
+        ? (hoveredIdx === idx ? 0.7 : 0.15)
+        : 0.25 + 0.2 * wave;
+    });
+  }
+
+  ctrls.update();
+  renderer.render(scene, cam);
+}
+animate(0);
+
+// --- Init: try to load default file ---
+(async () => {
+  const ok = await tryDefaultFile();
+  if (!ok) {
+    statusEl.textContent = 'drop genomes.index.jsonl or double-click [File] to pick';
+    // Load embedded sample data as fallback
+    const sampleData = [
+      {pid:101,comm:"systemstats",axes:[0,212,123,12,0,125]},
+      {pid:103,comm:"accessoryupdaterd",axes:[0,207,118,12,36,143]},
+      {pid:104,comm:"configd",axes:[0,212,123,111,24,128]},
+      {pid:105,comm:"endpointsecurityd",axes:[0,167,78,12,0,129]},
+      {pid:106,comm:"powerd",axes:[0,212,123,111,40,146]},
+      {pid:107,comm:"IOMFB_bics_daemon",axes:[0,183,94,12,0,147]},
+      {pid:109,comm:"amfid",axes:[0,195,106,93,0,133]},
+      {pid:113,comm:"keybagd",axes:[0,204,115,93,0,137]},
+      {pid:114,comm:"softwareupdated",axes:[0,194,105,12,0,138]},
+      {pid:115,comm:"corespeechd_system",axes:[0,175,86,93,0,123]},
+      {pid:117,comm:"watchdogd",axes:[0,181,92,255,0,125]},
+      {pid:121,comm:"mds",axes:[0,240,151,150,83,145]},
+      {pid:122,comm:"iconservicesd",axes:[0,186,97,12,0,146]},
+      {pid:123,comm:"kernelmanagerd",axes:[0,202,113,111,0,147]},
+      {pid:124,comm:"diskarbitrationd",axes:[0,200,111,93,0,148]},
+      {pid:127,comm:"coreduetd",axes:[0,236,147,12,80,151]},
+      {pid:128,comm:"syslogd",axes:[0,170,81,12,0,120]},
+      {pid:131,comm:"thermalmonitord",axes:[0,199,110,111,0,123]},
+      {pid:132,comm:"opendirectoryd",axes:[0,219,130,111,85,124]},
+      {pid:134,comm:"apsd",axes:[0,218,129,93,16,142]}
+    ];
+    allGenomes = sampleData.map(d => ({...d, ts: Date.now()}));
+    statusEl.textContent = 'source: embedded sample (20 processes)';
+    rebuildPolygons();
+  }
+})();
+</script>
+</body>
+</html>

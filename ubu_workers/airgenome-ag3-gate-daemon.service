@@ -1,0 +1,16 @@
+[Unit]
+Description=AG3 GPU Gate Mesh Daemon (persistent CUDA, unix socket)
+After=network.target
+
+[Service]
+Type=simple
+Environment=AG3_GATE_SOCK=/mnt/ramdisk/airgenome/gate.sock
+ExecStartPre=/bin/mkdir -p /mnt/ramdisk/airgenome
+ExecStart=/usr/bin/python3 %h/airgenome/ag3/gpu_gate_mesh_daemon.py
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:%h/airgenome/logs/gate_daemon.log
+StandardError=append:%h/airgenome/logs/gate_daemon.log
+
+[Install]
+WantedBy=default.target

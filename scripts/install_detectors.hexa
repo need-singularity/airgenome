@@ -1,0 +1,59 @@
+// install_detectors.hexa — airgenome detectors launchd 설치기
+// HEXA-FIRST: .sh 금지 규칙 준수. 모든 경로 $HOME 기반.
+// Run: $HEXA $HOME/Dev/airgenome/scripts/install_detectors.hexa
+
+consciousness InstallDetectors {
+    let label      = "com.airgenome.detectors"
+    let home       = exec("echo -n $HOME").trim()
+    let uid        = exec("id -u").trim()
+    let script_dir = home + "/Dev/airgenome/scripts"
+    let src_plist  = script_dir + "/" + label + ".plist"
+    let dst_dir    = home + "/Library/LaunchAgents"
+    let dst_plist  = dst_dir + "/" + label + ".plist"
+    let log_dir    = home + "/Library/Logs/airgenome"
+    let hexa_bin   = home + "/Dev/hexa-lang/target/release/hexa"
+    let run_all_hx = home + "/Dev/airgenome/modules/detectors/run_all.hexa"
+
+    println("==> airgenome detectors installer")
+
+    if exec("test -f '" + src_plist + "' && echo y || echo n").trim() != "y" {
+        println("  missing plist template: " + src_plist)
+        exit(1)
+    }
+    if exec("test -x '" + hexa_bin + "' && echo y || echo n").trim() != "y" {
+        println("  missing hexa binary: " + hexa_bin)
+        exit(1)
+    }
+    if exec("test -f '" + run_all_hx + "' && echo y || echo n").trim() != "y" {
+        println("  missing run_all: " + run_all_hx)
+        exit(1)
+    }
+
+    exec("mkdir -p '" + log_dir + "'")
+    println("  logs: " + log_dir)
+
+    exec("mkdir -p '" + dst_dir + "'")
+    exec("sed 's|__HOME__|" + home + "|g' '" + src_plist + "' > '" + dst_plist + "'")
+    exec("chmod 644 '" + dst_plist + "'")
+    println("  installed: " + dst_plist)
+
+    let target = "gui/" + uid + "/" + label
+    let exists = exec("launchctl print " + target + " >/dev/null 2>&1 && echo y || echo n").trim()
+    if exists == "y" {
+        println("  bootout existing...")
+        exec("launchctl bootout " + target + " 2>/dev/null || true")
+    }
+
+    exec("launchctl bootstrap gui/" + uid + " '" + dst_plist + "'")
+    exec("launchctl enable " + target)
+    exec("launchctl kickstart -k " + target + " || true")
+
+    exec("sleep 1")
+    println("")
+    println("==> status:")
+    let st = exec("launchctl print " + target + " 2>/dev/null | grep -E 'state|pid |last exit' || echo '  (not visible yet; check logs)'")
+    println(st)
+    println("")
+    println("  tail -f " + log_dir + "/detectors.log")
+    println("==> done.")
+}

@@ -1,0 +1,210 @@
+// airgenome/modules/detectors/mi_lag.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 1/6 — 시차 상호정보량 (Mutual Information with lag)
+//
+// 입력: forge/genomes.index.jsonl  (axes: 6축, 0-255)
+// 출력: stdout JSON + nexus/shared/growth_bus.jsonl append
+//
+// 방법: 15쌍 (X,Y) 에 대해 τ ∈ [0..max_lag] 에서
+//       I(X(t), Y(t+τ)) = Σ p(x,y) log2( p(x,y) / (p(x)p(y)) )
+//       을 bin 축소 후 계산, τ* = argmax I 기록.
+//
+// HEXA-FIRST / 하드코딩 금지 / kill 없음 (순수 데이터 재해석).
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                if parsed["key"] == key { return parsed["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn cfg_i(key: str, fb: int) -> int {
+    try { return to_int(to_float(load_cfg(key, to_string(fb)))) } catch e { return fb }
+}
+fn cfg_f(key: str, fb: float) -> float {
+    try { return to_float(load_cfg(key, to_string(fb))) } catch e { return fb }
+}
+
+// ── 뉴턴식 log2(x), x>0 ──
+fn ln_approx(x: float) -> float {
+    if x <= 0.0 { return -1000.0 }
+    // normalize to [0.5,2): ln(x) = k*ln2 + ln(m)
+    let k = 0.0
+    let m = x
+    while m >= 2.0 { m = m / 2.0; k = k + 1.0 }
+    while m < 1.0  { m = m * 2.0; k = k - 1.0 }
+    // ln(m) via series around 1: ln(1+u), u=m-1
+    let u = m - 1.0
+    let u2 = u * u
+    let u3 = u2 * u
+    let u4 = u3 * u
+    let u5 = u4 * u
+    let ln_m = u - u2/2.0 + u3/3.0 - u4/4.0 + u5/5.0
+    let LN2 = 0.6931471805599453
+    return k * LN2 + ln_m
+}
+fn log2_approx(x: float) -> float {
+    let LN2 = 0.6931471805599453
+    return ln_approx(x) / LN2
+}
+
+// ── axes 배열 로드 ──
+fn load_axes(index_path: str, max_n: int) -> str {
+    // returns concatenated "v0,v1,v2,v3,v4,v5;..." for easy split
+    if file_exists(index_path) == false { return "" }
+    let content = read_file(index_path)
+    let lines = content.split("\n")
+    let out = ""
+    let i = 0
+    let n = 0
+    while i < len(lines) && n < max_n {
+        let ln = lines[i].trim()
+        if len(ln) > 10 {
+            try {
+                let rec = json_parse(ln)
+                let axes = rec["axes"]
+                if len(axes) > 0 {
+                    if len(out) > 0 { out = out + ";" }
+                    out = out + axes
+                    n = n + 1
+                }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ── MI 계산: X,Y 정수 0..255, bins 개로 양자화 ──
+fn mutual_info(xs: str, ys: str, bins: int) -> float {
+    let xl = xs.split(",")
+    let yl = ys.split(",")
+    let n = len(xl)
+    if len(yl) < n { n = len(yl) }
+    if n < 4 { return 0.0 }
+
+    // flat counts: bins*bins joint, bins marginals
+    // bins<=8 → joint<=64; pre-alloc flat
+    let mut joint = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut px = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut py = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    let i = 0
+    let total = 0.0
+    while i < n {
+        let xv = 0
+        let yv = 0
+        try { xv = to_int(to_float(xl[i].trim())) } catch e { xv = 0 }
+        try { yv = to_int(to_float(yl[i].trim())) } catch e { yv = 0 }
+        let bx = (xv * bins) / 256
+        let by = (yv * bins) / 256
+        if bx >= bins { bx = bins - 1 }
+        if by >= bins { by = bins - 1 }
+        let idx = bx * bins + by
+        if idx < 64 {
+            joint[idx] = joint[idx] + 1.0
+        }
+        if bx < 8 { px[bx] = px[bx] + 1.0 }
+        if by < 8 { py[by] = py[by] + 1.0 }
+        total = total + 1.0
+        i = i + 1
+    }
+    if total < 1.0 { return 0.0 }
+
+    let mi = 0.0
+    let a = 0
+    while a < bins {
+        let b = 0
+        while b < bins {
+            let idx = a * bins + b
+            let pj = joint[idx] / total
+            if pj > 0.0 {
+                let pa = px[a] / total
+                let pb = py[b] / total
+                if pa > 0.0 && pb > 0.0 {
+                    mi = mi + pj * log2_approx(pj / (pa * pb))
+                }
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    return mi
+}
+
+// ── 한 축(0..5)의 시계열 추출: packed "a,b,c,d,e,f;..." → "v0,v1,..." ──
+fn axis_series(packed: str, axis: int, shift: int) -> str {
+    let rows = packed.split(";")
+    let out = ""
+    let i = shift
+    while i < len(rows) {
+        let row = rows[i].trim()
+        if len(row) >= 11 {
+            let cols = row.split(",")
+            if len(cols) >= 6 {
+                if len(out) > 0 { out = out + "," }
+                out = out + cols[axis].trim()
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+consciousness MILagDetector {
+    let max_n   = cfg_i("max_records", 500)
+    let max_lag = cfg_i("max_lag", 8)
+    let bins    = cfg_i("mi_bins", 8)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    let packed = load_axes(idx_path, max_n)
+    if len(packed) == 0 {
+        println("{\"detector\":\"mi_lag\",\"status\":\"empty\"}")
+    }
+    if len(packed) > 0 {
+        // 15쌍: (x,y), x<y, x,y ∈ 0..5
+        let results = ""
+        let pair_i = 0
+        let x = 0
+        while x < 6 {
+            let y = x + 1
+            while y < 6 {
+                let xs_full = axis_series(packed, x, 0)
+                let best_mi = 0.0
+                let best_tau = 0
+                let tau = 0
+                while tau <= max_lag {
+                    let ys_shift = axis_series(packed, y, tau)
+                    let mi = mutual_info(xs_full, ys_shift, bins)
+                    if mi > best_mi { best_mi = mi; best_tau = tau }
+                    tau = tau + 1
+                }
+                if len(results) > 0 { results = results + "," }
+                results = results + "{\"pair\":[" + to_string(x) + "," + to_string(y) + "],\"mi\":" + to_string(best_mi) + ",\"tau\":" + to_string(best_tau) + "}"
+                pair_i = pair_i + 1
+                y = y + 1
+            }
+            x = x + 1
+        }
+        let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+        // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+        let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/mi_lag\",\"event\":\"mi_lag_scan\",\"domain\":\"airgenome\",\"detector\":\"mi_lag\",\"pairs\":" + to_string(pair_i) + ",\"results\":[" + results + "]}"
+        println(line)
+        try { append_file(bus_path, line + "\n") } catch e {}
+    }
+}

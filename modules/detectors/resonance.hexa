@@ -1,0 +1,124 @@
+// airgenome/modules/detectors/resonance.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 3/6 — 공명 (Resonance) 탐지
+//
+// 입력: forge/genomes.index.jsonl
+// 방법: 각 축 시계열에 대해 간이 DFT (k=1..dft_k_max) 계산
+//       X_k = Σ x[n] * cos(2π k n / N)  — 실수 근사 (테일러 cos)
+//       power_k = X_k^2 / N, 축별 피크 k* 기록.
+// 출력: stdout JSON + growth_bus append.
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(k: str, fb: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fb }
+    let lines = read_file(CONFIG_PATH).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            try { let p = json_parse(ln); if p["key"] == k { return p["value"] } } catch e {}
+        }
+        i = i + 1
+    }
+    return fb
+}
+fn cfg_i(k: str, fb: int) -> int {
+    try { return to_int(to_float(load_cfg(k, to_string(fb)))) } catch e { return fb }
+}
+
+// cos(x) via range reduction + Taylor (degree 8)
+fn cos_approx(x: float) -> float {
+    let TWO_PI = 6.283185307179586
+    let mut t = x
+    while t > 3.141592653589793 { t = t - TWO_PI }
+    while t < -3.141592653589793 { t = t + TWO_PI }
+    let t2 = t * t
+    let t4 = t2 * t2
+    let t6 = t4 * t2
+    let t8 = t4 * t4
+    return 1.0 - t2/2.0 + t4/24.0 - t6/720.0 + t8/40320.0
+}
+
+fn dft_peak(series: float_array, k_max: int) -> str {
+    // Using array of floats
+    let n = len(series)
+    if n < 4 { return "0,0.0" }
+    let TWO_PI = 6.283185307179586
+    let mut best_k = 1
+    let mut best_pow = 0.0
+    let mut k = 1
+    while k <= k_max {
+        let mut re = 0.0
+        let mut im = 0.0
+        let mut i = 0
+        while i < n {
+            let ang = TWO_PI * to_float(k) * to_float(i) / to_float(n)
+            let c = cos_approx(ang)
+            let s = cos_approx(ang - 1.5707963267948966)  // sin(x)=cos(x-π/2)
+            re = re + series[i] * c
+            im = im + series[i] * s
+            i = i + 1
+        }
+        let pw = (re * re + im * im) / to_float(n)
+        if pw > best_pow { best_pow = pw; best_k = k }
+        k = k + 1
+    }
+    return to_string(best_k) + "," + to_string(best_pow)
+}
+
+consciousness ResonanceDetector {
+    let max_n = cfg_i("max_records", 500)
+    let k_max = cfg_i("dft_k_max", 16)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    if file_exists(idx_path) == false {
+        println("{\"detector\":\"resonance\",\"status\":\"empty\"}")
+    }
+    if file_exists(idx_path) {
+        let lines = read_file(idx_path).split("\n")
+        let mut a0 = []
+        let mut a1 = []
+        let mut a2 = []
+        let mut a3 = []
+        let mut a4 = []
+        let mut a5 = []
+        let mut i = 0
+        let mut n = 0
+        while i < len(lines) && n < max_n {
+            let ln = lines[i].trim()
+            if len(ln) > 10 {
+                try {
+                    let rec = json_parse(ln)
+                    let c = rec["axes"].split(",")
+                    if len(c) >= 6 {
+                        a0 = a0 + [to_float(c[0])]
+                        a1 = a1 + [to_float(c[1])]
+                        a2 = a2 + [to_float(c[2])]
+                        a3 = a3 + [to_float(c[3])]
+                        a4 = a4 + [to_float(c[4])]
+                        a5 = a5 + [to_float(c[5])]
+                        n = n + 1
+                    }
+                } catch e {}
+            }
+            i = i + 1
+        }
+        if n >= 4 {
+            let r0 = dft_peak(a0, k_max)
+            let r1 = dft_peak(a1, k_max)
+            let r2 = dft_peak(a2, k_max)
+            let r3 = dft_peak(a3, k_max)
+            let r4 = dft_peak(a4, k_max)
+            let r5 = dft_peak(a5, k_max)
+            let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+            let axes = "[{\"axis\":0,\"k_power\":\"" + r0 + "\"},{\"axis\":1,\"k_power\":\"" + r1 + "\"},{\"axis\":2,\"k_power\":\"" + r2 + "\"},{\"axis\":3,\"k_power\":\"" + r3 + "\"},{\"axis\":4,\"k_power\":\"" + r4 + "\"},{\"axis\":5,\"k_power\":\"" + r5 + "\"}]"
+            // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+            let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/resonance\",\"event\":\"resonance_scan\",\"domain\":\"airgenome\",\"detector\":\"resonance\",\"n\":" + to_string(n) + ",\"k_max\":" + to_string(k_max) + ",\"peaks\":" + axes + "}"
+            println(line)
+            try { append_file(bus_path, line + "\n") } catch e {}
+        }
+    }
+}

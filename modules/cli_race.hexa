@@ -6,7 +6,7 @@
 // 파일: ~/.airgenome/cli-sessions.json
 //   {"sessions":[{"pid":123,"account":"claude1","ts":1712500000}]}
 
-let HOME = exec("echo $HOME").trim()
+let HOME = try { exec("echo $HOME").trim() } catch e { "" }
 let SESSION_FILE = HOME + "/.airgenome/cli-sessions.json"
 let MAX_CONCURRENT = 2
 
@@ -15,8 +15,8 @@ let MAX_CONCURRENT = 2
 // ═══════════════════════════════════════════════════════════════════════
 
 fn ensure_file() -> void {
-    exec("mkdir -p " + HOME + "/.airgenome")
-    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    try { exec("mkdir -p " + HOME + "/.airgenome") } catch e { println("[warn] cli_race: mkdir failed — " + to_string(e)) }
+    let exists = try { exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim() } catch e { "n" }
     if exists == "n" {
         write_file(SESSION_FILE, "{\"sessions\":[]}")
     }
@@ -28,7 +28,7 @@ fn ensure_file() -> void {
 
 fn cleanup_stale() -> void {
     ensure_file()
-    let pids = exec("jq -r '.sessions[]?.pid // empty' '" + SESSION_FILE + "' 2>/dev/null").trim()
+    let pids = try { exec("jq -r '.sessions[]?.pid // empty' '" + SESSION_FILE + "' 2>/dev/null").trim() } catch e { "" }
     if len(pids) == 0 { return }
 
     let lines = pids.split("\n")
@@ -36,9 +36,9 @@ fn cleanup_stale() -> void {
     while i < len(lines) {
         let pid = lines[i]
         if len(pid) > 0 {
-            let alive = exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim()
+            let alive = try { exec("kill -0 " + pid + " 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
             if alive == "n" {
-                exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+                try { exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'") } catch e { println("[warn] cli_race: jq cleanup failed — " + to_string(e)) }
             }
         }
         i = i + 1
@@ -51,13 +51,13 @@ fn cleanup_stale() -> void {
 
 fn active_count() -> int {
     cleanup_stale()
-    let count = exec("jq '.sessions | length' '" + SESSION_FILE + "' 2>/dev/null || echo 0").trim()
+    let count = try { exec("jq '.sessions | length' '" + SESSION_FILE + "' 2>/dev/null || echo 0").trim() } catch e { "0" }
     return to_int(count)
 }
 
 fn active_list() -> str {
     cleanup_stale()
-    return exec("jq -r '.sessions[] | \"\\(.account) (pid=\\(.pid))\"' '" + SESSION_FILE + "' 2>/dev/null").trim()
+    return try { exec("jq -r '.sessions[] | \"\\(.account) (pid=\\(.pid))\"' '" + SESSION_FILE + "' 2>/dev/null").trim() } catch e { "" }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -66,14 +66,14 @@ fn active_list() -> str {
 
 fn register_session(account: str, pid: str) -> void {
     ensure_file()
-    let ts = exec("date +%s").trim()
-    exec("jq '.sessions += [{\"pid\":" + pid + ",\"account\":\"" + account + "\",\"ts\":" + ts + "}]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+    let ts = try { exec("date +%s").trim() } catch e { "0" }
+    try { exec("jq '.sessions += [{\"pid\":" + pid + ",\"account\":\"" + account + "\",\"ts\":" + ts + "}]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'") } catch e { println("[warn] cli_race: register jq failed — " + to_string(e)) }
 }
 
 fn unregister_session(pid: str) -> void {
-    let exists = exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim()
+    let exists = try { exec("[ -f '" + SESSION_FILE + "' ] && echo y || echo n").trim() } catch e { "n" }
     if exists == "n" { return }
-    exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'")
+    try { exec("jq '.sessions = [.sessions[] | select(.pid != " + pid + ")]' '" + SESSION_FILE + "' > '" + SESSION_FILE + ".tmp' && mv '" + SESSION_FILE + ".tmp' '" + SESSION_FILE + "'") } catch e { println("[warn] cli_race: unregister jq failed — " + to_string(e)) }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -154,7 +154,7 @@ fn main() {
     if cmd == "register" {
         if len(arg1) > 0 {
             let rpid = arg2
-            if len(rpid) == 0 { rpid = exec("echo $$").trim() }
+            if len(rpid) == 0 { rpid = try { exec("echo $$").trim() } catch e { "0" } }
             register_session(arg1, rpid)
             println("  ✓ 세션 등록: " + arg1 + " (pid=" + rpid + ")")
         }

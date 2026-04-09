@@ -1,0 +1,146 @@
+// airgenome/modules/detectors/cascade_dag.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector 4/6 — 캐스케이드 DAG (간이 Granger 인과)
+//
+// 입력: forge/genomes.index.jsonl (6축)
+// 방법: 각 축을 활성/비활성 (중앙값 기준) 이진화.
+//       쌍 (A→B) 에 대해 P(B(t+lag)=1 | A(t)=1) > threshold 면 에지.
+//       lag = cascade_lag 고정.
+// 출력: stdout DAG 에지 목록 + growth_bus append.
+// ─────────────────────────────────────────────────────────────────────────
+
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn load_cfg(k: str, fb: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fb }
+    let lines = read_file(CONFIG_PATH).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let ln = lines[i].trim()
+        if len(ln) > 2 {
+            try { let p = json_parse(ln); if p["key"] == k { return p["value"] } } catch e {}
+        }
+        i = i + 1
+    }
+    return fb
+}
+fn cfg_i(k: str, fb: int) -> int { try { return to_int(to_float(load_cfg(k, to_string(fb)))) } catch e { return fb } }
+fn cfg_f(k: str, fb: float) -> float { try { return to_float(load_cfg(k, to_string(fb))) } catch e { return fb } }
+
+fn mean_thr(arr: float_array) -> float {
+    let n = len(arr)
+    if n == 0 { return 0.0 }
+    let mut s = 0.0
+    let mut i = 0
+    while i < n { s = s + arr[i]; i = i + 1 }
+    return s / to_float(n)
+}
+
+consciousness CascadeDetector {
+    let max_n = cfg_i("max_records", 500)
+    let lag   = cfg_i("cascade_lag", 3)
+    let thr   = cfg_f("cascade_threshold", 0.35)
+    let idx_path = load_cfg("genomes_index", "forge/genomes.index.jsonl")
+    let bus_path = load_cfg("growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+    if file_exists(idx_path) == false {
+        println("{\"detector\":\"cascade_dag\",\"status\":\"empty\"}")
+    }
+    if file_exists(idx_path) {
+        let lines = read_file(idx_path).split("\n")
+        let mut a0 = []
+        let mut a1 = []
+        let mut a2 = []
+        let mut a3 = []
+        let mut a4 = []
+        let mut a5 = []
+        let mut i = 0
+        let mut n = 0
+        while i < len(lines) && n < max_n {
+            let ln = lines[i].trim()
+            if len(ln) > 10 {
+                try {
+                    let rec = json_parse(ln)
+                    let c = rec["axes"].split(",")
+                    if len(c) >= 6 {
+                        a0 = a0 + [to_float(c[0])]
+                        a1 = a1 + [to_float(c[1])]
+                        a2 = a2 + [to_float(c[2])]
+                        a3 = a3 + [to_float(c[3])]
+                        a4 = a4 + [to_float(c[4])]
+                        a5 = a5 + [to_float(c[5])]
+                        n = n + 1
+                    }
+                } catch e {}
+            }
+            i = i + 1
+        }
+
+        // thresholds (medians)
+        let m0 = mean_thr(a0)
+        let m1 = mean_thr(a1)
+        let m2 = mean_thr(a2)
+        let m3 = mean_thr(a3)
+        let m4 = mean_thr(a4)
+        let m5 = mean_thr(a5)
+        let meds = [m0, m1, m2, m3, m4, m5]
+
+        // build binary arrays as float_array
+        // Use helper via closures not available → inline per axis
+        // Store as a flat matrix: 6*n floats (0/1)
+        let mut bin = []
+        let mut t = 0
+        while t < n {
+            let b0 = 0.0
+            let b1 = 0.0
+            let b2 = 0.0
+            let b3 = 0.0
+            let b4 = 0.0
+            let b5 = 0.0
+            if a0[t] > m0 { b0 = 1.0 }
+            if a1[t] > m1 { b1 = 1.0 }
+            if a2[t] > m2 { b2 = 1.0 }
+            if a3[t] > m3 { b3 = 1.0 }
+            if a4[t] > m4 { b4 = 1.0 }
+            if a5[t] > m5 { b5 = 1.0 }
+            bin = bin + [b0, b1, b2, b3, b4, b5]
+            t = t + 1
+        }
+
+        let mut edges = ""
+        let mut edge_count = 0
+        let mut src = 0
+        while src < 6 {
+            let mut dst = 0
+            while dst < 6 {
+                if src != dst {
+                    let mut act_src = 0
+                    let mut both = 0
+                    let mut tt = 0
+                    while tt + lag < n {
+                        if bin[tt*6 + src] > 0.5 {
+                            act_src = act_src + 1
+                            if bin[(tt+lag)*6 + dst] > 0.5 { both = both + 1 }
+                        }
+                        tt = tt + 1
+                    }
+                    if act_src > 0 {
+                        let prob = to_float(both) / to_float(act_src)
+                        if prob >= thr {
+                            if len(edges) > 0 { edges = edges + "," }
+                            edges = edges + "{\"from\":" + to_string(src) + ",\"to\":" + to_string(dst) + ",\"p\":" + to_string(prob) + "}"
+                            edge_count = edge_count + 1
+                        }
+                    }
+                }
+                dst = dst + 1
+            }
+            src = src + 1
+        }
+        let ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "0" }
+        // gb_append schema: ts iso8601Z + source + event + domain="airgenome"
+        let line = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/detectors/cascade_dag\",\"event\":\"cascade_dag_scan\",\"domain\":\"airgenome\",\"detector\":\"cascade_dag\",\"n\":" + to_string(n) + ",\"lag\":" + to_string(lag) + ",\"edges\":[" + edges + "],\"edge_count\":" + to_string(edge_count) + "}"
+        println(line)
+        try { append_file(bus_path, line + "\n") } catch e {}
+    }
+}

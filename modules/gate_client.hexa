@@ -1,0 +1,41 @@
+// gate_client.hexa — AG3 게이트 unix-socket 클라이언트 (gate_client.py 대체)
+// L0 | HEXA-FIRST | AG3 Ubuntu-side 비-PyTorch 워커
+//
+// 역할: stdin 바이너리 payload → unix socket(gate.sock) → stdout
+// 설정: gate_config.jsonl 의 ubu_gate_sock (기본 /mnt/ramdisk/airgenome/gate.sock)
+// 구현: nc -U 쉘 우회 (hexa raw socket API 부재). ncat 미설치 → nc 사용.
+//
+// 사용 (ubu):
+//   cat payload.bin | ~/Dev/hexa-lang/target/release/hexa modules/gate_client.hexa
+//
+// 주의: nc -U 는 stdin EOF 후 종료. 영구 스트리밍 필요 시 nc -q 0 옵션 사용.
+
+fn load_sock() -> str {
+    // gate_config.jsonl 에서 ubu_gate_sock 로드 (하드코딩 금지 R2)
+    let cfg_path = try { exec("printenv HOME").trim() } catch e { "" } + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+    let exists = try { exec("test -f '" + cfg_path + "' && echo y || echo n").trim() } catch e { "n" }
+    if exists == "y" {
+        let line = try { exec("grep -m1 ubu_gate_sock '" + cfg_path + "' 2>/dev/null || true").trim() } catch e { "" }
+        if len(line) > 0 {
+            let parts = line.split("\"")
+            // 마지막 문자열 값 추정
+            let n = parts.len()
+            if n >= 4 { return parts[n - 2] }
+        }
+    }
+    // fallback: gate_config.jsonl 에 ubu_gate_sock 없을 때 기본값
+    let fb = try { exec("printenv AG3_GATE_SOCK 2>/dev/null || true").trim() } catch e { "" }
+    if len(fb) > 0 { return fb }
+    return "/mnt/ramdisk/airgenome/gate.sock"
+}
+
+fn main() {
+    let sock = load_sock()
+    // nc -U <sock>: stdin → socket, socket → stdout. -q 0: stdin EOF 시 즉시 종료
+    let cmd = "exec nc -q 0 -U " + sock
+    try {
+        exec(cmd)
+    } catch e {
+        println("[warn] gate_client: socket exec failed — " + to_string(e))
+    }
+}

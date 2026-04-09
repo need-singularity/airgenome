@@ -1,0 +1,164 @@
+// modules/error_policy.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// 공통 에러 정책 로더 + safe_exec 헬퍼
+// nexus/shared/error_policy.jsonl 기반 — 모든 모듈의 exec() 방어 표준
+//
+// 사용법:  hexa modules/error_policy.hexa [module_name] [test]
+//   - module_name: 호출 모듈 식별자 (예: "sampler", "harvest")
+//   - test: "test" 전달 시 자가 진단 실행
+//
+// 규칙 참조: nexus/shared/error_policy.jsonl
+//   try_catch_rule  = all_exec       → 모든 exec 래핑
+//   catch_action_*  = silent_exit | warn_continue | fallback | silent_ignore | retry
+//   critical_modules                 → 죽으면 안 되는 모듈 (warn_continue 강제)
+//   expendable_modules               → silent_exit 허용 (재시작 가능)
+// ─────────────────────────────────────────────────────────────────────────
+
+let POLICY_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/error_policy.jsonl"
+let LOG_PREFIX  = "[ag:err]"
+
+// ── 정책 읽기 ──────────────────────────────────────────────────────────
+fn policy_val(key: str, fallback: str) -> str {
+    if file_exists(POLICY_PATH) == false { return fallback }
+    let v = try {
+        exec("grep '\"key\":\"" + key + "\"' '" + POLICY_PATH + "' 2>/dev/null | sed -E 's/.*\"value\":\"([^\"]*)\".*/\\1/' | tail -1").trim()
+    } catch e { "" }
+    if len(v) == 0 { return fallback }
+    return v
+}
+
+// ── 모듈 분류: critical vs expendable ──────────────────────────────────
+fn is_critical(module: str) -> bool {
+    let critical = policy_val("critical_modules", "sampler,menubar,run")
+    return critical.contains(module)
+}
+
+fn is_expendable(module: str) -> bool {
+    let expendable = policy_val("expendable_modules", "detectors,harvest,shipper,crosscorr")
+    return expendable.contains(module)
+}
+
+// ── catch 액션 결정 (카테고리별) ────────────────────────────────────────
+// 카테고리: network, fs, process, kill, sysinfo
+fn catch_action(category: str) -> str {
+    return policy_val("catch_action_" + category, "warn_continue")
+}
+
+// ── safe_exec: try/catch + 정책 기반 fallback ──────────────────────────
+// hexa에서 exec() 실패는 Error 값 반환 (throw 아님)
+// .len() 등 체인 호출 시 throw 발생 → catch 가능
+fn safe_exec(cmd: str, fallback: str) -> str {
+    try {
+        let r = exec(cmd)
+        let dummy = len(r)
+        return r
+    } catch e {
+        // silent — 호출자가 판단
+    }
+    return fallback
+}
+
+// ── safe_exec + 카테고리별 액션 ────────────────────────────────────────
+fn safe_exec_cat(cmd: str, fallback: str, category: str, module: str) -> str {
+    try {
+        let r = exec(cmd)
+        let dummy = len(r)
+        return r
+    } catch e {
+        // policy check after catch
+    }
+    // 실패 후 정책 적용
+    let action = catch_action(category)
+    if action == "silent_exit" {
+        if is_critical(module) == false {
+            exit(0)
+        }
+    }
+    return fallback
+}
+
+// ── safe_exec_int: 숫자 반환용 ─────────────────────────────────────────
+fn safe_exec_int(cmd: str, fallback: int) -> int {
+    let raw = safe_exec_trim(cmd, to_string(fallback))
+    try { return to_int(to_float(raw)) } catch e { return fallback }
+}
+
+// ── safe_exec_trim: trim 포함 ──────────────────────────────────────────
+fn safe_exec_trim(cmd: str, fallback: str) -> str {
+    try {
+        let r = exec(cmd).trim()
+        return r
+    } catch e {
+        // silent
+    }
+    return fallback
+}
+
+// ── 6축 fallback 조회 ─────────────────────────────────────────────────
+fn axis_fallback(axis: str) -> str {
+    return policy_val("catch_fallback_" + axis, "0")
+}
+
+// ── silent_exit: 정책 기반 조용한 종료 ─────────────────────────────────
+fn silent_exit(module: str, reason: str) {
+    if policy_val("silent_exit_log", "true") == "true" {
+        let fmt = policy_val("silent_exit_format", "[ag:err] {module} exit: {reason}")
+        let msg = fmt.replace("{module}", module).replace("{reason}", reason)
+        println(msg)
+    }
+    if is_critical(module) {
+        println(LOG_PREFIX + " " + module + " is critical — warn only, not exiting")
+        return
+    }
+    let code = try { to_int(policy_val("silent_exit_code", "0")) } catch e { 0 }
+    exit(code)
+}
+
+// ── safe_exec_or_exit: 실패 시 silent exit ─────────────────────────────
+fn safe_exec_or_exit(cmd: str, module: str) -> str {
+    try {
+        let r = exec(cmd)
+        let dummy = len(r)
+        return r
+    } catch e {
+        // fall through
+    }
+    silent_exit(module, "exec failed: " + cmd)
+    return ""
+}
+
+// ── 자가 진단 ──────────────────────────────────────────────────────────
+let a = args()
+if a.len() >= 3 {
+    if a[2] == "test" {
+        println("=== error_policy self-test ===")
+        println("policy_path:      " + POLICY_PATH)
+        println("exists:           " + to_string(file_exists(POLICY_PATH)))
+        println("on_exec_fail:     " + policy_val("on_exec_fail", "?"))
+        println("try_catch_rule:   " + policy_val("try_catch_rule", "?"))
+        println("log_errors:       " + policy_val("log_errors", "?"))
+        println("critical_modules: " + policy_val("critical_modules", "?"))
+        println("")
+        println("catch_action_network: " + catch_action("network"))
+        println("catch_action_fs:      " + catch_action("fs"))
+        println("catch_action_process: " + catch_action("process"))
+        println("catch_action_kill:    " + catch_action("kill"))
+        println("catch_action_sysinfo: " + catch_action("sysinfo"))
+        println("")
+        println("axis fallback cpu:  " + axis_fallback("cpu"))
+        println("axis fallback ram:  " + axis_fallback("ram"))
+        println("axis fallback net:  " + axis_fallback("net"))
+        println("axis fallback disk: " + axis_fallback("disk"))
+        println("axis fallback gpu:  " + axis_fallback("gpu"))
+        println("axis fallback swap: " + axis_fallback("swap"))
+        println("")
+        println("safe_exec(date):    " + safe_exec_trim("date +%s", "0"))
+        println("safe_exec(bad):     " + safe_exec_trim("__nonexistent__ 2>&1", "FALLBACK"))
+        println("safe_exec_int(42):  " + to_string(safe_exec_int("echo 42", -1)))
+        println("")
+        println("safe_exec(direct):  " + safe_exec("__nope__ 2>&1", "DIRECT_FB"))
+        println("safe_exec_cat(ok):  " + safe_exec_cat("echo ok", "FAIL", "network", "test"))
+        println("safe_exec_cat(bad): " + safe_exec_cat("__bad__ 2>&1", "CAUGHT", "sysinfo", "test"))
+        println("=== all ok ===")
+    }
+}

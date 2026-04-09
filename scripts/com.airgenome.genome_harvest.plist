@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome genome_harvest — always-on launchd agent
+  Template: __HOME__ is replaced with $HOME by scripts/install_harvest.sh
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.genome_harvest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
+        <string>__HOME__/Dev/airgenome/modules/genome_harvest.hexa</string>
+        <string>loop</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HEXA</key>
+        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Dev/airgenome/logs/genome_harvest.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Dev/airgenome/logs/genome_harvest.err.log</string>
+</dict>
+</plist>

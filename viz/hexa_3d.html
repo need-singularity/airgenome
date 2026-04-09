@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airgenome — Hexa Projection 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070c;color:#cfe;font-family:-apple-system,Menlo,monospace;overflow:hidden}
+  #hud{position:fixed;top:10px;left:12px;z-index:10;font-size:12px;line-height:1.5;
+       background:rgba(8,14,22,.72);padding:10px 14px;border:1px solid #1b3550;border-radius:6px;backdrop-filter:blur(6px)}
+  #hud h1{margin:0 0 6px;font-size:13px;color:#6df;letter-spacing:.5px}
+  #hud .axis{display:inline-block;width:48px;color:#9cf}
+  #hud .val{color:#fe8;font-variant-numeric:tabular-nums}
+  #src{color:#8a8;font-size:11px;margin-top:4px}
+  #api{color:#8a8;font-size:11px;margin-top:2px}
+  #api .ok{color:#6f9}
+  #api .bad{color:#f66}
+  #modes{margin-top:6px;display:flex;gap:6px}
+  #modes button{background:#0b1a2a;color:#cfe;border:1px solid #1b3550;border-radius:4px;
+                padding:4px 10px;font:11px -apple-system,Menlo;cursor:pointer}
+  #modes button.on{background:#1b3550;color:#6df;border-color:#6df}
+  #legend{position:fixed;bottom:10px;right:12px;z-index:10;font-size:11px;color:#688;
+          background:rgba(8,14,22,.6);padding:6px 10px;border:1px solid #1b3550;border-radius:6px}
+  #sparkpanel{position:fixed;bottom:10px;left:12px;z-index:10;
+              background:rgba(8,14,22,.78);border:1px solid #1b3550;border-radius:6px;
+              padding:8px 10px;backdrop-filter:blur(6px);display:flex;flex-direction:column;gap:4px}
+  #sparkpanel .sp-row{display:flex;align-items:center;gap:6px}
+  #sparkpanel .sp-label{font-size:10px;width:34px;text-align:right;color:#9cf;font-weight:600}
+  #sparkpanel canvas{border-radius:2px;background:rgba(10,20,35,.5)}
+  #sparkpanel .sp-val{font-size:10px;width:38px;color:#fe8;font-variant-numeric:tabular-nums}
+  #vitals-hud{position:fixed;top:10px;right:12px;z-index:10;font-size:12px;
+              background:rgba(8,14,22,.72);padding:10px 14px;border:1px solid #1b3550;
+              border-radius:6px;backdrop-filter:blur(6px);min-width:140px}
+  #vitals-hud h2{margin:0 0 6px;font-size:12px;color:#6df;letter-spacing:.4px}
+  #vitals-hud .vrow{display:flex;justify-content:space-between;gap:12px;margin:2px 0}
+  #vitals-hud .vlbl{color:#9cf;font-size:11px}
+  #vitals-hud .vnum{color:#fe8;font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+  #vitals-hud .vnum.na{color:#556;font-weight:400}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>HEXA PROJECTION · AG1 · 6-AXIS × 15 GATES</h1>
+  <div id="axes"></div>
+  <div id="src">source: loading…</div>
+  <div id="api">api: connecting…</div>
+  <div id="modes">
+    <button id="btn-live" class="on">Live</button>
+    <button id="btn-genome">Genome</button>
+  </div>
+</div>
+<div id="sparkpanel"></div>
+<div id="vitals-hud">
+  <h2>VITALS</h2>
+  <div class="vrow"><span class="vlbl">L5c NMI</span><span class="vnum na" id="v-l5c">--</span></div>
+  <div class="vrow"><span class="vlbl">L6e Score</span><span class="vnum na" id="v-l6e">--</span></div>
+</div>
+<div id="legend">drag = rotate · scroll = zoom · bars = axis value · lines = pair correlation</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const AXES = ['CPU','RAM','Swap','Net','Disk','GPU'];
+const COLORS = [0xff5577, 0xffaa33, 0xffee55, 0x55ff88, 0x55ccff, 0xaa77ff];
+const R = 5;
+const HMAX = 8;
+const GENOME_WINDOW = 64;  // how many recent genomes to aggregate
+const SPARK_LEN = 60;     // history points per sparkline
+const SPARK_W = 120;
+const SPARK_H = 24;
+
+// --- Sparkline setup ---
+const sparkHistory = AXES.map(()=>[]);
+const sparkCanvases = [];
+const sparkValEls = [];
+(function initSparkPanel(){
+  const panel = document.getElementById('sparkpanel');
+  AXES.forEach((name, i)=>{
+    const row = document.createElement('div'); row.className='sp-row';
+    const lbl = document.createElement('span'); lbl.className='sp-label'; lbl.textContent=name;
+    const cvs = document.createElement('canvas'); cvs.width=SPARK_W; cvs.height=SPARK_H;
+    const val = document.createElement('span'); val.className='sp-val'; val.textContent='--';
+    row.appendChild(lbl); row.appendChild(cvs); row.appendChild(val);
+    panel.appendChild(row);
+    sparkCanvases.push(cvs);
+    sparkValEls.push(val);
+  });
+})();
+
+function pushSparkData(vals){
+  for(let i=0;i<6;i++){
+    sparkHistory[i].push(vals[i]);
+    if(sparkHistory[i].length>SPARK_LEN) sparkHistory[i].shift();
+  }
+}
+
+function drawSpark(idx){
+  const cvs = sparkCanvases[idx];
+  const ctx = cvs.getContext('2d');
+  const data = sparkHistory[idx];
+  const N = data.length;
+  ctx.clearRect(0,0,SPARK_W,SPARK_H);
+  if(N<2) return;
+  const mn = 0, mx = 100;
+  ctx.beginPath();
+  ctx.strokeStyle = '#'+COLORS[idx].toString(16).padStart(6,'0');
+  ctx.lineWidth = 1.5;
+  for(let k=0;k<N;k++){
+    const x = (k/(SPARK_LEN-1))*SPARK_W;
+    const y = SPARK_H - ((data[k]-mn)/(mx-mn))*(SPARK_H-2) - 1;
+    k===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+  }
+  ctx.stroke();
+  // fill under curve
+  const lastX = ((N-1)/(SPARK_LEN-1))*SPARK_W;
+  ctx.lineTo(lastX, SPARK_H);
+  ctx.lineTo(0, SPARK_H);
+  ctx.closePath();
+  ctx.fillStyle = '#'+COLORS[idx].toString(16).padStart(6,'0')+'18';
+  ctx.fill();
+  sparkValEls[idx].textContent = data[N-1].toFixed(1);
+}
+
+function updateSparks(vals){
+  pushSparkData(vals);
+  for(let i=0;i<6;i++) drawSpark(i);
+}
+
+// --- Vitals HUD ---
+let latestVitals = null;
+const vL5c = document.getElementById('v-l5c');
+const vL6e = document.getElementById('v-l6e');
+
+function updateVitalsHUD(vitals){
+  if(!vitals){ vL5c.textContent='--'; vL5c.className='vnum na'; vL6e.textContent='--'; vL6e.className='vnum na'; return; }
+  latestVitals = vitals;
+  if(vitals.l5c_nmi!=null){ vL5c.textContent=Number(vitals.l5c_nmi).toFixed(4); vL5c.className='vnum'; }
+  else { vL5c.textContent='--'; vL5c.className='vnum na'; }
+  if(vitals.l6e_score!=null){ vL6e.textContent=Number(vitals.l6e_score).toFixed(4); vL6e.className='vnum'; }
+  else { vL6e.textContent='--'; vL6e.className='vnum na'; }
+}
+
+// API base URL: ?api=http://host:port  (default 17777)
+const qs = new URLSearchParams(location.search);
+const API_BASE = (qs.get('api') || 'http://localhost:17777').replace(/\/$/, '');
+
+let MODE = 'live';  // 'live' | 'genome'
+let apiHealthy = false;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05070c);
+scene.fog = new THREE.Fog(0x05070c, 20, 60);
+
+const cam = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 200);
+cam.position.set(10, 10, 14);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const ctrls = new OrbitControls(cam, renderer.domElement);
+ctrls.enableDamping = true;
+ctrls.target.set(0, HMAX/2, 0);
+
+scene.add(new THREE.AmbientLight(0x557788, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.0); key.position.set(8,14,6); scene.add(key);
+const rim = new THREE.DirectionalLight(0x66aaff, 0.6); rim.position.set(-6,4,-8); scene.add(rim);
+
+const floorGeo = new THREE.RingGeometry(R-0.05, R+0.05, 6, 1);
+const floorMat = new THREE.MeshBasicMaterial({color:0x244058, side:THREE.DoubleSide});
+const floor = new THREE.Mesh(floorGeo, floorMat); floor.rotation.x = -Math.PI/2; scene.add(floor);
+
+const grid = new THREE.GridHelper(20, 20, 0x122033, 0x0a1420);
+scene.add(grid);
+
+const verts = AXES.map((_,i)=>{
+  const a = (Math.PI/3)*i - Math.PI/2;
+  return new THREE.Vector3(Math.cos(a)*R, 0, Math.sin(a)*R);
+});
+
+const bars = [];
+verts.forEach((v,i)=>{
+  const geo = new THREE.BoxGeometry(0.8, 1, 0.8);
+  geo.translate(0, 0.5, 0);
+  const mat = new THREE.MeshPhongMaterial({color:COLORS[i], emissive:COLORS[i], emissiveIntensity:0.25, shininess:80});
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(v);
+  scene.add(m);
+  bars.push(m);
+
+  const cvs = document.createElement('canvas'); cvs.width=128; cvs.height=64;
+  const ctx = cvs.getContext('2d');
+  ctx.fillStyle='#cfe'; ctx.font='bold 28px -apple-system,Menlo';
+  ctx.textAlign='center'; ctx.fillText(AXES[i], 64, 40);
+  const tex = new THREE.CanvasTexture(cvs);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true}));
+  sp.position.set(v.x*1.22, 0.4, v.z*1.22);
+  sp.scale.set(2.2, 1.1, 1);
+  scene.add(sp);
+});
+
+const pairs = [];
+for (let i=0;i<6;i++) for (let j=i+1;j<6;j++) pairs.push([i,j]);
+
+const edgeLines = pairs.map(([i,j])=>{
+  const geo = new THREE.BufferGeometry().setFromPoints([verts[i].clone(), verts[j].clone()]);
+  const mat = new THREE.LineBasicMaterial({color:0x3a7, transparent:true, opacity:0.4});
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  return {line, i, j};
+});
+
+const tubeMeshes = pairs.map(()=>{
+  const m = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 1, 8),
+    new THREE.MeshBasicMaterial({color:0x66ffcc, transparent:true, opacity:0.6})
+  );
+  scene.add(m); return m;
+});
+
+function setTube(idx, a, b, thickness){
+  const m = tubeMeshes[idx];
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  m.position.copy(mid);
+  m.scale.set(thickness, len, thickness);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+}
+
+// HUD
+const axesDiv = document.getElementById('axes');
+AXES.forEach(a=>{
+  const row = document.createElement('div');
+  row.innerHTML = `<span class="axis">${a}</span><span class="val" id="v-${a}">--</span>%`;
+  axesDiv.appendChild(row);
+});
+const srcDiv = document.getElementById('src');
+const apiDiv = document.getElementById('api');
+const btnLive = document.getElementById('btn-live');
+const btnGenome = document.getElementById('btn-genome');
+btnLive.onclick = ()=>setMode('live');
+btnGenome.onclick = ()=>setMode('genome');
+function setMode(m){
+  MODE = m;
+  btnLive.classList.toggle('on', m==='live');
+  btnGenome.classList.toggle('on', m==='genome');
+  refresh();
+}
+
+let target = new Array(6).fill(0);
+let current = new Array(6).fill(0);
+let corr = new Array(15).fill(0.3);
+
+function mockData(t){
+  return AXES.map((_,i)=>{
+    return 50 + 35*Math.sin(t*0.0006 + i*1.1) + 10*Math.sin(t*0.0021 + i*2.3);
+  });
+}
+function mockCorr(vals){
+  return pairs.map(([i,j])=>Math.abs(vals[i]-vals[j])/100);
+}
+
+async function apiGet(path){
+  const r = await fetch(API_BASE+path, {cache:'no-store'});
+  if(!r.ok) throw new Error('http '+r.status);
+  return r.json();
+}
+
+async function checkHealth(){
+  try{
+    const j = await apiGet('/health');
+    apiHealthy = !!j.ok;
+  }catch(e){ apiHealthy = false; }
+  apiDiv.innerHTML = apiHealthy
+    ? `api: <span class="ok">connected</span> ${API_BASE}`
+    : `api: <span class="bad">down</span> ${API_BASE}`;
+}
+
+// Pearson correlation across N genome samples, axes scaled
+function computeGenomeAgg(items){
+  const N = items.length;
+  if (!N) return null;
+  const mat = items.map(it => (it.axes||[]).map(v=>(Number(v)||0)*(100/255)));
+  const means = new Array(6).fill(0);
+  for (const row of mat) for (let i=0;i<6;i++) means[i] += row[i];
+  for (let i=0;i<6;i++) means[i] /= N;
+
+  const stds = new Array(6).fill(0);
+  for (const row of mat) for (let i=0;i<6;i++){
+    const d = row[i]-means[i]; stds[i] += d*d;
+  }
+  for (let i=0;i<6;i++) stds[i] = Math.sqrt(stds[i]/Math.max(1,N-1));
+
+  const corrs = pairs.map(([i,j])=>{
+    if (stds[i]<1e-6 || stds[j]<1e-6) return 0;
+    let s=0;
+    for (const row of mat) s += (row[i]-means[i])*(row[j]-means[j]);
+    const r = s / ((N-1)*stds[i]*stds[j]);
+    return Math.abs(r);  // thickness uses magnitude
+  });
+  return { vals: means.map(v=>Math.max(0,Math.min(100,v))), corr: corrs };
+}
+
+async function fetchLive(){
+  const j = await apiGet('/state');
+  let vals = null;
+  if (Array.isArray(j.axes) && j.axes.length===6) vals = j.axes.map(Number);
+  else if (j.cpu!=null) vals = [j.cpu,j.ram,j.swap,j.net,j.disk,j.gpu].map(x=>Number(x)||0);
+  else if (j.genome && Array.isArray(j.genome)){
+    vals = [];
+    for(let i=0;i<6;i++){
+      let s=0; for(let k=0;k<10;k++) s += j.genome[i*10+k]||0;
+      vals.push(s/10 * (100/255));
+    }
+  }
+  if (!vals) throw new Error('no axes in /state');
+  target = vals.map(v=>Math.max(0,Math.min(100,v)));
+  if (Array.isArray(j.corr) && j.corr.length===15) corr = j.corr.map(Number);
+  else corr = mockCorr(target);
+  srcDiv.textContent = 'source: /state'+(j.active?' [active]':' [idle]');
+  // vitals from /state
+  if(j.vitals) updateVitalsHUD(j.vitals);
+  else updateVitalsHUD(null);
+}
+
+async function fetchGenome(){
+  const j = await apiGet('/genomes');
+  const all = j.items || [];
+  const recent = all.slice(-GENOME_WINDOW);
+  const agg = computeGenomeAgg(recent);
+  if (!agg) throw new Error('no genomes');
+  target = agg.vals;
+  corr = agg.corr;
+  srcDiv.textContent = `source: /genomes (last ${recent.length}/${j.count||all.length})`;
+}
+
+async function refresh(){
+  await checkHealth();
+  if (!apiHealthy){
+    target = mockData(performance.now());
+    corr = mockCorr(target);
+    srcDiv.textContent = 'source: mock (api down)';
+    updateSparks(target);
+    updateVitalsHUD(null);
+    return;
+  }
+  try{
+    if (MODE==='live') await fetchLive();
+    else await fetchGenome();
+    updateSparks(target);
+  }catch(e){
+    target = mockData(performance.now());
+    corr = mockCorr(target);
+    srcDiv.textContent = 'source: mock ('+e.message+')';
+    updateSparks(target);
+    updateVitalsHUD(null);
+  }
+}
+refresh();
+setInterval(refresh, 3000);
+
+addEventListener('resize', ()=>{
+  cam.aspect = innerWidth/innerHeight; cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+function animate(t){
+  requestAnimationFrame(animate);
+  for (let i=0;i<6;i++){
+    current[i] += (target[i]-current[i])*0.08;
+    const h = Math.max(0.02, (current[i]/100) * HMAX);
+    bars[i].scale.y = h;
+    bars[i].material.emissiveIntensity = 0.15 + 0.5*(current[i]/100);
+    document.getElementById('v-'+AXES[i]).textContent = current[i].toFixed(1);
+  }
+  pairs.forEach(([i,j], idx)=>{
+    const a = verts[i].clone(); a.y = bars[i].scale.y;
+    const b = verts[j].clone(); b.y = bars[j].scale.y;
+    const pos = edgeLines[idx].line.geometry.attributes.position;
+    pos.setXYZ(0, a.x, a.y, a.z); pos.setXYZ(1, b.x, b.y, b.z);
+    pos.needsUpdate = true;
+    const c = Math.max(0, Math.min(1, corr[idx]));
+    setTube(idx, a, b, 0.05 + c*0.35);
+    tubeMeshes[idx].material.opacity = 0.25 + 0.6*c;
+  });
+  ctrls.update();
+  renderer.render(scene, cam);
+}
+animate(0);
+</script>
+</body>
+</html>

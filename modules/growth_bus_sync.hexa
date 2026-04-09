@@ -1,0 +1,190 @@
+// airgenome/modules/growth_bus_sync.hexa — AG3 growth_bus ubu → Mac merge
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  단방향 merge: ubu(/home/aiden/Dev/nexus/shared/growth_bus.jsonl)
+//             → Mac(/Users/ghost/Dev/nexus/shared/growth_bus.jsonl)
+//
+//  - append only, 중복 라인 제거 (python set diff)
+//  - Mac 원본 무손상, 기존 라인 수정 금지
+//  - Prime Directive 준수 (kill 없음)
+//  - 하드코딩 금지: ssh_alias / 원격경로는 gate_config.jsonl 에서 로드
+//
+//  Usage:
+//    hexa growth_bus_sync.hexa            // 1회 실행
+//    hexa growth_bus_sync.hexa daemon     // 30초 주기 (수동 launchctl)
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let MAC_BUS     = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+let TMP_PULL    = "/tmp/_ag3_growth_pull.jsonl"
+let TMP_DIFF    = "/tmp/_ag3_growth_diff.jsonl"
+let INTERVAL    = 30
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Config loader (ubu_bridge.hexa 동일 패턴)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let REMOTE  = load_cfg("ssh_alias",      "ubu")
+let UBU_BUS = load_cfg("ubu_growth_bus", env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl")
+
+// ═══════════════════════════════════════════════════════════════════════
+//  sync_once() — ubu 측 파일 pull → Mac 에 없는 라인만 append
+//                 반환: 새로 append 된 라인 수
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sync_once() -> int {
+    // 1) ubu → /tmp pull (scp)
+    let scp_cmd = "timeout 30 scp -q " + REMOTE + ":" + UBU_BUS + " " + TMP_PULL + " 2>&1; echo __rc=$?"
+    let res = try { to_string(exec(scp_cmd)) } catch e {
+        println("[warn] growth_bus_sync: scp exec failed — " + to_string(e))
+        ""
+    }
+    if res.contains("__rc=0") == false {
+        println("[SYNC] scp failed — ubu 측 파일 접근 실패")
+        return 0
+    }
+    if file_exists(TMP_PULL) == false {
+        println("[SYNC] pulled file missing: " + TMP_PULL)
+        return 0
+    }
+
+    // 2) python set diff — Mac 에 없는 ubu 라인만 TMP_DIFF 로 출력
+    //    (26k 라인 규모라 in-memory set 으로 충분히 빠름)
+    let py = "import sys\nmac_path=sys.argv[1]\nubu_path=sys.argv[2]\nout_path=sys.argv[3]\nseen=set()\ntry:\n  f=open(mac_path)\n  for l in f: seen.add(l.rstrip('\\n'))\n  f.close()\nexcept FileNotFoundError: pass\nn=0\nout=open(out_path,'w')\nf=open(ubu_path)\nfor l in f:\n  s=l.rstrip('\\n')\n  if not s: continue\n  if s in seen: continue\n  seen.add(s)\n  out.write(s+'\\n')\n  n+=1\nout.close(); f.close()\nprint(n)\n"
+    write_file("/tmp/_ag3_growth_diff.py", py)
+    let py3_bin = try { exec("which python3 2>/dev/null || echo python3").trim() } catch e { "python3" }
+    let diff_cmd = "timeout 30 " + py3_bin + " /tmp/_ag3_growth_diff.py '" + MAC_BUS + "' '" + TMP_PULL + "' '" + TMP_DIFF + "' 2>&1"
+    let diff_out = try { to_string(exec(diff_cmd)).trim() } catch e {
+        println("[warn] growth_bus_sync: diff exec failed — " + to_string(e))
+        ""
+    }
+    let new_count = 0
+    try { new_count = to_int(to_float(diff_out)) } catch e {
+        println("[SYNC] diff failed: " + diff_out)
+        return 0
+    }
+
+    // 3) append (원본 무손상, 끝에만 덧붙임)
+    if new_count > 0 {
+        if file_exists(TMP_DIFF) {
+            let buf = read_file(TMP_DIFF)
+            append_file(MAC_BUS, buf)
+        }
+        println("[SYNC] merged " + to_string(new_count) + " new lines from ubu")
+    } else {
+        println("[SYNC] no new lines (idempotent)")
+    }
+    return new_count
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Schema validation helpers (AG3 growth_bus canonical writer)
+//
+//  Canonical record (required):
+//    ts      : ISO-8601 Z string   (e.g. "2026-04-09T12:34:56Z")
+//    source  : non-empty string    (e.g. "airgenome/<module>")
+//    event   : non-empty string    (short machine key)
+//    domain  : non-empty string    (e.g. "airgenome")
+//
+//  Rationale: audit (forge/growth_bus_audit.report.md, 2026-04-09) found
+//   - blowup-recurse uses `timestamp`, airgenome writers use `ts`  →
+//     normalize to `ts`
+//   - 184/26706 rows file-wide have no `source`                   →
+//     require it here
+//   - `event` absent in ~100% of bus rows                         →
+//     require it for airgenome-origin writers
+//
+//  These helpers are OPT-IN. Existing writers are untouched; migrate by
+//  calling gb_append(rec) instead of direct append_file(MAC_BUS, ...).
+// ═══════════════════════════════════════════════════════════════════════
+
+fn gb_is_iso8601z(s: str) -> bool {
+    if len(s) < 20 { return false }
+    if s.contains("T") == false { return false }
+    if s.ends_with("Z") == false { return false }
+    return true
+}
+
+// Validate a record. Returns empty string if OK, otherwise error reason.
+fn gb_validate(rec: any) -> str {
+    let required = ["ts", "source", "event", "domain"]
+    let i = 0
+    while i < len(required) {
+        let k = required[i]
+        if rec.has(k) == false { return "missing:" + k }
+        let v = rec[k]
+        if to_string(v) == "" { return "empty:" + k }
+        i = i + 1
+    }
+    let ts = to_string(rec["ts"])
+    if gb_is_iso8601z(ts) == false { return "bad_ts_format:" + ts }
+    return ""
+}
+
+// Normalize + append. Returns "" on success, error reason on failure.
+// Normalizations applied (non-destructive — only if target key absent):
+//   - timestamp → ts
+//   - inject source fallback from arg `default_source` when absent
+fn gb_normalize(rec: any, default_source: str) -> any {
+    if rec.has("ts") == false {
+        if rec.has("timestamp") {
+            rec["ts"] = rec["timestamp"]
+        }
+    }
+    if rec.has("source") == false {
+        if len(default_source) > 0 { rec["source"] = default_source }
+    }
+    return rec
+}
+
+fn gb_append(rec: any, default_source: str) -> str {
+    rec = gb_normalize(rec, default_source)
+    let err = gb_validate(rec)
+    if len(err) > 0 { return err }
+    let line = json_stringify(rec) + "\n"
+    append_file(MAC_BUS, line)
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() -> void {
+    let argv = args()
+    let daemon = false
+    if len(argv) > 1 {
+        if argv[1] == "daemon" { daemon = true }
+    }
+
+    if daemon {
+        println("[SYNC] daemon started, interval=" + to_string(INTERVAL) + "s")
+        while true {
+            sync_once()
+            sleep(INTERVAL)
+        }
+    } else {
+        let n = sync_once()
+        println("synced " + to_string(n) + " lines")
+    }
+    return
+}
+
+main()

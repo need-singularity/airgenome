@@ -55,7 +55,7 @@ fn ring_load(path: str) -> auto {
 }
 
 fn ring_push(path: str, size: int, axes: auto) -> int {
-    let ts = exec("date +%s").trim()
+    let ts = try { exec("date +%s").trim() } catch e { "0" }
     let rec = "{\"ts\":" + ts
     let a = 0
     let axkey = ["c","r","s","n","d","g"]
@@ -305,7 +305,7 @@ fn compute_stats_json(cfg: auto) -> str {
         m5 = sum_l5c / to_float(used)
         m6 = sum_l6e / to_float(used)
     }
-    let ts = exec("date +%s").trim()
+    let ts = try { exec("date +%s").trim() } catch e { "0" }
     let j = "{\"ts\":" + ts + ",\"ring_ready\":" + to_string(ready) + ",\"ring_n\":" + to_string(n) + ",\"axes_used\":" + to_string(used) + ",\"tau\":" + to_string(tau) + ",\"l5c_nmi\":" + fmt(m5) + ",\"l6e_score\":" + fmt(m6) + ",\"per_axis\":{"
     let b = 0
     while b < NUM_AXES {
@@ -326,12 +326,12 @@ fn merge_state(cfg: auto, stats_json: str) -> int {
     let parsed = json_parse(base)
     parsed["vitals"] = json_parse(stats_json)
     // Manual JSON re-emit: hexa lacks json_stringify? Try exec python fallback.
-    let tmp = "/tmp/_vitals_merge_" + exec("date +%s%N").trim() + ".json"
+    let tmp = "/tmp/_vitals_merge_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".json"
     write_file(tmp + ".b", base)
     write_file(tmp + ".v", stats_json)
     let py = "python3 -c \"import json,sys; b=json.load(open('" + tmp + ".b')); v=json.load(open('" + tmp + ".v')); b['vitals']=v; open('" + out_path + "','w').write(json.dumps(b,indent=2))\""
-    exec("timeout 10 " + py)
-    exec("rm -f " + tmp + ".b " + tmp + ".v")
+    try { exec("timeout 10 " + py) } catch e { println("[warn] vitals_ring: merge failed — " + e) }
+    try { exec("rm -f " + tmp + ".b " + tmp + ".v") } catch e {}
     return 1
 }
 

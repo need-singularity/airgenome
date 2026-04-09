@@ -1,0 +1,103 @@
+// airgenome/modules/detectors/run_all.hexa
+// ─────────────────────────────────────────────────────────────────────────
+// Detector Orchestrator — 6종 detector 순차 실행, 종합 리포트
+//
+// 각 detector 는 독립 실행, 실패해도 다른 detector 는 계속 진행.
+// 결과는 각자 growth_bus 에 append, 여기서는 종합 상태만 출력.
+// ─────────────────────────────────────────────────────────────────────────
+
+let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+let DET_DIR  = "modules/detectors"
+let CFG_FILE = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
+
+fn run_one(name: str) -> str {
+    let path = DET_DIR + "/" + name + ".hexa"
+    let out = try { exec(HEXA_BIN + " " + path + " 2>&1 | grep '\"detector\"' | tail -1").trim() } catch e { "" }
+    if len(out) == 0 { return "{\"detector\":\"" + name + "\",\"status\":\"no_output\"}" }
+    return out
+}
+
+fn cfg_get(key: str, default: str) -> str {
+    let cmd = "grep '\"key\":\"" + key + "\"' '" + CFG_FILE + "' 2>/dev/null | tail -1 | sed -E 's/.*\"value\":\"([^\"]*)\".*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    if len(v) == 0 { return default }
+    return v
+}
+
+fn run_cycle() {
+    let names = ["mi_lag", "accel_field", "resonance", "cascade_dag", "limit_cycle", "entropy_flow"]
+    println("╔══════════════════════════════════════════════╗")
+    println("║  airgenome detectors — run_all               ║")
+    println("╚══════════════════════════════════════════════╝")
+
+    let mut ok = 0
+    let mut fail = 0
+    let mut i = 0
+    while i < 6 {
+        let name = names[i]
+        println("")
+        println("── " + name + " ──")
+        try {
+            let r = run_one(name)
+            println(r)
+            if r.contains("\"status\":\"no_output\"") { fail = fail + 1 }
+            if r.contains("\"status\":\"no_output\"") == false { ok = ok + 1 }
+        } catch e {
+            println("{\"detector\":\"" + name + "\",\"status\":\"exception\"}")
+            fail = fail + 1
+        }
+        i = i + 1
+    }
+    println("")
+    println("── summary ──")
+    println("ok=" + to_string(ok) + " fail=" + to_string(fail) + " total=6")
+}
+
+consciousness DetectorOrchestrator {
+    // --input <path> — 최소 패치: detectors.jsonl 의 genomes_index 를 임시 override
+    // (backup/restore). 기본 동작은 유지.
+    let argv = args()
+    let argc = len(argv)
+    let mut input_override = ""
+    let mut mode = "once"
+    let mut _ai = 0
+    while _ai < argc {
+        if argv[_ai] == "--input" {
+            if _ai + 1 < argc { input_override = argv[_ai + 1] }
+        }
+        if argv[_ai] == "loop" { mode = "loop" }
+        if argv[_ai] == "once" { mode = "once" }
+        _ai = _ai + 1
+    }
+    let mut restore = false
+    if len(input_override) > 0 {
+        if file_exists(CFG_FILE) {
+            try { exec("cp " + CFG_FILE + " " + CFG_FILE + ".bak_runall") } catch e { println("[warn] run_all: cp backup failed — " + e) }
+            // drop existing genomes_index line, append override
+            try { exec("grep -v '\"key\":\"genomes_index\"' " + CFG_FILE + ".bak_runall > " + CFG_FILE) } catch e {}
+            try { exec("printf '%s\\n' '{\"key\":\"genomes_index\",\"value\":\"" + input_override + "\"}' >> " + CFG_FILE) } catch e { println("[warn] run_all: override append failed — " + e) }
+            restore = true
+            println("  --input override: " + input_override)
+        }
+    }
+
+    if mode == "loop" {
+        let interval_s = cfg_get("loop_interval_sec", "60")
+        println("── loop mode: interval=" + interval_s + "s (detectors.jsonl) ──")
+        let mut tick = 0
+        while true {
+            tick = tick + 1
+            println("")
+            println("[tick #" + to_string(tick) + " @ " + try { exec("date -u +%H:%M:%SZ").trim() } catch e { "??:??:??Z" } + "]")
+            try { run_cycle() } catch e { println("  cycle exception") }
+            try { exec("sleep " + interval_s) } catch e {}
+        }
+    } else {
+        run_cycle()
+    }
+
+    if restore {
+        try { exec("mv " + CFG_FILE + ".bak_runall " + CFG_FILE) } catch e { println("[warn] run_all: restore failed — " + e) }
+        println("  detectors.jsonl restored")
+    }
+}
