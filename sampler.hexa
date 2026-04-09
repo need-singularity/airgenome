@@ -71,7 +71,7 @@ while true {
     let mut cpu = 0
     let mut cpu_f = 0.0
     if lite_scan == false {
-        cpu_str = try { exec("timeout 10 top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim() } catch e { "0" }
+        cpu_str = try { exec("top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim() } catch e { "0" }
         try { cpu_f = to_float(cpu_str) } catch e {}
     }
     // ps -A -o %cpu= 캐시 (savings + fallback 공용, 중복 호출 제거)
@@ -401,7 +401,7 @@ while true {
     let vr_net = to_string(net_kbps_f / 1024.0)
     let vr_disk = to_string(disk_mbps_f)
     let vr_gpu = gpu_local_f_str
-    try { exec("timeout 30 $HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu) } catch e { println("[warn] sampler: vitals_ring tick failed — " + e) }
+    try { exec("$HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu) } catch e { println("[warn] sampler: vitals_ring tick failed — " + e) }
 
     // ── L5c/L6e ALERT → growth_bus ──
     // vitals_ring tick이 forge/state.json에 병합 → 읽어서 임계값 확인
