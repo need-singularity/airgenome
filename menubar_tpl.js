@@ -47,6 +47,15 @@ var saveItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Save ...')
 saveItem.enabled = false;
 menu.addItem(saveItem);
 
+var vitalsItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\uD83E\uddEC Vitals ...'), null, $(''));
+vitalsItem.enabled = false;
+menu.addItem(vitalsItem);
+
+var ghostItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($(''), null, $(''));
+ghostItem.enabled = false;
+ghostItem.hidden = true;
+menu.addItem(ghostItem);
+
 menu.addItem($.NSMenuItem.separatorItem);
 
 var gateItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('Gate ...'), null, $(''));
@@ -207,6 +216,23 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     var saveTotal = Math.min(Math.round((saveCpu + saveRam) / 2), 99);
     var saveIcon = saveTotal > 0 ? '\u2193' : '\u2500';
     saveItem.title = $(saveIcon + ' Save  CPU -' + saveCpu + '%  RAM -' + saveRam + '%  (\u2248' + saveTotal + '% \uC808\uAC10)');
+
+    // ─── Vitals L5c/L6e ───
+    var vit = j.vitals || {};
+    var l5c = vit.l5c_nmi != null ? vit.l5c_nmi.toFixed(2) : '--';
+    var l6e = vit.l6e_score != null ? vit.l6e_score.toFixed(2) : '--';
+    var ringN = vit.ring_n != null ? vit.ring_n : '--';
+    vitalsItem.title = $('\uD83E\uddEC L5c=' + l5c + ' L6e=' + l6e + ' ring=' + ringN);
+
+    var gSh = j.ghost_sh || 0;
+    var gGrep = j.ghost_grep || 0;
+    if (gSh > 0 || gGrep > 0) {
+        ghostItem.title = $('\u26A0 Ghost: sh=' + gSh + ' grep=' + gGrep);
+        ghostItem.hidden = false;
+    } else {
+        ghostItem.title = $('');
+        ghostItem.hidden = true;
+    }
 
     if (j.gate === 'online') {
         var uLoad = j.ubu_load || '0';
