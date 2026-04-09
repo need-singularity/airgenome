@@ -50,7 +50,7 @@ fn run_at(remote: str, cmd: str) -> str {
     if len(remote) == 0 { return exec(cmd) }
     // ssh 경유. 인용 안전을 위해 single-quote wrap.
     let esc = cmd.replace("'", "'\\''")
-    return exec("ssh " + remote + " '" + esc + "'")
+    return exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + remote + " '" + esc + "'")
 }
 
 fn file_exists_at(remote: str, path: str) -> bool {

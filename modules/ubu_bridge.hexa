@@ -84,13 +84,18 @@ fn health() -> bool {
 fn remote_exec(cmd: str) -> str {
     // offload.hexa::ssh_cmd 패턴: 로컬 임시 스크립트를 stdin 으로 흘려보냄
     write_file("/tmp/_ubu_bridge.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
-    let s = to_string(result)
-    if s.contains("exec error") {
+    try {
+        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
+        let s = to_string(result)
+        if s.contains("exec error") {
+            fallback_local()
+            return ""
+        }
+        return s.trim()
+    } catch e {
         fallback_local()
         return ""
     }
-    return s.trim()
 }
 
 // ═══════════════════════════════════════════════════════════════════════

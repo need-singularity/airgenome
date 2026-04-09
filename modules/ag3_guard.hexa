@@ -16,10 +16,14 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 let VERSION       = "0.1.0"
-let CONFIG_PATH   = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
-let POLICY_PATH   = env("HOME") + "/Dev/airgenome/nexus/shared/ag3_policy.jsonl"
-let GROWTH_BUS    = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
-let DISPATCH_LOG  = env("HOME") + "/Dev/airgenome/dispatch.log"
+let AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let NEXUS_HOME = env("NEXUS_HOME")
+if NEXUS_HOME == "" { NEXUS_HOME = env("HOME") + "/Dev/nexus" }
+let CONFIG_PATH   = AG_HOME + "/nexus/shared/gate_config.jsonl"
+let POLICY_PATH   = AG_HOME + "/nexus/shared/ag3_policy.jsonl"
+let GROWTH_BUS    = NEXUS_HOME + "/shared/growth_bus.jsonl"
+let DISPATCH_LOG  = AG_HOME + "/dispatch.log"
 
 // ───────────────────────────────────────────────────────────────────────
 // Config loader (ubu_bridge.hexa 동일 패턴)

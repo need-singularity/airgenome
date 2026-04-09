@@ -1,0 +1,132 @@
+// airgenome/modules/ag3_shipper.hexa — AG3 Wave 1 Mac→ubu genome shipper
+//
+// Mac ps → 6축 float32 → scp → ubu gate_client/gpu_gate_mesh → ring_io.append_genome
+// AG3 원칙: heavy compute는 Ubuntu, Mac은 수집+디스패치만. KILL 금지.
+//
+// Usage: hexa run modules/ag3_shipper.hexa [N]
+
+let VERSION = "0.1.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let TMP_BIN = "/tmp/_ag3_ship.bin"
+let REMOTE_BIN = "/tmp/_ag3_ship.bin"
+let REMOTE_SCRIPT = "/home/aiden/airgenome/ag3/ship_consume.py"
+
+// ── CONFIG ──────────────────────────────────────────────────────────────
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let REMOTE = load_cfg("ssh_alias", "ubu")
+
+// ── COLLECT: Mac ps → 6축 ────────────────────────────────────────────────
+// 축 (Mac 재정의):
+//   [0] %CPU          (ps pcpu, 프로세스별)
+//   [1] %MEM          (ps pmem, 프로세스별)
+//   [2] RSS MB        (ps rss, 프로세스별)
+//   [3] VSZ MB        (ps vsz, 프로세스별)
+//   [4] Net total KB/s (netstat -ib diff, 시스템 전체 공통값)
+//   [5] Swap used MB   (sysctl vm.swapusage, 시스템 전체 공통값)
+//
+// 알려진 한계: 축 4/5는 프로세스별 분리 불가 → 모든 row에 동일값.
+//   진짜 프로세스별 net/disk는 sudo fs_usage/nettop 필요 (Prime Directive 위배).
+//   Mac GPU 축은 AG3 무의미 → Swap으로 재정의.
+//
+// Net baseline: 첫 호출은 0, 두 번째부터 (bytes_now - bytes_prev) / dt / 1024.
+let NET_BASELINE = "/tmp/_ag3_net_baseline"
+
+fn sample_net_kbs() -> float {
+    // netstat -ib 는 인터페이스별 누적 bytes, 중복 라인 포함 → !seen 로 dedup
+    let cmd = "netstat -ib 2>/dev/null | awk 'NR>1 && !seen[$1]++ {ib+=$7; ob+=$10} END {print ib+ob}'"
+    let now_bytes = to_float(exec(cmd).trim())
+    let now_ts = to_float(exec("date +%s").trim())
+    if file_exists(NET_BASELINE) == false {
+        write_file(NET_BASELINE, to_string(now_ts) + " " + to_string(now_bytes))
+        return 0.0
+    }
+    let prev = read_file(NET_BASELINE).trim().split(" ")
+    write_file(NET_BASELINE, to_string(now_ts) + " " + to_string(now_bytes))
+    if len(prev) < 2 { return 0.0 }
+    let prev_ts = to_float(prev[0])
+    let prev_bytes = to_float(prev[1])
+    let dt = now_ts - prev_ts
+    if dt <= 0.0 { return 0.0 }
+    let db = now_bytes - prev_bytes
+    if db < 0.0 { return 0.0 }
+    return db / dt / 1024.0
+}
+
+fn sample_swap_mb() -> float {
+    // vm.swapusage 토큰: total = X.XXM  used = Y.YYM  free = Z.ZZM  (encrypted)
+    //                    1     2 3      4    5 6     7    8 9      10
+    let cmd = "sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$6); print $6+0}'"
+    let out = exec(cmd).trim()
+    if len(out) == 0 { return 0.0 }
+    return to_float(out)
+}
+
+fn collect_mac(n: int) -> auto {
+    let net_kbs = sample_net_kbs()
+    let swap_mb = sample_swap_mb()
+    let limit = to_string(n + 1)
+    // awk로 필드 사이를 단일 공백으로 정규화 후 hexa에서 split(" ")
+    let out = exec("ps -eo pid,pcpu,pmem,rss,vsz,comm -r | head -" + limit + " | awk '{printf \"%s %s %s %s %s %s\\n\",$1,$2,$3,$4,$5,$6}'")
+    let lines = out.split("\n")
+    let rows = []
+    let i = 1   // skip header
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = line.split(" ")
+            if len(parts) >= 6 {
+                let cpu = to_float(parts[1])
+                let mem = to_float(parts[2])
+                let rss = to_float(parts[3]) / 1024.0
+                let vsz = to_float(parts[4]) / 1024.0
+                rows = rows + [[cpu, mem, rss, vsz, net_kbs, swap_mb]]
+            }
+        }
+        i = i + 1
+    }
+    return rows
+}
+
+// ── SHIP: write bin → scp → ssh consumer ────────────────────────────────
+fn ship(rows: auto) -> int {
+    let n = len(rows)
+    if n == 0 { return 0 }
+    // hexa에 binary write primitive가 없으면 python one-liner로 패킹
+    let py = "python3 -c 'import struct,sys,json; rows=json.loads(sys.argv[1]); open(\"" + TMP_BIN + "\",\"wb\").write(b\"\".join(struct.pack(\"<f\",v) for r in rows for v in r))' "
+    let payload = json_stringify(rows)
+    exec(py + "'" + payload + "'")
+    exec("scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
+    try {
+        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
+        print("[AG3-SHIP] consumer: " + result)
+    } catch e {
+        print("[AG3-SHIP] ssh exec failed: " + to_string(e))
+    }
+    return n
+}
+
+// ── MAIN ────────────────────────────────────────────────────────────────
+fn main() {
+    let n = 30
+    let rows = collect_mac(n)
+    print("[AG3-SHIP v" + VERSION + "] collected " + to_string(len(rows)) + " mac procs")
+    let shipped = ship(rows)
+    print("[AG3-SHIP] shipped " + to_string(shipped) + " genomes → " + REMOTE)
+}
+
+main()
