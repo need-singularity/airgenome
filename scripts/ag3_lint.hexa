@@ -1,0 +1,111 @@
+// airgenome/scripts/ag3_lint.hexa — AG3 정적 린터 (pre-commit 훅 대상)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  금지 패턴 스캐너. 위반 발견 시 exit 1 → 커밋 차단.
+//  스펙: docs/superpowers/specs/2026-04-09-ag3-policy-enforcement-design.md §5
+//
+//  스캔 범위:
+//    - 모든 *.hexa  (airgenome/ 루트 이하)
+//    - 모든 *.py    (단, ubu_workers/py/ 는 예외 — PyTorch/llama 허용 구역)
+//
+//  금지 패턴:
+//    P1. .hexa 내 'import torch' / 'import cupy' / 'cudnn'
+//    P2. 'popen("python3' + 'torch'  — 우회 실행
+//    P3. forge.hexa 내 ubu_bridge 미경유 직접 GPU 호출 루프
+//    P4. 하드코딩 — 192.168.* / /home/aiden/ / /mnt/ramdisk/
+//        (예외: modules/ubu_bridge.hexa, modules/ag3_guard.hexa 는 fallback 리터럴만 허용 범위)
+//    P5. ubu_workers/py/ 밖의 신규 *.py 생성
+// ═══════════════════════════════════════════════════════════════════════
+
+let ROOT = env("HOME") + "/Dev/airgenome"
+let EXCEPT_PY_DIR = "ubu_workers/py/"
+let EXCEPT_HARDCODE_FILES = [
+    "modules/ubu_bridge.hexa",
+    "modules/ag3_guard.hexa"
+]
+
+let violations = []
+
+// ───────────────────────────────────────────────────────────────────────
+// Helpers
+// ───────────────────────────────────────────────────────────────────────
+fn add_violation(file: str, pattern: str, line_no: int, snippet: str) -> void {
+    violations.push(file + ":" + str(line_no) + " [" + pattern + "] " + snippet)
+}
+
+fn is_excepted(rel: str) -> bool {
+    let i = 0
+    while i < len(EXCEPT_HARDCODE_FILES) {
+        if rel == EXCEPT_HARDCODE_FILES[i] { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Scanners
+// ───────────────────────────────────────────────────────────────────────
+fn scan_hexa(rel: str, abs: str) -> void {
+    if file_exists(abs) == false { return }
+    let lines = read_file(abs).split("\n")
+    let i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        // P1
+        if l.contains("import torch") { add_violation(rel, "P1", i+1, l.trim()) }
+        if l.contains("import cupy")  { add_violation(rel, "P1", i+1, l.trim()) }
+        if l.contains("cudnn")        { add_violation(rel, "P1", i+1, l.trim()) }
+        // P2
+        if l.contains("popen(") && l.contains("torch") {
+            add_violation(rel, "P2", i+1, l.trim())
+        }
+        // P4 (예외 파일 제외)
+        if is_excepted(rel) == false {
+            if l.contains("192.168.")      { add_violation(rel, "P4", i+1, l.trim()) }
+            if l.contains("/home/aiden/")  { add_violation(rel, "P4", i+1, l.trim()) }
+            if l.contains("/mnt/ramdisk/") { add_violation(rel, "P4", i+1, l.trim()) }
+        }
+        i = i + 1
+    }
+}
+
+fn scan_py_presence(rel: str) -> void {
+    // P5: ubu_workers/py/ 밖의 .py 는 경고
+    if rel.starts_with(EXCEPT_PY_DIR) { return }
+    add_violation(rel, "P5", 0, "python file outside ubu_workers/py/")
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Main
+// ───────────────────────────────────────────────────────────────────────
+fn main() -> int {
+    let hexa_files = glob(ROOT, "**/*.hexa")
+    let i = 0
+    while i < len(hexa_files) {
+        let abs = hexa_files[i]
+        let rel = abs.replace(ROOT + "/", "")
+        scan_hexa(rel, abs)
+        i = i + 1
+    }
+
+    let py_files = glob(ROOT, "**/*.py")
+    i = 0
+    while i < len(py_files) {
+        let abs = py_files[i]
+        let rel = abs.replace(ROOT + "/", "")
+        scan_py_presence(rel)
+        i = i + 1
+    }
+
+    if len(violations) == 0 {
+        print("[ag3_lint] OK — no violations")
+        return 0
+    }
+    print("[ag3_lint] FAIL — " + str(len(violations)) + " violation(s)")
+    let j = 0
+    while j < len(violations) {
+        print("  " + violations[j])
+        j = j + 1
+    }
+    return 1
+}

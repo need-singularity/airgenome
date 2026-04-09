@@ -1,0 +1,5 @@
+{"op":"six_axis_sample","script":"sampler.hexa","module":"src/core.hexa","fn":"sample","enforce":"strict","est_vram_mb":0,"est_ram_mb":16,"notes":"6축 투영 — Ubuntu ps 기반"}
+{"op":"genome_similarity","script":"cosine_nxn.hexa","module":"modules/forge.hexa","fn":"cosine_nxn","enforce":"strict","est_vram_mb":512,"est_ram_mb":8192,"notes":"N×N Arrow OLAP"}
+{"op":"forge_cycle","script":"forge.hexa","module":"modules/forge.hexa","fn":"forge","enforce":"strict","est_vram_mb":1024,"est_ram_mb":4096,"notes":"교차수분/돌연변이 — GPU"}
+{"op":"llm_query","script":"llm_query.py","module":"ubu_workers/py/llama","fn":"main","enforce":"strict","est_vram_mb":5120,"est_ram_mb":2048,"notes":"llama.cpp 7B Q4"}
+{"op":"implant_extract","script":"implant.hexa","module":"modules/implant.hexa","fn":"extract","enforce":"degrade","est_vram_mb":0,"est_ram_mb":512,"notes":"패턴 추출 — 가벼움, degrade 허용"}

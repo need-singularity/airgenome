@@ -4,3 +4,11 @@
 {"key":"ssh_alias","value":"ubu","desc":"SSH config alias"}
 {"key":"remote_dir","value":"/home/aiden/airgenome","desc":"Ubuntu working directory (영구)"}
 {"key":"tailscale_host","value":"100.96.193.56","desc":"Tailscale IP (외부 접속 시)"}
+{"key":"ubu_tmpfs","value":"/mnt/ramdisk/airgenome","desc":"Ubuntu tmpfs 경로 (AG3)"}
+{"key":"ubu_python","value":"/usr/bin/python3","desc":"Ubuntu python3 절대경로 (python 심볼릭 없음)"}
+{"key":"ubu_gpu_worker_dir","value":"/home/aiden/airgenome","desc":"Ubuntu gpu_*.py 워커 디렉토리"}
+{"key":"ubu_hexa_bin","value":"/home/aiden/Dev/hexa-lang/target/release/hexa","desc":"Ubuntu hexa 바이너리 실경로 (AG3)"}
+{"key":"ubu_ramdisk_cache","value":"/mnt/ramdisk/blowup_cache","desc":"blowup 캐시 디렉토리"}
+{"key":"ubu_ramdisk_root","value":"/mnt/ramdisk","desc":"Ubuntu ramdisk 루트"}
+{"key":"ubu_blowup_hexa","value":"/home/aiden/Dev/nexus/mk2_hexa/native/blowup.hexa","desc":"blowup.hexa 경로"}
+{"key":"ag3_mode","value":"degrade","desc":"AG3 집행 모드 (strict|degrade|off) — Mac CPU≥30% 시 ag3_guard 가 in-memory strict 부스트"}

@@ -1,0 +1,133 @@
+// airgenome/modules/ag3_guard.hexa — AG3 런타임 집행기 (L0 아님, dispatch 가드)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  AG3 Enforcement Layer
+//  "문서 규칙"을 "코드가 거부하는 불변식"으로 승격.
+//  집행 지점 ①(dispatch) + ③(policy jsonl) + ④(lint) 중 런타임 부분.
+//
+//  모드 (gate_config.jsonl::ag3_mode):
+//    strict  — 위반 즉시 abort (--allow-local 플래그 없을 시)
+//    degrade — warn + growth_bus + 로컬 fallback 허용 (기본)
+//    off     — 가드 비활성 (디버깅 전용)
+//
+//  자동 승격: Mac CPU≥30% 감지 시 in-memory strict 부스트
+//  하드코딩 금지: 모든 경로/IP/alias 는 gate_config.jsonl 에서 로드
+//  스펙: docs/superpowers/specs/2026-04-09-ag3-policy-enforcement-design.md
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION       = "0.1.0"
+let CONFIG_PATH   = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let POLICY_PATH   = env("HOME") + "/Dev/airgenome/nexus/shared/ag3_policy.jsonl"
+let GROWTH_BUS    = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+let DISPATCH_LOG  = env("HOME") + "/Dev/airgenome/dispatch.log"
+
+// ───────────────────────────────────────────────────────────────────────
+// Config loader (ubu_bridge.hexa 동일 패턴)
+// ───────────────────────────────────────────────────────────────────────
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Policy lookup (ag3_policy.jsonl)
+// ───────────────────────────────────────────────────────────────────────
+fn lookup(op: str) -> str {
+    // 반환: op 의 enforce 값 ("strict"/"degrade"/"off") 또는 "none" (미등록)
+    if file_exists(POLICY_PATH) == false { return "none" }
+    let content = read_file(POLICY_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let e = json_parse(line)
+            if e["op"] == op { return e["enforce"] }
+        }
+        i = i + 1
+    }
+    return "none"
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Mode (global + boost)
+// ───────────────────────────────────────────────────────────────────────
+let BOOST_STRICT = false  // in-memory AG2 부스트 플래그
+
+fn current_mode() -> str {
+    if BOOST_STRICT == true { return "strict" }
+    return load_cfg("ag3_mode", "degrade")
+}
+
+fn boost_strict_if_pressure(mac_cpu_pct: int) -> void {
+    // resource_guard 가 주기적으로 호출. 30%+ → 부스트, 복귀 시 해제.
+    if mac_cpu_pct >= 30 { BOOST_STRICT = true }
+    else { BOOST_STRICT = false }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Violation recording
+// ───────────────────────────────────────────────────────────────────────
+let VIOLATION_COUNT = 0
+
+fn record_violation(op: str, reason: str) -> void {
+    VIOLATION_COUNT = VIOLATION_COUNT + 1
+    let ts = now_iso()
+    let event = "{\"type\":\"ag3_violation\",\"phase\":\"" + reason
+              + "\",\"id\":\"airgenome\",\"value\":\"" + op
+              + "\",\"grade\":\"warn\",\"domain\":\"airgenome\",\"timestamp\":\""
+              + ts + "\"}"
+    append_file(GROWTH_BUS, event + "\n")
+    append_file(DISPATCH_LOG, "[AG3] violation op=" + op + " reason=" + reason + "\n")
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Main entry — dispatch 진입점이 호출
+// ───────────────────────────────────────────────────────────────────────
+fn enforce(op: str) -> bool {
+    let enf = lookup(op)
+    if enf == "none" { return true }         // 화이트리스트 밖 → 검사 안 함
+    if enf == "off"  { return true }
+    let mode = current_mode()
+    if mode == "off" { return true }
+
+    // op 레벨 enforce 가 degrade 면 global strict 도 degrade 로 완화
+    let effective = mode
+    if enf == "degrade" { effective = "degrade" }
+
+    let ok = ubu_bridge::health()
+    if ok == true { return true }
+
+    record_violation(op, "ubu_offline")
+
+    if effective == "strict" {
+        print("[AG3] STRICT abort — op '" + op + "' requires ubu, ubu offline")
+        // abort — caller 는 exit 코드 1 로 종료해야 함
+        return false
+    }
+    // degrade: 경고만 내고 통과
+    print("[AG3] DEGRADE — op '" + op + "' falling back to local")
+    return true
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Stats (menubar 피드용)
+// ───────────────────────────────────────────────────────────────────────
+fn stats() -> int { return VIOLATION_COUNT }
+
+fn mode_label() -> str {
+    let m = current_mode()
+    if BOOST_STRICT == true { return m + "(boost)" }
+    return m
+}

@@ -1,0 +1,578 @@
+// airgenome/mk2_hexa/native/dispatch.hexa — Ubuntu-first auto dispatch
+//
+// Mac 부하 최소화. 연산은 Ubuntu로, Mac은 UI/모니터링만.
+// GPU 연산은 무조건 Ubuntu (RTX 5070 12GB VRAM).
+// 설정: nexus/shared/gate_config.jsonl + gate_offload.jsonl
+//
+// Usage: hexa run mk2_hexa/native/dispatch.hexa <command>
+// Commands: run <script> [args], gpu <script> [args], drain, status, help
+//
+// Prime directive: observe only, never kill
+
+let VERSION = "1.0.0"
+let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+let OFFLOAD_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_offload.jsonl"
+let LOG_FILE = env("HOME") + "/Dev/airgenome/dispatch.log"
+
+// Ubuntu hexa binary path
+let UBU_HEXA = "/tmp/hexa-build/hexa-lang/target/release/hexa"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let REMOTE = load_cfg("ssh_alias", "ubu")
+let REMOTE_DIR = load_cfg("remote_dir", "/home/aiden/airgenome")
+
+// ═══════════════════════════════════════════════════════════════════════
+//  AG3 ENFORCE — 정책 집행 (ag3_policy.jsonl 경유)
+//  스펙: docs/superpowers/specs/2026-04-09-ag3-policy-enforcement-design.md
+//  script 이름으로 op 룩업 → ag3_mode 기반 strict/degrade 분기
+// ═══════════════════════════════════════════════════════════════════════
+let AG3_POLICY_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/ag3_policy.jsonl"
+let GROWTH_BUS_PATH = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+
+fn ag3_lookup_op(script: str) -> str {
+    // script basename 추출
+    let base = script
+    if script.contains("/") {
+        let sp = script.split("/")
+        base = sp[len(sp) - 1]
+    }
+    if file_exists(AG3_POLICY_PATH) == false { return "" }
+    let content = read_file(AG3_POLICY_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let e = json_parse(line)
+            if e["script"] == base {
+                return e["op"] + "|" + e["enforce"]
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+fn ag3_enforce_by_script(script: str, path_kind: str) -> void {
+    let hit = ag3_lookup_op(script)
+    if hit == "" { return }
+    let parts = hit.split("|")
+    let op = parts[0]
+    let enf = parts[1]
+    let mode = load_cfg("ag3_mode", "degrade")
+    if mode == "off" { return }
+    // ubu 도달성은 상위 호출자가 이미 체크했지만, 여기서도 redundant check
+    if ubu_reachable() == true { return }
+    // 위반 기록
+    let ts = exec("date +%Y-%m-%dT%H:%M:%S").trim()
+    let event = "{\"type\":\"ag3_violation\",\"phase\":\"ubu_offline\",\"id\":\"airgenome\",\"value\":\"" + op + "\",\"grade\":\"warn\",\"domain\":\"airgenome\",\"timestamp\":\"" + ts + "\",\"path\":\"" + path_kind + "\"}\n"
+    append_file(GROWTH_BUS_PATH, event)
+    append_file(LOG_FILE, "[AG3] violation op=" + op + " path=" + path_kind + " mode=" + mode + " enforce=" + enf + "\n")
+    if mode == "strict" && enf == "strict" {
+        println("[AG3] STRICT abort — op '" + op + "' requires ubu, ubu offline")
+        exit(1)
+    }
+    println("[AG3] DEGRADE — op '" + op + "' fallback to local")
+}
+
+// Mac-only exclude list from gate_offload.jsonl
+fn load_excludes() -> auto {
+    let excludes = []
+    if file_exists(OFFLOAD_PATH) == false { return excludes }
+    let content = read_file(OFFLOAD_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["type"] == "exclude" {
+                excludes = excludes + [parsed["match"]]
+            }
+        }
+        i = i + 1
+    }
+    return excludes
+}
+
+fn is_mac_only(name: str) -> bool {
+    let excludes = load_excludes()
+    let i = 0
+    while i < len(excludes) {
+        if name.contains(excludes[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SSH helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ssh_cmd(cmd: str) -> str {
+    write_file("/tmp/_dispatch_ssh.sh", cmd)
+    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>&1")
+    return result.trim()
+}
+
+fn ssh_quiet(cmd: str) -> str {
+    write_file("/tmp/_dispatch_ssh.sh", cmd)
+    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>/dev/null")
+    if to_string(result).contains("exec error") { return "" }
+    return result.trim()
+}
+
+fn ubu_reachable() -> bool {
+    let ping = exec("ssh -o ConnectTimeout=3 " + REMOTE + " echo ok 2>/dev/null").trim()
+    return ping == "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LOAD CHECK — Mac vs Ubuntu
+// ═══════════════════════════════════════════════════════════════════════
+
+fn mac_load_1m() -> float {
+    let raw = exec("sysctl -n vm.loadavg 2>/dev/null").trim()
+    // format: { 1m 5m 15m }
+    let inner = raw.split("{")[1].split("}")[0].trim()
+    return to_float(inner.split(" ")[0])
+}
+
+fn ubu_load_1m() -> float {
+    let raw = ssh_quiet("cat /proc/loadavg | awk '{print $1}'")
+    if len(raw) == 0 { return 999.0 }
+    return to_float(raw)
+}
+
+fn ubu_ram_avail_mb() -> int {
+    let raw = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $7}'")
+    if len(raw) == 0 { return 0 }
+    return to_int(raw)
+}
+
+fn ubu_gpu_util() -> int {
+    let raw = ssh_quiet("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null")
+    if len(raw) == 0 { return -1 }
+    return to_int(raw.trim())
+}
+
+fn ubu_gpu_mem_free_mb() -> int {
+    let total = ssh_quiet("nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null").trim()
+    let used = ssh_quiet("nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null").trim()
+    if len(total) == 0 { return 0 }
+    return to_int(total) - to_int(used)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SYNC — 스크립트+의존성을 Ubuntu로 전송
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sync_to_ubu(script: str) -> bool {
+    // Ensure remote dirs
+    ssh_quiet("mkdir -p " + REMOTE_DIR + " " + REMOTE_DIR + "/nexus/shared " + REMOTE_DIR + "/mk2_hexa/native " + REMOTE_DIR + "/modules " + REMOTE_DIR + "/src")
+
+    // Sync the script
+    let scp_result = exec("scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>&1").trim()
+
+    // Sync hexa.toml
+    let home = env("HOME")
+    exec("scp -q " + home + "/Dev/airgenome/hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+
+    // Sync shared config
+    exec("scp -q " + home + "/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("scp -q " + home + "/Dev/airgenome/nexus/shared/gate_config.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("scp -q " + home + "/Dev/airgenome/nexus/shared/gate_offload.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+
+    return scp_result.contains("error") == false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  RUN — Ubuntu-first hexa 실행
+// ═══════════════════════════════════════════════════════════════════════
+
+fn dispatch_run(script_args: str) -> str {
+    let parts = script_args.split(" ")
+    let script = parts[0]
+
+    // Mac-only check
+    if is_mac_only(script) {
+        println("  [dispatch] " + script + " → MAC (mac-only rule)")
+        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let result = exec(mac_hexa + " run " + script_args + " 2>&1")
+        return result
+    }
+
+    // Ubuntu-first: try Ubuntu, fallback to Mac only if unreachable
+    if ubu_reachable() == false {
+        println("  [dispatch] Ubuntu unreachable → MAC fallback")
+        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let result = exec(mac_hexa + " run " + script_args + " 2>&1")
+        return result
+    }
+
+    // AG3 enforce — heavy compute 화이트리스트 체크
+    ag3_enforce_by_script(script, "run")
+
+    // Route to Ubuntu
+    println("  [dispatch] " + script + " → UBUNTU")
+    sync_to_ubu(script)
+
+    // Extract filename
+    let fname = script
+    if script.contains("/") {
+        let sparts = script.split("/")
+        fname = sparts[len(sparts) - 1]
+    }
+
+    // Build remote command
+    let remote_cmd = "cd " + REMOTE_DIR + " && " + UBU_HEXA + " run " + fname
+    let i = 1
+    while i < len(parts) {
+        remote_cmd = remote_cmd + " " + parts[i]
+        i = i + 1
+    }
+
+    let ts_start = exec("date +%s").trim()
+    let result = ssh_cmd(remote_cmd)
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+
+    println(result)
+    println("  [dispatch] done on Ubuntu in " + to_string(elapsed) + "s")
+
+    let log_line = ts_start + "\trun\tubu\t" + script_args + "\t" + to_string(elapsed) + "s\n"
+    append_file(LOG_FILE, log_line)
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GPU — Ubuntu GPU (PyTorch CUDA) 연산 전용
+// ═══════════════════════════════════════════════════════════════════════
+
+fn dispatch_gpu(script_args: str) -> str {
+    let parts = script_args.split(" ")
+    let script = parts[0]
+
+    if ubu_reachable() == false {
+        println("  [dispatch] GPU: Ubuntu unreachable — cannot offload GPU")
+        return "error: ubuntu unreachable"
+    }
+
+    let gpu_util = ubu_gpu_util()
+    let gpu_free = ubu_gpu_mem_free_mb()
+    println("  [dispatch] GPU: util=" + to_string(gpu_util) + "%, VRAM free=" + to_string(gpu_free) + "MB")
+
+    if gpu_util > 90 {
+        println("  [dispatch] GPU saturated — queuing may be slow")
+    }
+
+    // Sync script
+    ssh_quiet("mkdir -p " + REMOTE_DIR)
+    exec("scp -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+
+    let fname = script
+    if script.contains("/") {
+        let sparts = script.split("/")
+        fname = sparts[len(sparts) - 1]
+    }
+
+    // Force CUDA device
+    let remote_cmd = "cd " + REMOTE_DIR + " && CUDA_VISIBLE_DEVICES=0 "
+
+    // .py → python3, .hexa → hexa
+    if fname.contains(".py") {
+        remote_cmd = remote_cmd + "python3 " + fname
+    }
+    if fname.contains(".hexa") {
+        remote_cmd = remote_cmd + UBU_HEXA + " run " + fname
+    }
+    if fname.contains(".py") == false {
+        if fname.contains(".hexa") == false {
+            remote_cmd = remote_cmd + "python3 " + fname
+        }
+    }
+
+    let i = 1
+    while i < len(parts) {
+        remote_cmd = remote_cmd + " " + parts[i]
+        i = i + 1
+    }
+
+    // AG3 enforce — GPU 경로는 항상 heavy compute
+    ag3_enforce_by_script(script, "gpu")
+
+    let ts_start = exec("date +%s").trim()
+    println("  [dispatch] GPU exec: " + remote_cmd)
+    let result = ssh_cmd(remote_cmd)
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+
+    println(result)
+    println("  [dispatch] GPU done in " + to_string(elapsed) + "s")
+
+    let log_line = ts_start + "\tgpu\tubu\t" + script_args + "\t" + to_string(elapsed) + "s\n"
+    append_file(LOG_FILE, log_line)
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DRAIN — Mac heavy 프로세스 전부 tame (renice+taskpolicy)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn drain() -> str {
+    let excludes = load_excludes()
+
+    println("")
+    println("  dispatch drain — Mac CPU relief (renice 10 + taskpolicy -b)")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    let ps_raw = exec("ps axo pid,pcpu,ni,command 2>/dev/null | tail -n +2 | sort -rnk 2").trim()
+    let lines = ps_raw.split("\n")
+
+    let tamed = 0
+    let saved_cpu = 0.0
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let parts = line.split(" ")
+            let fields = []
+            let p = 0
+            while p < len(parts) {
+                let part = parts[p].trim()
+                if len(part) > 0 { fields = fields + [part] }
+                p = p + 1
+            }
+            if len(fields) >= 4 {
+                let pid = fields[0]
+                let cpu = to_float(fields[1])
+                let nice = to_int(fields[2])
+                if cpu >= 15.0 {
+                    let cmd = ""
+                    let c = 3
+                    while c < len(fields) {
+                        if len(cmd) > 0 { cmd = cmd + " " }
+                        cmd = cmd + fields[c]
+                        c = c + 1
+                    }
+                    let excluded = is_mac_only(cmd)
+                    // Also skip system processes
+                    if cmd.contains("WindowServer") { excluded = true }
+                    if cmd.contains("kernel_task") { excluded = true }
+                    if cmd.contains("Dock") { excluded = true }
+                    if cmd.contains("loginwindow") { excluded = true }
+
+                    if excluded == false {
+                        if nice < 10 {
+                            exec("renice 10 -p " + pid + " 2>/dev/null")
+                            exec("taskpolicy -b -p " + pid + " 2>/dev/null")
+                            saved_cpu = saved_cpu + cpu * 0.3
+                            tamed = tamed + 1
+                            // Truncate for display
+                            let short = cmd
+                            if len(short) > 50 {
+                                let trunc = ""
+                                let ti = 0
+                                while ti < 50 {
+                                    trunc = trunc + short.split("")[ti]
+                                    ti = ti + 1
+                                }
+                                short = trunc + "..."
+                            }
+                            println("  tame " + pid + " " + fields[1] + "% " + short)
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    println("")
+    println("  tamed: " + to_string(tamed) + " processes")
+    println("  est CPU savings: ~" + to_string(to_int(saved_cpu)) + "%")
+
+    let mac_load = exec("sysctl -n vm.loadavg 2>/dev/null").trim()
+    println("  Mac load: " + mac_load)
+    println("")
+
+    let ts = exec("date +%s").trim()
+    append_file(LOG_FILE, ts + "\tdrain\ttamed=" + to_string(tamed) + "\tcpu_save=" + to_string(to_int(saved_cpu)) + "%\n")
+    return to_string(tamed)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STATUS — 양쪽 자원 대시보드
+// ═══════════════════════════════════════════════════════════════════════
+
+fn status() -> str {
+    println("")
+    println("  dispatch v" + VERSION + " — Ubuntu-first auto router")
+    println("  ══════════════════════════════════════════════════════════════")
+
+    // Mac
+    let mac_load = exec("sysctl -n vm.loadavg 2>/dev/null").trim()
+    let mac_cores = exec("sysctl -n hw.ncpu 2>/dev/null").trim()
+    let mac_mem_pressure = exec("memory_pressure 2>/dev/null | grep 'System-wide' | head -1 | awk -F': ' '{print $2}'").trim()
+    println("")
+    println("  ┌─ Mac ─────────────────────────────────────────────┐")
+    println("  │ load: " + mac_load)
+    println("  │ cores: " + mac_cores)
+    println("  │ memory: " + mac_mem_pressure)
+    println("  │ role: UI + monitoring only")
+    println("  └───────────────────────────────────────────────────┘")
+
+    // Ubuntu
+    if ubu_reachable() {
+        let u_load = ssh_quiet("cat /proc/loadavg | awk '{print $1, $2, $3}'")
+        let u_cores = ssh_quiet("nproc")
+        let u_mem_avail = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $7}'")
+        let u_mem_total = ssh_quiet("LANG=C free -m | grep Mem | awk '{print $2}'")
+        let u_gpu_util = to_string(ubu_gpu_util())
+        let u_gpu_free = to_string(ubu_gpu_mem_free_mb())
+        let u_disk = ssh_quiet("df -h / | tail -1 | awk '{print $4}'")
+        let u_procs = ssh_quiet("ps -e --no-headers | wc -l")
+
+        println("")
+        println("  ┌─ Ubuntu (compute node) ────────────────────────┐")
+        println("  │ load: " + u_load)
+        println("  │ cores: " + u_cores)
+        println("  │ RAM: " + u_mem_avail + "MB / " + u_mem_total + "MB avail")
+        println("  │ GPU: RTX 5070 — util " + u_gpu_util + "%, VRAM free " + u_gpu_free + "MB")
+        println("  │ disk: " + u_disk + " free")
+        println("  │ procs: " + u_procs)
+        println("  │ role: ALL computation")
+        println("  └───────────────────────────────────────────────┘")
+
+        // Imbalance warning
+        let m_load = mac_load_1m()
+        let u_load_f = ubu_load_1m()
+        if m_load > u_load_f * 3.0 {
+            println("")
+            println("  ⚠ Mac " + to_string(to_int(m_load)) + " vs Ubuntu " + to_string(to_int(u_load_f)) + " — run 'dispatch drain' to tame Mac")
+        }
+    }
+    if ubu_reachable() == false {
+        println("")
+        println("  ┌─ Ubuntu ───────────────────────────────────────┐")
+        println("  │ STATUS: UNREACHABLE                            │")
+        println("  └───────────────────────────────────────────────┘")
+    }
+
+    // Recent dispatch log
+    if file_exists(LOG_FILE) {
+        println("")
+        println("  recent dispatches:")
+        let tail = exec("tail -5 " + LOG_FILE + " 2>/dev/null").trim()
+        if len(tail) > 0 {
+            let tlines = tail.split("\n")
+            let ti = 0
+            while ti < len(tlines) {
+                println("    " + tlines[ti])
+                ti = ti + 1
+            }
+        }
+    }
+
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELP
+// ═══════════════════════════════════════════════════════════════════════
+
+fn dispatch_help() -> str {
+    println("dispatch v" + VERSION + " — Ubuntu-first auto router")
+    println("")
+    println("Philosophy: Mac = UI only. Ubuntu = ALL computation.")
+    println("")
+    println("Commands:")
+    println("  run <script.hexa> [args]  — run hexa on Ubuntu (Mac fallback if down)")
+    println("  gpu <script.py> [args]    — run on Ubuntu GPU (RTX 5070, CUDA)")
+    println("  drain                     — tame all Mac heavy procs (renice+bg)")
+    println("  status                    — Mac vs Ubuntu resource dashboard")
+    println("  help                      — this message")
+    println("")
+    println("Routing rules:")
+    println("  1. Mac-only exclusions (gate_offload.jsonl) → stay on Mac")
+    println("  2. Everything else → Ubuntu first")
+    println("  3. GPU tasks → Ubuntu always (RTX 5070 12GB VRAM)")
+    println("  4. Ubuntu down → Mac fallback")
+    println("")
+    println("Remote: " + REMOTE + " (" + REMOTE_DIR + ")")
+    println("GPU: RTX 5070, PyTorch " + ssh_quiet("python3 -c 'import torch; print(torch.__version__)' 2>/dev/null"))
+    println("Prime directive: never kill")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let cmd = "status"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    if cmd == "help"   { dispatch_help() }
+    if cmd == "status" { status() }
+    if cmd == "drain"  { drain() }
+    if cmd == "run" {
+        let run_args = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(run_args) > 0 { run_args = run_args + " " }
+                run_args = run_args + argv[i]
+                i = i + 1
+            }
+        }
+        if len(run_args) > 0 { dispatch_run(run_args) }
+        if len(run_args) == 0 { println("  usage: dispatch run <script.hexa> [args]") }
+    }
+    if cmd == "gpu" {
+        let gpu_args = ""
+        if len(argv) > 4 {
+            let i = 4
+            while i < len(argv) {
+                if len(gpu_args) > 0 { gpu_args = gpu_args + " " }
+                gpu_args = gpu_args + argv[i]
+                i = i + 1
+            }
+        }
+        if len(gpu_args) > 0 { dispatch_gpu(gpu_args) }
+        if len(gpu_args) == 0 { println("  usage: dispatch gpu <script.py> [args]") }
+    }
+
+    let known = cmd == "help"
+    if cmd == "status" { known = true }
+    if cmd == "drain" { known = true }
+    if cmd == "run" { known = true }
+    if cmd == "gpu" { known = true }
+    if known == false {
+        println("unknown command: " + cmd)
+        dispatch_help()
+    }
+}
+
+main()
