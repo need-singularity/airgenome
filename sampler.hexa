@@ -207,6 +207,18 @@ while true {
     if save_cpu > 99 { save_cpu = 99 }
     if save_ram > 99 { save_ram = 99 }
 
+    // ── GHOST PROCESS DETECTION (detect-only, Prime Directive safe) ──
+    let ghost_sh_s = exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim()
+    let ghost_grep_s = exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim()
+    let mut ghost_sh = 0
+    let mut ghost_grep = 0
+    try { ghost_sh = to_int(to_float(ghost_sh_s)) } catch e {}
+    try { ghost_grep = to_int(to_float(ghost_grep_s)) } catch e {}
+    let ghost_total = ghost_sh + ghost_grep
+    if ghost_total >= 3 && level == "ok" {
+        level = "warn"
+    }
+
     // ── GATE STATUS ──
     let gate_cfg = DIR + "/nexus/shared/gate_config.jsonl"
     let mut ubu_host = "192.168.50.119"
@@ -272,7 +284,7 @@ while true {
     let mut disk_kbps_f = 0.0
     try { disk_kbps_f = to_float(disk_now_str) * 1024.0 } catch e {}
     let gpu_local_f_str = if len(gpu_local_str) > 0 { gpu_local_str } else { "0" }
-    let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"cpu_f\":" + cpu_str + ",\"ram\":" + to_string(ram) + ",\"ram_f\":" + ram_str + ",\"ram_used_mb\":" + to_string(ram_used_mb) + ",\"swap\":" + to_string(swap) + ",\"swap_f\":" + swap_str + ",\"swap_mb\":" + to_string(swap_mb) + ",\"net_mbps\":" + to_string(net_mbps) + ",\"net_mbps_f\":" + to_string(net_kbps_f) + ",\"disk_mbps\":" + to_string(disk_mbps) + ",\"disk_mbps_f\":" + to_string(disk_kbps_f) + ",\"gpu_local\":" + to_string(gpu_local) + ",\"gpu_local_f\":" + gpu_local_f_str + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\"}"
+    let state_json = "{\"active\":true,\"cpu\":" + to_string(cpu) + ",\"cpu_f\":" + cpu_str + ",\"ram\":" + to_string(ram) + ",\"ram_f\":" + ram_str + ",\"ram_used_mb\":" + to_string(ram_used_mb) + ",\"swap\":" + to_string(swap) + ",\"swap_f\":" + swap_str + ",\"swap_mb\":" + to_string(swap_mb) + ",\"net_mbps\":" + to_string(net_mbps) + ",\"net_mbps_f\":" + to_string(net_kbps_f) + ",\"disk_mbps\":" + to_string(disk_mbps) + ",\"disk_mbps_f\":" + to_string(disk_kbps_f) + ",\"gpu_local\":" + to_string(gpu_local) + ",\"gpu_local_f\":" + gpu_local_f_str + ",\"free_mb\":" + to_string(free_mb) + ",\"load\":" + to_string(load) + ",\"level\":\"" + level + "\",\"throttled\":" + throttled + ",\"cpu_ceil\":" + to_string(cpu_ceil) + ",\"ram_ceil\":" + to_string(ram_ceil) + ",\"swap_ceil\":" + to_string(swap_ceil) + ",\"save_cpu\":" + to_string(save_cpu) + ",\"save_ram\":" + to_string(save_ram) + ",\"gate\":\"" + gate + "\",\"ubu_load\":\"" + ubu_load + "\",\"ubu_ram_pct\":" + to_string(ubu_ram_pct) + ",\"ubu_ram_used\":" + to_string(ubu_ram_used) + ",\"ubu_ram_total\":" + to_string(ubu_ram_total) + ",\"ubu_ram_avail\":" + to_string(ubu_ram_avail) + ",\"ubu_jobs\":" + to_string(ubu_jobs) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_gpu_util\":" + to_string(ubu_gpu_util) + ",\"ubu_gpu_mem\":" + to_string(ubu_gpu_mem) + ",\"ubu_gpu_name\":\"" + ubu_gpu_name + "\",\"ghost_sh\":" + to_string(ghost_sh) + ",\"ghost_grep\":" + to_string(ghost_grep) + "}"
     try { write_file(STATE, state_json + "\n") } catch e {}
 
     // vitals_ring tick — 6축 push

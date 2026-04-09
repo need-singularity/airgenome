@@ -1,0 +1,174 @@
+// api/genome_api.hexa — airgenome 게놈 REST API (NICE TO HAVE #21)
+// 사용: hexa api/genome_api.hexa
+// 환경변수:
+//   AIRGENOME_API_PORT (기본 17777)
+//   AIRGENOME_HOME     (기본 $HOME/Dev/airgenome)
+//
+// 엔드포인트:
+//   GET /health       → {"ok":true}
+//   GET /state        → forge/state.json
+//   GET /genomes      → forge/genomes/ 파일 목록 JSON
+//   GET /genomes/:id  → 개별 .genome (base64)
+//
+// 구현: macOS `nc -k -l` (지속 리스너) + bash parser 파이프.
+// 단일 nc 프로세스가 계속 살아 bind gap 없이 연속 요청 처리.
+// hexa 는 라우팅 루프, 각 요청 response 를 IN_FIFO → nc → 클라이언트.
+// 하드코딩 금지: 경로/포트는 env → 상대경로.
+
+let home = exec("echo $HOME").trim()
+let ag_home_env = exec("echo ${AIRGENOME_HOME:-}").trim()
+let AG_HOME = if ag_home_env == "" { home + "/Dev/airgenome" } else { ag_home_env }
+let port_env = exec("echo ${AIRGENOME_API_PORT:-}").trim()
+let PORT = if port_env == "" { "17777" } else { port_env }
+
+let FORGE_DIR = AG_HOME + "/forge"
+let GENOMES_DIR = FORGE_DIR + "/genomes"
+let STATE_JSON = FORGE_DIR + "/state.json"
+
+// tmp 경로
+let tmp = exec("echo ${TMPDIR:-/tmp}").trim()
+
+fn json_escape(s: str) -> str {
+    let mut r = s
+    r = r.replace("\\", "\\\\")
+    r = r.replace("\"", "\\\"")
+    r = r.replace("\n", "\\n")
+    r = r.replace("\r", "\\r")
+    r = r.replace("\t", "\\t")
+    return r
+}
+
+fn http_response(status: str, ctype: str, body: str) -> str {
+    let blen = to_string(body.len())
+    return "HTTP/1.1 " + status + "\r\nContent-Type: " + ctype + "\r\nContent-Length: " + blen + "\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n" + body
+}
+
+fn handle_health() -> str {
+    return http_response("200 OK", "application/json", "{\"ok\":true}")
+}
+
+fn handle_state() -> str {
+    if file_exists(STATE_JSON) == false {
+        return http_response("200 OK", "application/json", "{}")
+    }
+    let body = read_file(STATE_JSON)
+    return http_response("200 OK", "application/json", body)
+}
+
+fn handle_genomes_list() -> str {
+    // forge/genomes/ 내 .genome 파일 목록 → JSON 배열
+    if file_exists(GENOMES_DIR) == false {
+        return http_response("200 OK", "application/json", "{\"count\":0,\"items\":[]}")
+    }
+    let raw = exec("ls -1 '" + GENOMES_DIR + "' 2>/dev/null | grep '\\.genome$' | head -500").trim()
+    let mut items = "["
+    let mut first = true
+    let mut n = 0
+    if raw != "" {
+        let lines = raw.split("\n")
+        let mut i = 0
+        while i < lines.len() {
+            let name = lines[i].trim()
+            if name != "" {
+                if first == false { items = items + "," }
+                items = items + "\"" + json_escape(name) + "\""
+                first = false
+                n = n + 1
+            }
+            i = i + 1
+        }
+    }
+    items = items + "]"
+    let body = "{\"count\":" + to_string(n) + ",\"items\":" + items + "}"
+    return http_response("200 OK", "application/json", body)
+}
+
+fn handle_genome_get(id: str) -> str {
+    // 보안: 경로 주입 차단 — '/' '..' 금지
+    if id.contains("/") == true { return http_response("400 Bad Request", "application/json", "{\"error\":\"invalid id\"}") }
+    if id.contains("..") == true {
+        return http_response("400 Bad Request", "application/json", "{\"error\":\"invalid id\"}")
+    }
+    let path = GENOMES_DIR + "/" + id
+    if file_exists(path) == false {
+        return http_response("404 Not Found", "application/json", "{\"error\":\"not found\"}")
+    }
+    // .genome 은 바이너리(60B) → base64 로 반환
+    let b64 = exec("base64 < '" + path + "' | tr -d '\\n'").trim()
+    let body = "{\"id\":\"" + json_escape(id) + "\",\"encoding\":\"base64\",\"data\":\"" + b64 + "\"}"
+    return http_response("200 OK", "application/json", body)
+}
+
+fn route(method: str, path: str) -> str {
+    if method != "GET" {
+        return http_response("405 Method Not Allowed", "application/json", "{\"error\":\"method\"}")
+    }
+    if path == "/health" { return handle_health() }
+    if path == "/state"  { return handle_state() }
+    if path == "/genomes" { return handle_genomes_list() }
+    if path == "/genomes/" { return handle_genomes_list() }
+    if path.starts_with("/genomes/") {
+        let id = path.split("/genomes/")[1]
+        return handle_genome_get(id)
+    }
+    return http_response("404 Not Found", "application/json", "{\"error\":\"no route\"}")
+}
+
+// ── 부트 ──
+println("[api] airgenome genome API listening on :" + PORT)
+println("[api]   AG_HOME=" + AG_HOME)
+println("[api]   forge=" + FORGE_DIR)
+
+// 지속 리스너 모델: 단일 `nc -k -l PORT` 가 계속 살아있어 bind gap 이 없다.
+// - IN_FIFO  : nc stdin (서버 → 클라이언트). keeper bash 가 fd 8 로 rw 유지.
+// - REQ_FIFO : 파서가 추출한 request-line 을 hexa 로 흘리는 채널.
+// - parser  : nc stdout 을 읽어 각 요청의 request-line 을 REQ_FIFO 로 전달.
+// 각 응답은 hexa 가 `cat RESP > IN_FIFO` 로 흘려보냄 (keeper 의 fd 8 덕분에 EOF 없음).
+let IN_FIFO = tmp + "/airgenome-api-in." + PORT + ".fifo"
+let REQ_FIFO = tmp + "/airgenome-api-req." + PORT + ".fifo"
+let RESP_FILE = tmp + "/airgenome-api-resp." + PORT + ".bin"
+
+exec("rm -f '" + IN_FIFO + "' '" + REQ_FIFO + "' '" + RESP_FILE + "' 2>/dev/null; mkfifo '" + IN_FIFO + "'; mkfifo '" + REQ_FIFO + "'")
+
+// 스테일 임시 파일 정리 (1시간 이상 된 이전 세션 잔여물)
+exec("find " + tmp + " -name 'airgenome-api-req.*' -mmin +60 -delete 2>/dev/null")
+exec("find " + tmp + " -name 'airgenome-api-in.*' -mmin +60 -delete 2>/dev/null")
+exec("find " + tmp + " -name 'airgenome-api-resp.*' -mmin +60 -delete 2>/dev/null")
+
+// keeper + nc + parser 를 한 번만 기동
+// keeper: fd 8 을 IN_FIFO 에 rw 로 열어두어 write-end 가 항상 살아있게 만든다 (nc EOF 방지).
+// nc -k : keep-alive 리스너. stdin 은 <&8 (IN_FIFO rw fd), stdout 은 parser 파이프.
+// parser: nc stdout 을 라인 단위로 읽어 첫 `METHOD PATH HTTP/...` 라인만 REQ_FIFO 로 흘림.
+//         요청 헤더(블랭크 라인)까지 소비. 다음 요청도 동일 방식으로 처리.
+// trap 'kill 0' EXIT → bash 종료 시 nc/parser 전체 프로세스 그룹 정리 (고아 방지)
+let boot = "nohup bash -c \"trap 'kill 0' EXIT; exec 8<>'" + IN_FIFO + "'; nc -k -l " + PORT + " <&8 | while IFS= read -r line; do case \\\"\\$line\\\" in GET*|POST*|PUT*|DELETE*|HEAD*|OPTIONS*|PATCH*) printf '%s\\n' \\\"\\$line\\\" > '" + REQ_FIFO + "';; esac; done\" >/dev/null 2>&1 &"
+exec(boot)
+// 부트 PID 기록 + hexa 종료 시 정리 트랩
+let boot_pid = exec("lsof -iTCP:" + PORT + " -sTCP:LISTEN -t 2>/dev/null || true").trim()
+exec("trap 'kill -- -" + boot_pid + " 2>/dev/null; rm -f \"" + IN_FIFO + "\" \"" + REQ_FIFO + "\" \"" + RESP_FILE + "\"' EXIT 2>/dev/null || true")
+
+// 포트 LISTEN 확인
+exec("while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done")
+println("[api] listener bound :" + PORT)
+
+while true {
+    // 다음 request-line 을 블로킹 read (60초 타임아웃 — 무한 블록 방지)
+    let req_line = exec("timeout 60 head -n 1 '" + REQ_FIFO + "' 2>/dev/null").trim()
+    if req_line == "" { continue }
+    let mut method = "GET"
+    let mut path = "/"
+    if req_line != "" {
+        let parts = req_line.split(" ")
+        if parts.len() >= 2 {
+            method = parts[0].trim()
+            path = parts[1].trim()
+        }
+    }
+
+    let resp = route(method, path)
+    write_file(RESP_FILE, resp)
+    // 응답을 IN_FIFO 로 흘려보냄 — keeper fd 8 덕분에 open/close 해도 EOF 안 뜸
+    exec("cat '" + RESP_FILE + "' > '" + IN_FIFO + "'")
+
+    println("[api] " + method + " " + path)
+}
