@@ -59,6 +59,33 @@ fn race_active_list() -> str {
     return exec("jq -r '.sessions[] | \"  → \\(.account) (pid=\\(.pid))\"' '" + SESSION_FILE + "' 2>/dev/null").trim()
 }
 
+fn race_active_names() -> str {
+    // 현재 등록된 세션의 계정명 (줄바꿈 구분, cleanup 후)
+    race_cleanup()
+    return exec("jq -r '.sessions[]?.account // empty' '" + SESSION_FILE + "' 2>/dev/null").trim()
+}
+
+// ─── Pick lock (동시실행 계정 중복선택 방지) ───
+fn race_lock() -> void {
+    let lockdir = HOME + "/.airgenome/cl-pick.lock"
+    let tries = 0
+    while tries < 150 {
+        let ok = exec("mkdir '" + lockdir + "' 2>/dev/null && echo y || echo n").trim()
+        if ok == "y" { return }
+        // stale lock 감지: 15초 이상 된 lockdir은 강제 제거
+        let age = exec("[ -d '" + lockdir + "' ] && echo $(( $(date +%s) - $(stat -f %m '" + lockdir + "' 2>/dev/null || echo 0) )) || echo 0").trim()
+        if to_int(age) > 15 {
+            exec("rmdir '" + lockdir + "' 2>/dev/null")
+        }
+        exec("sleep 0.1")
+        tries = tries + 1
+    }
+}
+
+fn race_unlock() -> void {
+    exec("rmdir '" + HOME + "/.airgenome/cl-pick.lock' 2>/dev/null")
+}
+
 fn race_register(account: str) -> void {
     race_ensure()
     let pid = exec("echo $$").trim()
@@ -444,6 +471,9 @@ fn rank_accounts() -> str {
     if len(entries) == 0 { return "" }
 
     let lines = entries.split("\n")
+    // 활성 세션 계정 제외 (동시실행 중복 방지)
+    let busy = race_active_names()
+    let busy_marked = "\n" + busy + "\n"
     let result = ""
     let i = 0
     while i < len(lines) {
@@ -452,6 +482,10 @@ fn rank_accounts() -> str {
             let name = parts[0]
             let removed = parts[2]
             if removed != "true" {
+                if busy_marked.contains("\n" + name + "\n") {
+                    i = i + 1
+                    continue
+                }
                 let sc = score_account(name)
                 if result != "" { result = result + "\n" }
                 result = result + to_string(sc) + "|" + name
@@ -530,10 +564,42 @@ fn check_rate_limit(logfile: str) -> bool {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn resolve_launch(account_name: str) -> str {
-    let config_dir = get_config_dir_for(account_name)
+    // ── 원자적 pick 락: 동시실행 시 같은 계정 중복선택 방지 ──
+    race_lock()
+
+    // 요청된 계정이 이미 다른 세션에서 사용 중이면 차선으로 자동 전환
+    let chosen = account_name
+    let busy_names = race_active_names()
+    let busy_marked = "\n" + busy_names + "\n"
+    if busy_marked.contains("\n" + chosen + "\n") {
+        println("  ⚠ " + chosen + " 이미 다른 cl 세션에서 사용 중 — 차선 재선택")
+        let ranked = rank_accounts()
+        if len(ranked) == 0 {
+            race_unlock()
+            println("  ✗ 사용 가능한 계정 없음")
+            return ""
+        }
+        let rlines = ranked.split("\n")
+        let top = rlines[0].split("|")
+        if len(top) < 2 {
+            race_unlock()
+            println("  ✗ 사용 가능한 계정 없음")
+            return ""
+        }
+        if to_int(top[0]) < 0 {
+            race_unlock()
+            println("  ✗ 사용 가능한 계정 없음 — 모두 소진")
+            return ""
+        }
+        chosen = top[1]
+        println("  ↻ 대체 계정: " + chosen)
+    }
+
+    let config_dir = get_config_dir_for(chosen)
 
     if len(config_dir) == 0 {
-        println("  ✗ 계정 없음: " + account_name)
+        race_unlock()
+        println("  ✗ 계정 없음: " + chosen)
         return ""
     }
 
@@ -547,17 +613,27 @@ fn resolve_launch(account_name: str) -> str {
         println("")
         println("  기존 세션 종료 후 재시도하거나, 대기합니다.")
         println("  ⏳ 30초 대기 중...")
+        race_unlock()
         exec("sleep 30")
+        race_lock()
         race_cleanup()
         let retry = race_active_count()
         if retry >= max_c {
+            race_unlock()
             println("  ✗ 여전히 " + to_string(retry) + "개 활성 — 실행 취소")
+            return ""
+        }
+        // 대기 중 다른 세션이 chosen을 점유했을 수 있음 → 재확인
+        let busy2 = race_active_names()
+        if ("\n" + busy2 + "\n").contains("\n" + chosen + "\n") {
+            race_unlock()
+            println("  ✗ 대기 중 " + chosen + " 가 점유됨 — 재시도 필요")
             return ""
         }
         println("  ✓ 슬롯 확보됨")
     }
 
-    let usage = get_account_usage(account_name)
+    let usage = get_account_usage(chosen)
     let usage_parts = usage.split("|")
     let session_pct = usage_parts[0]
     let week_pct = "?"
@@ -566,15 +642,16 @@ fn resolve_launch(account_name: str) -> str {
     }
 
     println("")
-    println("  ⬡ " + account_name + "  session=" + session_pct + "%  week=" + week_pct + "%")
+    println("  ⬡ " + chosen + "  session=" + session_pct + "%  week=" + week_pct + "%")
     println("    " + config_dir)
 
     backup_claude_json(config_dir)
 
-    exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + account_name + "\"}' > " + R_STATE)
+    exec("mkdir -p ~/.airgenome && echo '{\"active\":\"" + chosen + "\"}' > " + R_STATE)
 
-    // 세션 등록
-    race_register(account_name)
+    // 세션 등록 (락 보유 상태에서 atomic)
+    race_register(chosen)
+    race_unlock()
 
     println("LAUNCH:" + config_dir)
     return config_dir
