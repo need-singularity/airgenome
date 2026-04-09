@@ -79,7 +79,7 @@ fn load_input(input_path: str) -> auto {
         content = read_file(input_path)
     } else {
         // Read from stdin via exec
-        content = exec("cat /dev/stdin")
+        content = exec("timeout 30 cat /dev/stdin")
     }
     let lines = content.split("\n")
     let rows = []

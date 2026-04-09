@@ -529,7 +529,11 @@ consciousness LinuxHarvest {
 
             loops = loops + 1
             if mode == "once" { done = true }
-            if done == false { exec("sleep " + to_string(sleep_sec)) }
+            if done == false {
+                exec("sleep " + to_string(sleep_sec))
+                let parent_alive = exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim()
+                if parent_alive == "n" { println("[harvest] parent dead, exiting"); break }
+            }
         }
     }
 

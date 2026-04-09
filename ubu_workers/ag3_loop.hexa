@@ -191,6 +191,8 @@ fn main() {
 
         // ── 3. Sleep ────────────────────────────────────────────────
         exec("sleep " + to_string(poll_sec))
+        let parent_alive = exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim()
+        if parent_alive == "n" { println("[ag3] parent dead, exiting"); break }
     }
 }
 

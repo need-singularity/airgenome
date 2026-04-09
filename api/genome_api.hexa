@@ -148,7 +148,7 @@ let boot_pid = exec("lsof -iTCP:" + PORT + " -sTCP:LISTEN -t 2>/dev/null || true
 exec("trap 'kill -- -" + boot_pid + " 2>/dev/null; rm -f \"" + IN_FIFO + "\" \"" + REQ_FIFO + "\" \"" + RESP_FILE + "\"' EXIT 2>/dev/null || true")
 
 // 포트 LISTEN 확인
-exec("while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done")
+exec("timeout 10 sh -c 'while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done' 2>/dev/null")
 println("[api] listener bound :" + PORT)
 
 while true {

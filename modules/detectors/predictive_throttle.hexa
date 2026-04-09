@@ -444,7 +444,7 @@ fn run_act() -> str {
         let target = targets[ti]
         if target == "top_ram_consumers" {
             // taskpolicy -b top RAM consumers (exclude system)
-            let cmd = "ps -eo pid=,rss=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done"
+            let cmd = "timeout 15 sh -c 'ps -eo pid=,rss=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
             let result = exec(cmd).trim()
             if len(result) > 0 {
                 let pids = result.split("\n")
@@ -457,7 +457,7 @@ fn run_act() -> str {
             }
         }
         if target == "top_cpu_consumers" {
-            let cmd = "ps -eo pid=,%cpu=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TCPU TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done"
+            let cmd = "timeout 15 sh -c 'ps -eo pid=,%cpu=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TCPU TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
             let result = exec(cmd).trim()
             if len(result) > 0 {
                 let pids = result.split("\n")
