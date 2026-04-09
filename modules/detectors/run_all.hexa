@@ -12,7 +12,9 @@ let CFG_FILE = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
 
 fn run_one(name: str) -> str {
     let path = DET_DIR + "/" + name + ".hexa"
-    let out = try { exec(HEXA_BIN + " " + path + " 2>&1 | grep '\"detector\"' | tail -1").trim() } catch e { "" }
+    // predictive_throttle은 predict 서브커맨드 필요
+    let subcmd = if name == "predictive_throttle" { " predict" } else { "" }
+    let out = try { exec(HEXA_BIN + " " + path + subcmd + " 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
     if len(out) == 0 { return "{\"detector\":\"" + name + "\",\"status\":\"no_output\"}" }
     return out
 }
@@ -25,7 +27,7 @@ fn cfg_get(key: str, default: str) -> str {
 }
 
 fn run_cycle() {
-    let names = ["mi_lag", "accel_field", "resonance", "cascade_dag", "limit_cycle", "entropy_flow"]
+    let names = ["mi_lag", "accel_field", "resonance", "cascade_dag", "limit_cycle", "entropy_flow", "predictive_throttle"]
     println("╔══════════════════════════════════════════════╗")
     println("║  airgenome detectors — run_all               ║")
     println("╚══════════════════════════════════════════════╝")
@@ -33,7 +35,7 @@ fn run_cycle() {
     let mut ok = 0
     let mut fail = 0
     let mut i = 0
-    while i < 6 {
+    while i < len(names) {
         let name = names[i]
         println("")
         println("── " + name + " ──")
@@ -50,7 +52,7 @@ fn run_cycle() {
     }
     println("")
     println("── summary ──")
-    println("ok=" + to_string(ok) + " fail=" + to_string(fail) + " total=6")
+    println("ok=" + to_string(ok) + " fail=" + to_string(fail) + " total=" + to_string(len(names)))
 }
 
 consciousness DetectorOrchestrator {

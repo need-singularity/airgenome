@@ -36,7 +36,28 @@ let mut prev_net_bytes = 0
 let mut prev_net_ts = 0
 let mut prev_disk_kb = 0
 let mut prev_disk_ts = 0
+let mut prev_save_cpu = 0
+let mut prev_save_ram = 0
+let mut prev_ghost_sh = 0
+let mut prev_ghost_grep = 0
 let mut cycle = 0
+
+// EMA (지수이동평균) — 측정 노이즈 감쇠, 정밀도 향상
+let EMA_ALPHA = 0.3   // α=0.3: 최신 30% + 이력 70%
+let mut ema_cpu = -1.0
+let mut ema_ram = -1.0
+let mut ema_swap = -1.0
+let mut ema_gpu = -1.0
+
+fn ema(prev: float, cur: float, alpha: float) -> float {
+    if prev < 0.0 { return cur }  // 초기값
+    return alpha * cur + (1.0 - alpha) * prev
+}
+
+// Alert cooldown — growth_bus 스팸 방지 (최소 300초 간격)
+let mut last_l5c_alert_ts = 0
+let mut last_l6e_alert_ts = 0
+let ALERT_COOLDOWN = 300
 
 while true {
     // ── ADAPTIVE SCAN ── (lite_scan: ok 레벨 시 heavy exec 스킵, 첫 사이클은 항상 full)
@@ -53,17 +74,30 @@ while true {
         cpu_str = try { exec("timeout 10 top -l2 -n0 2>/dev/null | awk '/CPU usage/{u=$3; s=$5; gsub(/%/,\"\",u); gsub(/%/,\"\",s); a=u+s} END{printf \"%.1f\",a}'").trim() } catch e { "0" }
         try { cpu_f = to_float(cpu_str) } catch e {}
     }
+    // ps -A -o %cpu= 캐시 (savings + fallback 공용, 중복 호출 제거)
+    let ps_cpu_cache = if lite_scan && ema_cpu >= 0.0 { "" } else { try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim() } catch e { "0" } }
+
     if cpu_f <= 0.0 {
-        let cpu_total = try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.2f\",s}'").trim() } catch e { "0" }
-        try { cpu_f = to_float(cpu_total) / to_float(to_string(NCPU)) } catch e {}
+        if lite_scan && ema_cpu >= 0.0 {
+            // lite_scan: EMA 값 직접 사용 (top -l2 + ps 둘 다 스킵)
+            cpu_f = ema_cpu
+        } else {
+            try { cpu_f = to_float(ps_cpu_cache) / to_float(to_string(NCPU)) } catch e {}
+        }
         cpu_str = to_string(cpu_f)
     }
+    // EMA 평활
+    ema_cpu = ema(ema_cpu, cpu_f, EMA_ALPHA)
+    cpu_f = ema_cpu
+    cpu_str = to_string(cpu_f)
     cpu = to_int(cpu_f)
 
     // RAM — vm_stat 페이지 단위 (active+wired+compressor). top "23G"는 해상도 1GB(~4% 오차).
     let ram_str = try { exec("vm_stat 2>/dev/null | awk 'BEGIN{ps=16384} /page size of/{ps=$8} /Pages active/{a=$3} /Pages wired down/{w=$4} /Pages occupied by compressor/{c=$5} END{gsub(/\\./,\"\",a); gsub(/\\./,\"\",w); gsub(/\\./,\"\",c); printf \"%.1f\",(a+w+c)*ps/1048576}'").trim() } catch e { "0" }
     let mut ram_used_f = 0.0
     try { ram_used_f = to_float(ram_str) } catch e {}
+    ema_ram = ema(ema_ram, ram_used_f, EMA_ALPHA)
+    ram_used_f = ema_ram
     let ram_used_mb = to_int(ram_used_f)
     let free_mb = if TOTAL_RAM_MB > ram_used_mb { TOTAL_RAM_MB - ram_used_mb } else { 0 }
     let ram = if TOTAL_RAM_MB > 0 { ram_used_mb * 100 / TOTAL_RAM_MB } else { 0 }
@@ -72,6 +106,8 @@ while true {
     let swap_str = try { exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.1f\",$3}'").trim() } catch e { "0" }
     let mut swap_f = 0.0
     try { swap_f = to_float(swap_str) } catch e {}
+    ema_swap = ema(ema_swap, swap_f, EMA_ALPHA)
+    swap_f = ema_swap
     let swap_mb = to_int(swap_f)
     let swap = if TOTAL_RAM_MB > 0 { swap_mb * 100 / TOTAL_RAM_MB } else { 0 }
 
@@ -126,7 +162,14 @@ while true {
     let mut gpu_local = 0
     if lite_scan == false {
         gpu_local_str = try { exec("ioreg -r -d 1 -w 0 -c IOAccelerator 2>/dev/null | grep -o '\"Device Utilization %\"=[0-9]*' | head -1 | awk -F= '{print $2}'").trim() } catch e { "" }
-        try { gpu_local = to_int(to_float(gpu_local_str)) } catch e {}
+        let mut gpu_raw = 0.0
+        try { gpu_raw = to_float(gpu_local_str) } catch e {}
+        ema_gpu = ema(ema_gpu, gpu_raw, EMA_ALPHA)
+    }
+    // lite_scan에서도 EMA 값 사용
+    if ema_gpu >= 0.0 {
+        gpu_local = to_int(ema_gpu)
+        gpu_local_str = to_string(ema_gpu)
     }
 
     // ── CONFIG ──
@@ -154,15 +197,18 @@ while true {
         }
     }
 
-    // ── BRIDGE LIMITER ──
-    let bridge_pids = try { exec("ps -eo pid=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | awk '{print $1}'").trim() } catch e { "" }
-    let bridge_count_str = try { exec("echo '" + bridge_pids.replace("'", "") + "' | grep -c . 2>/dev/null || echo 0").trim() } catch e { "0" }
+    // ── BRIDGE LIMITER ── (lite_scan: 매 2사이클마다만 실행)
+    let mut bridge_pids = ""
     let mut bridge_count = 0
-    try { bridge_count = to_int(to_float(bridge_count_str)) } catch e {}
+    if lite_scan == false || cycle % 2 == 0 {
+        bridge_pids = try { exec("ps -eo pid=,command= | grep 'gap_finder.hexa bridge' | grep -v grep | awk '{print $1}'").trim() } catch e { "" }
+        let bridge_count_str = try { exec("echo '" + bridge_pids.replace("'", "") + "' | grep -c . 2>/dev/null || echo 0").trim() } catch e { "0" }
+        try { bridge_count = to_int(to_float(bridge_count_str)) } catch e {}
 
-    if bridge_max > 0 && bridge_count > bridge_max {
-        let kill_n = bridge_count - bridge_max
-        try { exec("echo '" + bridge_pids + "' | head -" + to_string(kill_n) + " | while read BPID; do kill $BPID 2>/dev/null; done") } catch e { println("[warn] sampler: bridge kill failed — " + e) }
+        if bridge_max > 0 && bridge_count > bridge_max {
+            let kill_n = bridge_count - bridge_max
+            try { exec("echo '" + bridge_pids + "' | head -" + to_string(kill_n) + " | while read BPID; do kill $BPID 2>/dev/null; done") } catch e { println("[warn] sampler: bridge kill failed — " + e) }
+        }
     }
 
     // ── LEVEL ──
@@ -213,43 +259,55 @@ while true {
         }
     }
 
-    // ── SAVINGS ──
-    let sys_cpu_total_s = try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim() } catch e { "1" }
-    let sys_ram_total_s = try { exec("ps -A -o rss= | awk '{s+=$1}END{printf \"%.0f\",s/1024}'").trim() } catch e { "1" }
-    let mut sys_cpu_total = 1
-    let mut sys_ram_total = 1
-    try { sys_cpu_total = to_int(to_float(sys_cpu_total_s)) } catch e {}
-    try { sys_ram_total = to_int(to_float(sys_ram_total_s)) } catch e {}
-    if sys_cpu_total < 1 { sys_cpu_total = 1 }
-    if sys_ram_total < 1 { sys_ram_total = 1 }
+    // ── SAVINGS ── (lite_scan: 매 3사이클마다만 재계산, 캐시 ps 재사용)
+    let mut save_cpu = prev_save_cpu
+    let mut save_ram = prev_save_ram
+    if lite_scan == false || cycle % 3 == 0 {
+        // sys_cpu: 캐시된 ps_cpu_cache 재사용 (중복 ps -A -o %cpu= 제거)
+        let sys_cpu_total_s = if len(ps_cpu_cache) > 0 { ps_cpu_cache } else { try { exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim() } catch e { "1" } }
+        let sys_ram_total_s = try { exec("ps -A -o rss= | awk '{s+=$1}END{printf \"%.0f\",s/1024}'").trim() } catch e { "1" }
+        let mut sys_cpu_total = 1
+        let mut sys_ram_total = 1
+        try { sys_cpu_total = to_int(to_float(sys_cpu_total_s)) } catch e {}
+        try { sys_ram_total = to_int(to_float(sys_ram_total_s)) } catch e {}
+        if sys_cpu_total < 1 { sys_cpu_total = 1 }
+        if sys_ram_total < 1 { sys_ram_total = 1 }
 
-    let hog_cpu_s = try { exec("ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=$2*0.30} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
-    let hog_ram_s = try { exec("ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
-    let claude_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
-    let webkit_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+        let hog_cpu_s = try { exec("ps -eo pid=,%cpu=,comm= | awk '$1>100 && $2>30.0 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=$2*0.30} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+        let hog_ram_s = try { exec("ps -eo pid=,rss=,comm= | awk '$1>100 && $2>1048576 {c=$3; if(c~/kernel_task|WindowServer|launchd|loginwindow|Finder|Dock/) next; s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+        let claude_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep '[c]laude' | awk '$3<1.0 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
+        let webkit_s = try { exec("ps -eo pid=,rss=,%cpu=,comm= | grep 'WebKit.WebContent' | awk '$3<0.5 && $2>204800 {s+=($2/1024)*0.20} END{printf \"%.0f\",s}'").trim() } catch e { "0" }
 
-    let mut hog_cpu = 0
-    let mut hog_ram = 0
-    try { hog_cpu = to_int(to_float(hog_cpu_s)) } catch e {}
-    try { hog_ram = to_int(to_float(hog_ram_s)) } catch e {}
-    let mut claude_save = 0
-    let mut webkit_save = 0
-    try { claude_save = to_int(to_float(claude_s)) } catch e {}
-    try { webkit_save = to_int(to_float(webkit_s)) } catch e {}
-    hog_ram = hog_ram + claude_save + webkit_save
+        let mut hog_cpu = 0
+        let mut hog_ram = 0
+        try { hog_cpu = to_int(to_float(hog_cpu_s)) } catch e {}
+        try { hog_ram = to_int(to_float(hog_ram_s)) } catch e {}
+        let mut claude_save = 0
+        let mut webkit_save = 0
+        try { claude_save = to_int(to_float(claude_s)) } catch e {}
+        try { webkit_save = to_int(to_float(webkit_s)) } catch e {}
+        hog_ram = hog_ram + claude_save + webkit_save
 
-    let mut save_cpu = hog_cpu * 100 / sys_cpu_total
-    let mut save_ram = hog_ram * 100 / sys_ram_total
-    if save_cpu > 99 { save_cpu = 99 }
-    if save_ram > 99 { save_ram = 99 }
+        save_cpu = hog_cpu * 100 / sys_cpu_total
+        save_ram = hog_ram * 100 / sys_ram_total
+        if save_cpu > 99 { save_cpu = 99 }
+        if save_ram > 99 { save_ram = 99 }
+        prev_save_cpu = save_cpu
+        prev_save_ram = save_ram
+    }
 
     // ── GHOST PROCESS DETECTION (detect-only, Prime Directive safe) ──
-    let ghost_sh_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
-    let ghost_grep_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
-    let mut ghost_sh = 0
-    let mut ghost_grep = 0
-    try { ghost_sh = to_int(to_float(ghost_sh_s)) } catch e {}
-    try { ghost_grep = to_int(to_float(ghost_grep_s)) } catch e {}
+    // lite_scan: 매 5사이클마다만 실행, 나머지는 이전 값 유지
+    let mut ghost_sh = prev_ghost_sh
+    let mut ghost_grep = prev_ghost_grep
+    if lite_scan == false || cycle % 5 == 0 {
+        let ghost_sh_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"sh\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
+        let ghost_grep_s = try { exec("ps -eo ppid,etime,pcpu,pid,comm | awk '$1==1 && $5==\"grep\" {split($2,t,/[-:]/); if(length(t)>=3){h=t[1]}else{h=0}; if(h>=1 && $3>1.0) c++} END{print c+0}'").trim() } catch e { "0" }
+        try { ghost_sh = to_int(to_float(ghost_sh_s)) } catch e {}
+        try { ghost_grep = to_int(to_float(ghost_grep_s)) } catch e {}
+        prev_ghost_sh = ghost_sh
+        prev_ghost_grep = ghost_grep
+    }
     let ghost_total = ghost_sh + ghost_grep
     if ghost_total >= 3 && level == "ok" {
         level = "warn"
@@ -345,7 +403,90 @@ while true {
     let vr_gpu = gpu_local_f_str
     try { exec("timeout 30 $HOME/Dev/hexa-lang/target/release/hexa $HOME/Dev/airgenome/modules/vitals_ring.hexa tick " + vr_cpu + " " + vr_ram + " " + vr_swap + " " + vr_net + " " + vr_disk + " " + vr_gpu) } catch e { println("[warn] sampler: vitals_ring tick failed — " + e) }
 
+    // ── L5c/L6e ALERT → growth_bus ──
+    // vitals_ring tick이 forge/state.json에 병합 → 읽어서 임계값 확인
+    if file_exists(vitals_path) {
+        let vr3 = read_file(vitals_path)
+        let mut alert_nmi = 0.0
+        let mut alert_l6e = 0.0
+        if vr3.contains("\"l5c_nmi\"") {
+            let ns3 = vr3.split("\"l5c_nmi\"")[1].split(":")[1].split(",")[0].split("}")[0].trim()
+            try { alert_nmi = to_float(ns3) } catch e {}
+        }
+        if vr3.contains("\"l6e_score\"") {
+            let ls3 = vr3.split("\"l6e_score\"")[1].split(":")[1].split(",")[0].split("}")[0].trim()
+            try { alert_l6e = to_float(ls3) } catch e {}
+        }
+        let gb_path = DIR + "/nexus/shared/growth_bus.jsonl"
+        let alert_ts = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "" }
+        if alert_nmi > 0.7 && (ts_now - last_l5c_alert_ts) > ALERT_COOLDOWN {
+            let ev = "{\"ts\":\"" + alert_ts + "\",\"source\":\"sampler\",\"type\":\"vitals_alert\",\"metric\":\"l5c_nmi\",\"value\":" + to_string(alert_nmi) + ",\"severity\":\"high\",\"note\":\"momentum persistence > 0.7\"}"
+            try { exec("echo '" + ev + "' >> " + gb_path) } catch e {}
+            last_l5c_alert_ts = ts_now
+        }
+        if alert_l6e < 0.3 && alert_l6e > 0.001 && (ts_now - last_l6e_alert_ts) > ALERT_COOLDOWN {
+            let ev2 = "{\"ts\":\"" + alert_ts + "\",\"source\":\"sampler\",\"type\":\"vitals_alert\",\"metric\":\"l6e_score\",\"value\":" + to_string(alert_l6e) + ",\"severity\":\"high\",\"note\":\"acceleration turbulence < 0.3\"}"
+            try { exec("echo '" + ev2 + "' >> " + gb_path) } catch e {}
+            last_l6e_alert_ts = ts_now
+        }
+    }
+
     prev_level = level
+
+    // ── LOG ROTATION (100 사이클마다 = ~25분 간격) ──
+    if cycle % 100 == 0 {
+        let log_max = read_jsonl_val(gate_cfg, "log_rotate_max_bytes", 10485760)
+        let gb_path = DIR + "/nexus/shared/growth_bus.jsonl"
+        if file_exists(gb_path) {
+            let gb_size_s = try { exec("wc -c < '" + gb_path + "' 2>/dev/null").trim() } catch e { "0" }
+            let mut gb_size = 0
+            try { gb_size = to_int(to_float(gb_size_s)) } catch e {}
+            if gb_size > log_max {
+                // 최근 50%만 유지
+                let total_lines_s = try { exec("wc -l < '" + gb_path + "' 2>/dev/null").trim() } catch e { "0" }
+                let mut total_lines = 0
+                try { total_lines = to_int(to_float(total_lines_s)) } catch e {}
+                let keep = total_lines / 2
+                if keep > 1000 {
+                    try { exec("cp '" + gb_path + "' '" + gb_path + ".bak' && tail -" + to_string(keep) + " '" + gb_path + ".bak' > '" + gb_path + "' && rm '" + gb_path + ".bak'") } catch e {}
+                }
+            }
+        }
+
+        // dispatch.log rotation
+        let dl_path = DIR + "/dispatch.log"
+        if file_exists(dl_path) {
+            let dl_size_s = try { exec("wc -c < '" + dl_path + "' 2>/dev/null").trim() } catch e { "0" }
+            let mut dl_size = 0
+            try { dl_size = to_int(to_float(dl_size_s)) } catch e {}
+            if dl_size > log_max {
+                let dl_lines_s = try { exec("wc -l < '" + dl_path + "' 2>/dev/null").trim() } catch e { "0" }
+                let mut dl_lines = 0
+                try { dl_lines = to_int(to_float(dl_lines_s)) } catch e {}
+                let dl_keep = dl_lines / 2
+                if dl_keep > 100 {
+                    try { exec("cp '" + dl_path + "' '" + dl_path + ".bak' && tail -" + to_string(dl_keep) + " '" + dl_path + ".bak' > '" + dl_path + "' && rm '" + dl_path + ".bak'") } catch e {}
+                }
+            }
+        }
+
+        // forge/harvest.log rotation
+        let hl_path = DIR + "/forge/harvest.log"
+        if file_exists(hl_path) {
+            let hl_size_s = try { exec("wc -c < '" + hl_path + "' 2>/dev/null").trim() } catch e { "0" }
+            let mut hl_size = 0
+            try { hl_size = to_int(to_float(hl_size_s)) } catch e {}
+            if hl_size > log_max {
+                let hl_lines_s = try { exec("wc -l < '" + hl_path + "' 2>/dev/null").trim() } catch e { "0" }
+                let mut hl_lines = 0
+                try { hl_lines = to_int(to_float(hl_lines_s)) } catch e {}
+                let hl_keep = hl_lines / 2
+                if hl_keep > 100 {
+                    try { exec("cp '" + hl_path + "' '" + hl_path + ".bak' && tail -" + to_string(hl_keep) + " '" + hl_path + ".bak' > '" + hl_path + "' && rm '" + hl_path + ".bak'") } catch e {}
+                }
+            }
+        }
+    }
 
     // ── ADAPTIVE SLEEP ── (level 기반 스캔 주기 조절)
     let scan_ok_sec = read_jsonl_val(gate_cfg, "scan_ok_sec", 15)

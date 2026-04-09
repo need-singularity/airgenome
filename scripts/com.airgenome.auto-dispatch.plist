@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  auto_dispatch — OFFLOAD_O1 자동 오프로드 권장기 (watch 모드)
+  내부 while-loop이 10초 간격으로 동작하므로 KeepAlive로 프로세스 유지
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.auto-dispatch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
+        <string>__HOME__/Dev/airgenome/modules/auto_dispatch.hexa</string>
+        <string>watch</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-auto-dispatch.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-auto-dispatch.err</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>

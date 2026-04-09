@@ -17,7 +17,7 @@
 {"key":"cascade_severity_floor","value":"0.1"}
 {"key":"cascade_state_path","value":"forge/vitals_ring.state"}
 {"key":"pt_tau","value":"5"}
-{"key":"pt_min_window","value":"32"}
+{"key":"pt_min_window","value":"16"}
 {"key":"pt_nmi_threshold","value":"0.3"}
 {"key":"pt_watch_cpu","value":"0.6"}
 {"key":"pt_watch_ram","value":"0.6"}

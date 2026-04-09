@@ -197,11 +197,39 @@ let gate_item  = add_disabled_item(menu, "Gate ...")
 let u_cpu_item = add_disabled_item(menu, "  CPU ...")
 let u_ram_item = add_disabled_item(menu, "  RAM ...")
 let u_gpu_item = add_disabled_item(menu, "  GPU ...")
+let u_svc_item = add_disabled_item(menu, "  Services ...")
 
 add_separator(menu)
 
 // --- Safety indicator ---
 let safety_item = add_disabled_item(menu, "\u2705 Safe")
+
+// --- Offload indicator ---
+let offload_item = add_disabled_item(menu, "")
+
+add_separator(menu)
+
+// --- Vitals (L5c/L6e) section ---
+let vitals_header = add_disabled_item(menu, "\u2B22 Vitals")
+let l5c_item = add_disabled_item(menu, "  L5c NMI  ...")
+let l6e_item = add_disabled_item(menu, "  L6e Score ...")
+let vax_item = add_disabled_item(menu, "  per-axis ...")
+let cascade_item = add_disabled_item(menu, "")
+
+add_separator(menu)
+
+// --- Hetzner section ---
+let htz_item = add_disabled_item(menu, "\u25CB Hetzner \u2014 ...")
+let htz_cpu_item = add_disabled_item(menu, "  CPU ...")
+let htz_ram_item = add_disabled_item(menu, "  RAM ...")
+let htz_gpu_item = add_disabled_item(menu, "  GPU ...")
+
+add_separator(menu)
+
+// --- Vast.ai section ---
+let vast_item = add_disabled_item(menu, "\u25CB Vast.ai \u2014 ...")
+let vast_gpu_item = add_disabled_item(menu, "  GPU ...")
+let vast_ram_item = add_disabled_item(menu, "  RAM ...")
 
 add_separator(menu)
 
@@ -236,6 +264,9 @@ msg1(status_item, sel("setMenu:"), menu)
 //  State / Config readers (hexa built-in I/O — no NSString file ops)
 // ═══════════════════════════════════════════════════════════════════════
 
+let VITALS_PATH = HOME + "/Dev/airgenome/forge/state.json"
+let INFRA_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
+
 fn read_state() -> auto {
     if file_exists(state_path) == false { return {} }
     try {
@@ -243,6 +274,31 @@ fn read_state() -> auto {
     } catch e {
         return {}
     }
+}
+
+let AG3_STATUS_PATH = HOME + "/.airgenome/ag3_status.json"
+
+fn read_ag3_status() -> auto {
+    if file_exists(AG3_STATUS_PATH) == false { return {} }
+    try { return json_parse(read_file(AG3_STATUS_PATH)) } catch e { return {} }
+}
+
+fn read_forge_state() -> auto {
+    if file_exists(VITALS_PATH) == false { return {} }
+    try { return json_parse(read_file(VITALS_PATH)) } catch e { return {} }
+}
+
+fn read_vitals() -> auto {
+    let raw = read_forge_state()
+    if raw != {} {
+        try { if raw["vitals"] != null { return raw["vitals"] } } catch e {}
+    }
+    return {}
+}
+
+fn read_infra() -> auto {
+    if file_exists(INFRA_PATH) == false { return {} }
+    try { return json_parse(read_file(INFRA_PATH)) } catch e { return {} }
 }
 
 fn read_config() -> auto {
@@ -325,7 +381,32 @@ fn update_display() {
     let save_tag = if save_total_bar > 0 { " \u2193" + to_string(save_total_bar) + "%" } else { "" }
     let gate_icon = if gate_status == "online" { " \u25CF" } else { " \u25CB" }
 
-    let title = level_icon(lv) + " " + to_string(cpu_val) + "% \u00B7 " + to_string(ram_val) + "%" + swap_tag + save_tag + gate_icon
+    // L5c momentum indicator in title bar
+    let vit_title = read_vitals()
+    let mut l5c_tag = ""
+    if vit_title != {} {
+        let nmi_t = try { to_float(vit_title["l5c_nmi"]) } catch e { 0.0 }
+        if nmi_t > 0.7 { l5c_tag = " \u26A0mi" }
+        else if nmi_t > 0.3 { l5c_tag = " \u26A1mi" }
+    }
+
+    // 4-host compact: U=Ubuntu H=Hetzner V=Vast (●=active ○=offline)
+    let infra_title = read_infra()
+    let mut hosts_tag = ""
+    if infra_title != {} {
+        let ht = try { infra_title["hosts"] } catch e { {} }
+        if ht != {} {
+            let u_s = try { ht["ubu"]["status"] } catch e { "offline" }
+            let h_s = try { ht["htz"]["status"] } catch e { "offline" }
+            let v_s = try { ht["vast"]["status"] } catch e { "offline" }
+            let u_d = if u_s == "active" { "\u25CF" } else { "\u25CB" }
+            let h_d = if h_s == "active" { "\u25CF" } else { "\u25CB" }
+            let v_d = if v_s == "active" { "\u25CF" } else { "\u25CB" }
+            hosts_tag = " " + u_d + h_d + v_d
+        }
+    }
+
+    let title = level_icon(lv) + " " + to_string(cpu_val) + "% \u00B7 " + to_string(ram_val) + "%" + swap_tag + l5c_tag + save_tag + hosts_tag
     msg1(button, sel("setTitle:"), nsstr(title))
 
     // --- Menu item updates ---
@@ -374,14 +455,30 @@ fn update_display() {
             msg1(u_gpu_item, sel("setTitle:"), nsstr("  GPU  \u2014 driver not installed"))
         }
         msg_int(u_gpu_item, sel("setHidden:"), 0)
+
+        // Ubuntu services (from ag3_status.json)
+        let ag3 = read_ag3_status()
+        if ag3 != {} {
+            let sg = if try { ag3["svc_gate"] } catch e { false } { "\u2705" } else { "\u274C" }
+            let sl = if try { ag3["svc_loop"] } catch e { false } { "\u2705" } else { "\u274C" }
+            let sh = if try { ag3["svc_harvest"] } catch e { false } { "\u2705" } else { "\u274C" }
+            let fb = try { to_int(ag3["fallback_count_10min"]) } catch e { 0 }
+            let fb_tag = if fb > 0 { "  fb=" + to_string(fb) } else { "" }
+            msg1(u_svc_item, sel("setTitle:"), nsstr("  " + sg + "gate " + sl + "loop " + sh + "harvest" + fb_tag))
+        } else {
+            msg1(u_svc_item, sel("setTitle:"), nsstr("  Services \u2014 ag3-feed not running"))
+        }
+        msg_int(u_svc_item, sel("setHidden:"), 0)
     } else {
         msg1(gate_item, sel("setTitle:"), nsstr("\u25CB Ubuntu \u2014 offline"))
         msg1(u_cpu_item, sel("setTitle:"), nsstr(""))
         msg1(u_ram_item, sel("setTitle:"), nsstr(""))
         msg1(u_gpu_item, sel("setTitle:"), nsstr(""))
+        msg1(u_svc_item, sel("setTitle:"), nsstr(""))
         msg_int(u_cpu_item, sel("setHidden:"), 1)
         msg_int(u_ram_item, sel("setHidden:"), 1)
         msg_int(u_gpu_item, sel("setHidden:"), 1)
+        msg_int(u_svc_item, sel("setHidden:"), 1)
     }
 
     // --- Safety indicator ---
@@ -399,6 +496,169 @@ fn update_display() {
             } else {
                 let free_g = round_1(to_float(free_mb) / 1024.0)
                 msg1(safety_item, sel("setTitle:"), nsstr("\u2705 Safe \u2014 " + to_string(free_g) + "G free"))
+            }
+        }
+    }
+
+    // ── Offload status (dispatch.log 최신 항목) ──
+    let dispatch_path = HOME + "/Dev/airgenome/forge/dispatch.log"
+    if file_exists(dispatch_path) {
+        let last_line = try { exec("tail -1 '" + dispatch_path + "' 2>/dev/null").trim() } catch e { "" }
+        if len(last_line) > 10 && last_line.contains("OFFLOAD_O1") {
+            // 최근 5분 이내인지 확인
+            let dl_epoch = try { exec("python3 -c \"import json; print(json.loads('" + last_line.replace("'", "\\'") + "')['epoch'])\" 2>/dev/null").trim() } catch e { "0" }
+            let now_e = try { to_int(to_float(exec("date +%s").trim())) } catch e { 0 }
+            let dl_e = try { to_int(to_float(dl_epoch)) } catch e { 0 }
+            if now_e - dl_e < 300 {
+                let dl_comm = try { exec("python3 -c \"import json; print(json.loads('" + last_line.replace("'", "\\'") + "')['comm'])\" 2>/dev/null").trim() } catch e { "?" }
+                let dl_cpu = try { exec("python3 -c \"import json; print(json.loads('" + last_line.replace("'", "\\'") + "')['cpu'])\" 2>/dev/null").trim() } catch e { "?" }
+                msg1(offload_item, sel("setTitle:"), nsstr("\u2197 Offload: " + dl_comm + " (" + dl_cpu + "%) \u2192 ubu"))
+                msg_int(offload_item, sel("setHidden:"), 0)
+            } else {
+                msg_int(offload_item, sel("setHidden:"), 1)
+            }
+        } else {
+            msg_int(offload_item, sel("setHidden:"), 1)
+        }
+    } else {
+        msg_int(offload_item, sel("setHidden:"), 1)
+    }
+
+    // ── Vitals (L5c / L6e) ──
+    let vit = read_vitals()
+    if vit != {} {
+        let nmi = try { to_float(vit["l5c_nmi"]) } catch e { 0.0 }
+        let l6e = try { to_float(vit["l6e_score"]) } catch e { 0.0 }
+        let ring_n = try { to_int(vit["ring_n"]) } catch e { 0 }
+        let nmi_pct = to_int(nmi * 100.0 + 0.5)
+        let l6e_pct = to_int(l6e * 100.0 + 0.5)
+        let nmi_icon = if nmi > 0.7 { "\u26A0" } else { if nmi > 0.3 { "\u26A1" } else { "\u2B22" } }
+        let l6e_icon = if l6e < 0.3 { "\u26A0" } else { if l6e < 0.5 { "\u26A1" } else { "\u2B22" } }
+        msg1(vitals_header, sel("setTitle:"), nsstr("\u2B22 Vitals  (n=" + to_string(ring_n) + ")"))
+        msg1(l5c_item, sel("setTitle:"), nsstr("  " + nmi_icon + " L5c NMI  " + bar(nmi_pct, 100, 12) + "  " + to_string(nmi_pct) + "%"))
+        msg1(l6e_item, sel("setTitle:"), nsstr("  " + l6e_icon + " L6e Acc  " + bar(l6e_pct, 100, 12) + "  " + to_string(l6e_pct) + "%"))
+
+        // per-axis compact: C·R·S·N·D·G 각 L5c값
+        let pa = try { vit["per_axis"] } catch e { {} }
+        if pa != {} {
+            let ax_names = ["v1","v2","v3","v4","v5","v6"]
+            let ax_labels = ["C","R","S","N","D","G"]
+            let mut ax_line = "  "
+            let mut ai = 0
+            while ai < 6 {
+                let av = try { pa[ax_names[ai]] } catch e { {} }
+                let al5 = try { to_float(av["l5c"]) } catch e { 0.0 }
+                let al5p = to_int(al5 * 100.0 + 0.5)
+                let ax_ic = if al5 > 0.5 { "\u26A0" } else { if al5 > 0.2 { "\u00B7" } else { "\u2500" } }
+                ax_line = ax_line + ax_labels[ai] + ":" + ax_ic + to_string(al5p) + " "
+                ai = ai + 1
+            }
+            msg1(vax_item, sel("setTitle:"), nsstr(ax_line.trim()))
+        } else {
+            msg1(vax_item, sel("setTitle:"), nsstr(""))
+        }
+
+        // Cascade predictions (from forge/state.json "predictions")
+        let fstate = read_forge_state()
+        let preds = try { fstate["predictions"] } catch e { [] }
+        if len(preds) > 0 {
+            // 가장 심각한 캐스케이드 표시
+            let top_p = preds[0]
+            let casc_str = try { top_p["cascade"] } catch e { "?" }
+            let casc_sev = try { to_float(top_p["severity"]) } catch e { 0.0 }
+            let sev_pct = to_int(casc_sev * 100.0 + 0.5)
+            let casc_icon = if casc_sev > 0.5 { "\u26A0" } else { "\u26A1" }
+            msg1(cascade_item, sel("setTitle:"), nsstr("  " + casc_icon + " " + casc_str + "  sev=" + to_string(sev_pct) + "%"))
+            msg_int(cascade_item, sel("setHidden:"), 0)
+        } else {
+            msg_int(cascade_item, sel("setHidden:"), 1)
+        }
+    } else {
+        msg1(vitals_header, sel("setTitle:"), nsstr("\u2B22 Vitals  \u2014 no data"))
+        msg1(l5c_item, sel("setTitle:"), nsstr(""))
+        msg1(l6e_item, sel("setTitle:"), nsstr(""))
+        msg1(vax_item, sel("setTitle:"), nsstr(""))
+        msg_int(cascade_item, sel("setHidden:"), 1)
+    }
+
+    // ── Hetzner / Vast.ai (from infra_state.json) ──
+    let infra = read_infra()
+    if infra != {} {
+        let hosts = try { infra["hosts"] } catch e { {} }
+
+        // data freshness — infra ts vs now
+        let infra_ts_str = try { infra["ts"] } catch e { "" }
+        let mut age_tag = ""
+        if len(infra_ts_str) > 0 {
+            let now_epoch = try { to_int(to_float(exec("date +%s").trim())) } catch e { 0 }
+            let infra_epoch = try { to_int(to_float(exec("date -jf '%Y-%m-%dT%H:%M:%SZ' '" + infra_ts_str + "' +%s 2>/dev/null").trim())) } catch e { 0 }
+            if now_epoch > 0 && infra_epoch > 0 {
+                let age_min = (now_epoch - infra_epoch) / 60
+                if age_min > 30 { age_tag = "  \u26A0" + to_string(age_min) + "m ago" }
+                else if age_min > 10 { age_tag = "  " + to_string(age_min) + "m ago" }
+            }
+        }
+
+        // Hetzner
+        let htz = try { hosts["htz"] } catch e { {} }
+        if htz != {} {
+            let htz_st = try { htz["status"] } catch e { "offline" }
+            if htz_st == "active" {
+                let htz_load_s = try { htz["load"] } catch e { "0" }
+                let htz_threads_v = try { to_int(htz["cpu_threads"]) } catch e { 0 }
+                let htz_ru = try { to_int(htz["ram_used_mb"]) } catch e { 0 }
+                let htz_rt = try { to_int(htz["ram_total_mb"]) } catch e { 1 }
+                let htz_rp = if htz_rt > 0 { htz_ru * 100 / htz_rt } else { 0 }
+                let htz_ru_g = round_1(to_float(htz_ru) / 1024.0)
+                let htz_rt_g = round_1(to_float(htz_rt) / 1024.0)
+                msg1(htz_item, sel("setTitle:"), nsstr("\u25CF Hetzner  load=" + htz_load_s + "  " + to_string(htz_threads_v) + "T" + age_tag))
+                msg1(htz_cpu_item, sel("setTitle:"), nsstr("  CPU  " + to_string(htz_threads_v) + " threads  load " + htz_load_s))
+                msg1(htz_ram_item, sel("setTitle:"), nsstr("  RAM  " + bar(htz_rp, 100, bw) + "  " + to_string(htz_rp) + "%  (" + to_string(htz_ru_g) + "G/" + to_string(htz_rt_g) + "G)"))
+                msg_int(htz_cpu_item, sel("setHidden:"), 0)
+                msg_int(htz_ram_item, sel("setHidden:"), 0)
+                // Hetzner GPU (optional)
+                let htz_gu = try { to_int(htz["gpu_util"]) } catch e { 0 }
+                let htz_gvu = try { to_int(htz["gpu_vram_used_mb"]) } catch e { 0 }
+                let htz_gvt = try { to_int(htz["gpu_vram_total_mb"]) } catch e { 0 }
+                if htz_gvt > 0 {
+                    let htz_gvu_g = round_1(to_float(htz_gvu) / 1024.0)
+                    let htz_gvt_g = round_1(to_float(htz_gvt) / 1024.0)
+                    msg1(htz_gpu_item, sel("setTitle:"), nsstr("  GPU  " + bar(htz_gu, 100, bw) + "  " + to_string(htz_gu) + "%  VRAM " + to_string(htz_gvu_g) + "G/" + to_string(htz_gvt_g) + "G"))
+                    msg_int(htz_gpu_item, sel("setHidden:"), 0)
+                } else {
+                    msg_int(htz_gpu_item, sel("setHidden:"), 1)
+                }
+            } else {
+                msg1(htz_item, sel("setTitle:"), nsstr("\u25CB Hetzner \u2014 offline"))
+                msg_int(htz_cpu_item, sel("setHidden:"), 1)
+                msg_int(htz_ram_item, sel("setHidden:"), 1)
+                msg_int(htz_gpu_item, sel("setHidden:"), 1)
+            }
+        }
+
+        // Vast.ai
+        let vast = try { hosts["vast"] } catch e { {} }
+        if vast != {} {
+            let vast_st = try { vast["status"] } catch e { "offline" }
+            if vast_st == "active" {
+                let vast_gpu_s = try { vast["gpu"] } catch e { "" }
+                let vast_gu = try { to_int(vast["gpu_util"]) } catch e { 0 }
+                let vast_vr_used = try { to_int(vast["vram_used_gb"]) } catch e { 0 }
+                let vast_vr_tot = try { to_int(vast["vram_gb"]) } catch e { 96 }
+                let vast_vr_pct = if vast_vr_tot > 0 { vast_vr_used * 100 / vast_vr_tot } else { 0 }
+                let vast_ru = try { to_int(vast["ram_used_gb"]) } catch e { 0 }
+                let vast_rt = try { to_int(vast["ram_total_gb"]) } catch e { 1 }
+                let vast_rp = if vast_rt > 0 { vast_ru * 100 / vast_rt } else { 0 }
+                let vast_price = try { vast["price_hr"] } catch e { "" }
+                msg1(vast_item, sel("setTitle:"), nsstr("\u25CF Vast.ai  " + vast_gpu_s + "  " + vast_price))
+                msg1(vast_gpu_item, sel("setTitle:"), nsstr("  GPU  " + bar(vast_gu, 100, bw) + "  " + to_string(vast_gu) + "%  VRAM " + to_string(vast_vr_used) + "/" + to_string(vast_vr_tot) + "G"))
+                msg1(vast_ram_item, sel("setTitle:"), nsstr("  RAM  " + bar(vast_rp, 100, bw) + "  " + to_string(vast_rp) + "%  (" + to_string(vast_ru) + "G/" + to_string(vast_rt) + "G)"))
+                msg_int(vast_gpu_item, sel("setHidden:"), 0)
+                msg_int(vast_ram_item, sel("setHidden:"), 0)
+            } else {
+                msg1(vast_item, sel("setTitle:"), nsstr("\u25CB Vast.ai \u2014 offline"))
+                msg_int(vast_gpu_item, sel("setHidden:"), 1)
+                msg_int(vast_ram_item, sel("setHidden:"), 1)
             }
         }
     }

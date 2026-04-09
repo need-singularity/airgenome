@@ -181,6 +181,56 @@ fn encode_genome(axes_csv: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  BINARY PACK FORMAT — single-file genome archive
+// ═══════════════════════════════════════════════════════════════════════
+// Header: "AG" (2B) + version (1B) + record_count (4B) = 7 bytes
+// Per record: ts (8B) + pid (4B) + comm_len (1B) + comm (variable, max 64B)
+//             + axes (6B) + signature (60B)
+// Uses python3 struct.pack one-liner (same pattern as ring_io.hexa).
+
+// Append a single record to an existing .pack file.
+// If the file doesn't exist, creates it with header first.
+// genome_hex: 120 hex chars = 60 bytes signature.
+fn pack_append(pack_path: str, ts_str: str, pid_str: str, comm: str, axes_csv: str, genome_hex: str) -> bool {
+    if len(genome_hex) != 120 { return false }
+    // Truncate comm to 64 chars max
+    let mut safe_comm = comm.replace("'", "").replace("\\", "")
+    if len(safe_comm) > 64 { safe_comm = safe_comm.substring(0, 64) }
+    // Axes CSV → 6 ints
+    let axes_parts = axes_csv.split(",")
+    if len(axes_parts) < 6 { return false }
+    let mut axes_arg = axes_parts[0]
+    let mut ai = 1
+    while ai < 6 { axes_arg = axes_arg + " " + axes_parts[ai]; ai = ai + 1 }
+
+    let py = "python3 -c '" +
+        "import struct,os,sys\n" +
+        "p=sys.argv[1]; ts=int(sys.argv[2]); pid=int(sys.argv[3])\n" +
+        "comm=sys.argv[4].encode(\"utf-8\")[:64]\n" +
+        "axes=[int(x) for x in sys.argv[5:11]]\n" +
+        "sig=bytes.fromhex(sys.argv[11])\n" +
+        "assert len(sig)==60\n" +
+        "need_hdr=not os.path.exists(p) or os.path.getsize(p)<7\n" +
+        "f=open(p,\"r+b\" if not need_hdr else \"wb\")\n" +
+        "if need_hdr:\n" +
+        "  f.write(b\"AG\" + struct.pack(\"<BI\",1,0))\n" +
+        "  cnt=0\n" +
+        "else:\n" +
+        "  f.seek(2); cnt=struct.unpack(\"<I\",f.read(5)[1:])[0]\n" +
+        "  f.seek(0,2)\n" +
+        "rec=struct.pack(\"<qI\",ts,pid)\n" +
+        "rec+=struct.pack(\"B\",len(comm))+comm\n" +
+        "rec+=bytes(a&255 for a in axes)+sig\n" +
+        "f.write(rec)\n" +
+        "cnt+=1; f.seek(3); f.write(struct.pack(\"<I\",cnt))\n" +
+        "f.close(); print(\"ok\")' " +
+        pack_path + " " + ts_str + " " + pid_str + " '" + safe_comm + "' " +
+        axes_arg + " " + genome_hex
+    let out = exec(py).trim()
+    return out == "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  HARVEST LOOP
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -198,7 +248,7 @@ fn lcg_next(state: int) -> int {
     return n
 }
 
-fn harvest_batch(out_dir: str, index_file: str, batch: int, min_pid: int, skip_prefix: str, total_ram_mb: int, pid_shuffle: int) -> int {
+fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_pid: int, skip_prefix: str, total_ram_mb: int, pid_shuffle: int) -> int {
     exec("mkdir -p " + out_dir)
     // BULK SNAPSHOT — single ps call captures all process data at once.
     // Format: "PID %CPU RSS VSZ H:MM:SS PRI NICE PPID COMM"
@@ -249,6 +299,10 @@ fn harvest_batch(out_dir: str, index_file: str, batch: int, min_pid: int, skip_p
                                 try { write_file(fname, genome) } catch e {}
                                 let safe_comm = comm.replace("\"", "").replace("\\", "")
                                 idx_buf = idx_buf + "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm + "\",\"axes\":\"" + axes + "\",\"file\":\"" + fname + "\",\"encoding_ver\":2}\n"
+                                // Binary pack — parallel write (non-blocking; JSON remains primary)
+                                if len(pack_file) > 0 {
+                                    try { pack_append(pack_file, ts, pid, safe_comm, axes, genome) } catch pe {}
+                                }
                                 added = added + 1
                             }
                         }
@@ -280,6 +334,7 @@ consciousness HarvestRouter {
     let skip_pref  = cfg_str("skip_comm_prefix", "kernel_task")
     let min_pid    = cfg_int("min_pid", 100)
     let pid_shuffle = cfg_int("pid_shuffle", 1)
+    let pack_file  = cfg_str("pack_file", "forge/genomes.pack")
 
     let total_ram_mb = to_int(to_float(exec("sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}'").trim()))
 
@@ -317,7 +372,7 @@ consciousness HarvestRouter {
             done = true
         }
         if done == false {
-            let added = harvest_batch(out_dir, index_file, batch, min_pid, skip_pref, total_ram_mb, pid_shuffle)
+            let added = harvest_batch(out_dir, index_file, pack_file, batch, min_pid, skip_pref, total_ram_mb, pid_shuffle)
             have = count_existing(out_dir)
             println("  batch+" + to_string(added) + " total=" + to_string(have))
             loops = loops + 1

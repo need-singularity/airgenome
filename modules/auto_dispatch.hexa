@@ -177,8 +177,30 @@ fn check_once(state_path: str) -> str {
             return "{\"ts\":\"" + ts + "\",\"status\":\"offload_htz\",\"host\":\"htz\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"reason\":\"ubu busy, htz available\"}"
         }
 
-        // htz도 불가 → 원래 ubu_busy 반환
-        return "{\"ts\":\"" + ts + "\",\"status\":\"ubu_busy\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_max\":" + to_string(ubu_max) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"htz_status\":\"" + htz_status + "\",\"reason\":\"ubuntu cpu too high, htz unavailable\"}"
+        // ── vast fallback: ubu+htz both busy → Vast.ai 확인 ──
+        let mut vast_status = "unknown"
+        let mut vast_gpu_util = 100
+        let mut vast_cpu_pct = 100
+        if file_exists(INFRA_STATE_PATH) {
+            let infra_raw2 = read_file(INFRA_STATE_PATH).trim()
+            if infra_raw2.contains("\"vast\"") {
+                vast_status = read_json_str(infra_raw2, "vast_status", "unknown")
+                // infra_state는 중첩 JSON이라 간단 파서로 한계 → awk fallback
+                let vgu = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['vast']['gpu_util'])\" 2>/dev/null").trim() } catch e { "100" }
+                let vcp = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['vast']['cpu_pct'])\" 2>/dev/null").trim() } catch e { "100" }
+                let vst = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['vast']['status'])\" 2>/dev/null").trim() } catch e { "offline" }
+                try { vast_gpu_util = to_int(to_float(vgu)) } catch e {}
+                try { vast_cpu_pct = to_int(to_float(vcp)) } catch e {}
+                vast_status = vst
+            }
+        }
+
+        if vast_status == "active" && vast_cpu_pct < 70 {
+            return "{\"ts\":\"" + ts + "\",\"status\":\"offload_vast\",\"host\":\"vast\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"vast_cpu\":" + to_string(vast_cpu_pct) + ",\"vast_gpu\":" + to_string(vast_gpu_util) + ",\"reason\":\"ubu+htz busy, vast available\"}"
+        }
+
+        // 전부 불가
+        return "{\"ts\":\"" + ts + "\",\"status\":\"all_busy\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"ubu_max\":" + to_string(ubu_max) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"htz_status\":\"" + htz_status + "\",\"vast_status\":\"" + vast_status + "\",\"reason\":\"all hosts busy\"}"
     }
 
     // ── 조건 충족: top N hog 탐색 ──

@@ -304,7 +304,7 @@ fn run_predict() -> str {
 
     if n < min_window {
         let ts = try { exec("date +%s").trim() } catch e { "0" }
-        return "{\"ts\":" + ts + ",\"error\":\"ring_too_small\",\"ring_n\":" + to_string(n) + ",\"min_window\":" + to_string(min_window) + ",\"predictions\":[],\"throttle_targets\":[],\"confidence\":0.0}"
+        return "{\"detector\":\"predictive_throttle\",\"ts\":" + ts + ",\"error\":\"ring_too_small\",\"ring_n\":" + to_string(n) + ",\"min_window\":" + to_string(min_window) + ",\"predictions\":[],\"throttle_targets\":[],\"confidence\":0.0}"
     }
 
     // Compute per-axis: current value (last sample), L5c NMI
@@ -372,7 +372,7 @@ fn run_predict() -> str {
 
     // Build JSON output
     let ts = try { exec("date +%s").trim() } catch e { "0" }
-    let j = "{\"ts\":" + ts
+    let j = "{\"detector\":\"predictive_throttle\",\"ts\":" + ts
     j = j + ",\"ring_n\":" + to_string(n)
     j = j + ",\"tau\":" + to_string(tau)
 
@@ -495,7 +495,18 @@ fn main() {
     if len(argv) > 2 { cmd = argv[2] }
 
     if cmd == "predict" {
-        println(run_predict())
+        let result = run_predict()
+        println(result)
+        // forge/state.json에 predictions 병합
+        let state_out = AG_HOME + "/forge/state.json"
+        if file_exists(state_out) {
+            let tmp = "/tmp/_pt_merge_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".json"
+            write_file(tmp + ".b", read_file(state_out).trim())
+            write_file(tmp + ".p", result)
+            let py = "python3 -c \"import json; b=json.load(open('" + tmp + ".b')); p=json.load(open('" + tmp + ".p')); b['predictions']=p.get('predictions',[]); b['cascade_confidence']=p.get('confidence',0); open('" + state_out + "','w').write(json.dumps(b,indent=2))\""
+            try { exec("timeout 10 " + py) } catch e {}
+            try { exec("rm -f " + tmp + ".b " + tmp + ".p") } catch e {}
+        }
         return
     }
 

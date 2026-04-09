@@ -101,12 +101,14 @@ consciousness DetectorLoop {
         let mi_line      = extract(out, "mi_lag")
         let cascade_line = extract(out, "cascade_dag")
         let limit_line   = extract(out, "limit_cycle")
+        let pt_line      = extract(out, "predictive_throttle")
 
         let mi_val      = to_f(parse_num(mi_line, "mi_max"))
         let cascade_val = to_f(parse_num(cascade_line, "edges"))
         let limit_val   = to_f(parse_num(limit_line, "out_ratio"))
+        let pt_conf     = to_f(parse_num(pt_line, "confidence"))
 
-        println("  mi_max=" + to_string(mi_val) + " cascade_edges=" + to_string(cascade_val) + " limit_out=" + to_string(limit_val))
+        println("  mi_max=" + to_string(mi_val) + " cascade_edges=" + to_string(cascade_val) + " limit_out=" + to_string(limit_val) + " pt_conf=" + to_string(pt_conf))
 
         let mut trigger = false
         let mut reason = ""

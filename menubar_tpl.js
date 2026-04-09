@@ -8,6 +8,7 @@ var statePath = '__STATE__';
 var configPath = '__CONFIG__';
 var settingsJsPath = '__DIR__/settings.js';
 var ag3StatusPath = ($.NSString.stringWithString($('~/.airgenome/ag3_status.json')).stringByExpandingTildeInPath).js;
+var dispatchLogPath = '__DIR__/dispatch.log';
 
 ObjC.registerSubclass({
     name: 'MenuHandler',
@@ -68,6 +69,10 @@ menu.addItem(uRamItem);
 var uGpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  GPU ...'), null, $(''));
 uGpuItem.enabled = false;
 menu.addItem(uGpuItem);
+
+var uOffloadItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  ⬇ offload ...'), null, $(''));
+uOffloadItem.enabled = false;
+menu.addItem(uOffloadItem);
 
 // ─── Hetzner ───
 var htzHeader = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2501\u2501\u2501 Hetzner \u2501\u2501\u2501'), null, $(''));
@@ -148,6 +153,15 @@ function readConfig() {
     } catch(e) { return null; }
 }
 
+function readDispatchTail(n) {
+    try {
+        var str = $.NSString.stringWithContentsOfFileEncodingError($(dispatchLogPath), $.NSUTF8StringEncoding, null);
+        if (str.isNil()) return [];
+        var lines = str.js.split('\n').filter(function(l) { return l.length > 0; });
+        return lines.slice(-n);
+    } catch(e) { return []; }
+}
+
 var infraPath = ($.NSString.stringWithString($('~/Dev/nexus/shared/infra_state.json')).stringByExpandingTildeInPath).js;
 
 function readInfra() {
@@ -226,11 +240,40 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         uRamItem.hidden = false;
         uGpuItem.title = $('  GPU  ' + bar(uGpuUtil, 100, bw) + '  ' + uGpuUtil + '%  VRAM ' + uGpuMem + '%  ' + uGpuName);
         uGpuItem.hidden = false;
+
+        // offload status from dispatch.log
+        var dLines = readDispatchTail(10);
+        var runCount = 0; var drainCount = 0; var errCount = 0; var lastTs = 0;
+        for (var di = 0; di < dLines.length; di++) {
+            var cols = dLines[di].split('\t');
+            var ts = parseInt(cols[0], 10) || 0;
+            var act = cols[1] || '';
+            if (ts > lastTs) lastTs = ts;
+            if (act === 'run') runCount++;
+            else if (act === 'drain') drainCount++;
+            else if (act === 'error' || act === 'fail') errCount++;
+        }
+        if (dLines.length === 0) {
+            uOffloadItem.title = $('  ⬇ offload  —  no dispatch log');
+        } else if (errCount > 0) {
+            uOffloadItem.title = $('  ⚠ offload  ' + runCount + ' jobs  ' + errCount + ' err');
+        } else {
+            var ago = '';
+            if (lastTs > 0) {
+                var secAgo = Math.round(Date.now() / 1000) - lastTs;
+                if (secAgo < 60) ago = secAgo + 's ago';
+                else if (secAgo < 3600) ago = Math.round(secAgo / 60) + 'm ago';
+                else ago = Math.round(secAgo / 3600) + 'h ago';
+            }
+            uOffloadItem.title = $('  ⬇ offload  ' + runCount + ' jobs' + (drainCount > 0 ? '  drain=' + drainCount : '') + (ago ? '  last ' + ago : ''));
+        }
+        uOffloadItem.hidden = false;
     } else {
         ubuHeader.title = $('\u2501\u2501\u2501 Ubuntu \u25CB \u2501\u2501\u2501');
         uCpuItem.title = $('  offline'); uCpuItem.hidden = false;
         uRamItem.hidden = true;
         uGpuItem.hidden = true;
+        uOffloadItem.hidden = true;
     }
 
     // ═══ Hetzner ═══

@@ -1,0 +1,14 @@
+{"key":"target_count","value":9999}
+{"key":"batch_size","value":100}
+{"key":"sleep_between_batches_sec","value":1}
+{"key":"output_dir","value":"forge/genomes"}
+{"key":"index_file","value":"forge/genomes.index.jsonl"}
+{"key":"skip_comm_prefix","value":"kernel_task"}
+{"key":"min_pid","value":100}
+{"key":"axis_cpu_scale","value":100}
+{"key":"axis_ram_scale","value":100}
+{"key":"axis_swap_scale","value":100}
+{"key":"axis_net_scale","value":100}
+{"key":"axis_disk_scale","value":100}
+{"key":"axis_gpu_scale","value":100}
+{"key":"pid_shuffle","value":1}

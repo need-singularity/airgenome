@@ -10,30 +10,13 @@ UBU_SSH="ubu"
 UBU_DIR="/tmp/airgenome"
 TS_HOST=""
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
-
-if [ -f "$CFG" ]; then
-  _h=$(awk -F'"' '/"remote_host"/{print $8}' "$CFG" 2>/dev/null)
-  _p=$(awk -F'"' '/"remote_port"/{print $8}' "$CFG" 2>/dev/null)
-  _s=$(awk -F'"' '/"ssh_alias"/{print $8}' "$CFG" 2>/dev/null)
-  _d=$(awk -F'"' '/"remote_dir"/{print $8}' "$CFG" 2>/dev/null)
-  _t=$(awk -F'"' '/"tailscale_host"/{print $8}' "$CFG" 2>/dev/null)
-  [ -n "$_h" ] && UBU_HOST="$_h"
-  [ -n "$_p" ] && UBU_PORT="$_p"
-  [ -n "$_s" ] && UBU_SSH="$_s"
-  [ -n "$_d" ] && UBU_DIR="$_d"
-  [ -n "$_t" ] && TS_HOST="$_t"
-fi
-
-# budget cap — 동시 wrapper 수 제한 (맥 폭주 방지)
-_AG_N=$(pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l); [ "${_AG_N:-0}" -ge "${AG_BUDGET_CAP:-20}" ] && HEXA_LOCAL=1
-
-# Wi-Fi → Tailscale → 없음
-GATE_HOST=""
-if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
-  GATE_HOST="$UBU_HOST"
-elif [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null; then
-  GATE_HOST="$TS_HOST"
-fi
+# budget + reachability + config cache (GATE_G1 optimization)
+. "$SELF_DIR/_cache.sh"
+ag_load_config "$CFG"
+ag_budget_check && HEXA_LOCAL=1
+ag_budget_enter
+ag_resolve_host
+GATE_HOST="$GH"
 
 # HEXA_LOCAL=1 강제 로컬
 if [ "$HEXA_LOCAL" = "1" ] || [ -z "$GATE_HOST" ]; then

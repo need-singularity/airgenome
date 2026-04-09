@@ -14,16 +14,25 @@
 //
 // Prime Directive safe — pure read/write of JSONL files.
 
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"
 let mut AG_HOME = env("AIRGENOME_HOME")
 if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
 let CFG_PATH = AG_HOME + "/nexus/shared/vitals_ring.jsonl"
 let NUM_AXES = 6
 
+// ── per-axis noise floor (jitter baseline, subtracted before scoring) ───
+// CPU/GPU have higher thermal jitter; RAM/Swap/Disk are stable; Net is moderate
+let NOISE_FLOOR = [0.012, 0.003, 0.002, 0.008, 0.003, 0.010]
+//                  c(CPU) r(RAM) s(Swap) n(Net)  d(Disk) g(GPU)
+
+// ── EMA drift correction ────────────────────────────────────────────────
+// alpha controls smoothing: lower = more stable, higher = more responsive
+let EMA_ALPHA = 0.15
+
 // ── config loader ───────────────────────────────────────────────────────
 fn load_cfg() -> auto {
     // defaults mirror jsonl but are overwritten by file
-    let cfg = json_parse("{\"size\":512,\"min_ready\":48,\"tau\":10,\"bins\":16,\"state_path\":\"forge/vitals_ring.state\",\"out_path\":\"forge/state.json\"}")
+    let cfg = json_parse("{\"size\":512,\"min_ready\":48,\"tau\":10,\"bins\":32,\"state_path\":\"forge/vitals_ring.state\",\"out_path\":\"forge/state.json\"}")
     if file_exists(CFG_PATH) == false { return cfg }
     let content = read_file(CFG_PATH)
     let lines = content.split("\n")
@@ -55,6 +64,20 @@ fn ring_load(path: str) -> auto {
 }
 
 fn ring_push(path: str, size: int, axes: auto) -> int {
+    // ── 정규화 가드: 스케일 불일치 방지 ──
+    // c,r,s,g = 퍼센트(0-100+), n,d = MB/s(0-∞)
+    // 합성 데이터(전체 값 < 1.0) 거부
+    let mut all_tiny = true
+    let mut k = 0
+    while k < NUM_AXES {
+        if axes[k] > 1.0 { all_tiny = false }
+        k = k + 1
+    }
+    if all_tiny {
+        println("[warn] vitals_ring: push rejected — all axes < 1.0 (synthetic?)")
+        let lines = ring_load(path)
+        return len(lines)
+    }
     let ts = try { exec("date +%s").trim() } catch e { "0" }
     let rec = "{\"ts\":" + ts
     let a = 0
@@ -282,14 +305,44 @@ fn compute_stats_json(cfg: auto) -> str {
     let sum_l5c = 0.0
     let sum_l6e = 0.0
     let used = 0
+    // EMA state for drift correction — load from file if exists
+    let ema_path = AG_HOME + "/forge/.vitals_ema.json"
+    let mut ema_l5c = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ema_l6e = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut ema_loaded = false
+    if file_exists(ema_path) {
+        try {
+            let eraw = json_parse(read_file(ema_path).trim())
+            let ei = 0
+            while ei < NUM_AXES {
+                ema_l5c[ei] = to_float(eraw["l5c"][ei])
+                ema_l6e[ei] = to_float(eraw["l6e"][ei])
+                ei = ei + 1
+            }
+            ema_loaded = true
+        } catch e {}
+    }
     let a = 0
     while a < NUM_AXES {
         if ready == 1 {
             let s = series_all[a]
             let rng = minmax(s, n)
-            if rng[1] - rng[0] > 1.0e-9 {
-                let l5 = l5c_normalized(s, n, tau, bins)
-                let l6 = layer_l6e(s, n)
+            let span = rng[1] - rng[0]
+            // subtract per-axis noise floor from effective range
+            let nf = NOISE_FLOOR[a] * (rng[1] + 1.0e-9)
+            if span - nf > 1.0e-9 {
+                let l5_raw = l5c_normalized(s, n, tau, bins)
+                let l6_raw = layer_l6e(s, n)
+                // EMA drift correction: smooth raw scores to reduce jitter
+                ema_l5c[a] = EMA_ALPHA * l5_raw + (1.0 - EMA_ALPHA) * ema_l5c[a]
+                ema_l6e[a] = EMA_ALPHA * l6_raw + (1.0 - EMA_ALPHA) * ema_l6e[a]
+                // clamp noise-floor-adjusted scores
+                let l5 = ema_l5c[a]
+                let l6 = ema_l6e[a]
+                if l5 < 0.0 { l5 = 0.0 }
+                if l5 > 1.0 { l5 = 1.0 }
+                if l6 < 0.0 { l6 = 0.0 }
+                if l6 > 1.0 { l6 = 1.0 }
                 per_l5c[a] = l5
                 per_l6e[a] = l6
                 sum_l5c = sum_l5c + l5
@@ -304,6 +357,11 @@ fn compute_stats_json(cfg: auto) -> str {
     if used > 0 {
         m5 = sum_l5c / to_float(used)
         m6 = sum_l6e / to_float(used)
+    }
+    // EMA 상태 persist (다음 tick에서 이어서 사용)
+    if ready == 1 {
+        let ej = "{\"l5c\":[" + fmt(ema_l5c[0]) + "," + fmt(ema_l5c[1]) + "," + fmt(ema_l5c[2]) + "," + fmt(ema_l5c[3]) + "," + fmt(ema_l5c[4]) + "," + fmt(ema_l5c[5]) + "],\"l6e\":[" + fmt(ema_l6e[0]) + "," + fmt(ema_l6e[1]) + "," + fmt(ema_l6e[2]) + "," + fmt(ema_l6e[3]) + "," + fmt(ema_l6e[4]) + "," + fmt(ema_l6e[5]) + "]}"
+        try { write_file(ema_path, ej + "\n") } catch e {}
     }
     let ts = try { exec("date +%s").trim() } catch e { "0" }
     let j = "{\"ts\":" + ts + ",\"ring_ready\":" + to_string(ready) + ",\"ring_n\":" + to_string(n) + ",\"axes_used\":" + to_string(used) + ",\"tau\":" + to_string(tau) + ",\"l5c_nmi\":" + fmt(m5) + ",\"l6e_score\":" + fmt(m6) + ",\"per_axis\":{"
@@ -358,6 +416,32 @@ fn main() {
         return
     }
 
+    if cmd == "clean" {
+        // 합성/오염 데이터 제거: 모든 축이 < 1.0인 레코드 삭제
+        let lines = ring_load(cfg["state_path"])
+        let axkey = ["c","r","s","n","d","g"]
+        let mut kept = 0
+        let mut buf = ""
+        let mut ci = 0
+        while ci < len(lines) {
+            let p = json_parse(lines[ci])
+            let mut any_big = false
+            let mut ai = 0
+            while ai < NUM_AXES {
+                if to_float(p[axkey[ai]]) > 1.0 { any_big = true }
+                ai = ai + 1
+            }
+            if any_big {
+                buf = buf + lines[ci] + "\n"
+                kept = kept + 1
+            }
+            ci = ci + 1
+        }
+        write_file(cfg["state_path"], buf)
+        println("clean: " + to_string(len(lines)) + " → " + to_string(kept) + " entries")
+        return
+    }
+
     if cmd == "tick" {
         if len(argv) < 10 {
             println("usage: tick <c> <r> <s> <n> <d> <g>")
@@ -372,7 +456,7 @@ fn main() {
     }
 
     println("vitals_ring v" + VERSION)
-    println("commands: push <6 floats> | stats | tick <6 floats>")
+    println("commands: push <6 floats> | stats | tick <6 floats> | clean")
 }
 
 main()

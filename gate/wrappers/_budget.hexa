@@ -3,10 +3,13 @@
 //
 // CLI: hexa run _budget.hexa check
 //   exit 0 = 통과, exit 1 = cap 초과 (GATE_LOCAL=1 권장)
+//
+// GATE_G1: uses /tmp/ag_gate_budget.count (PID-per-line) instead of pgrep
 
 let DEFAULT_CAP = 20
 let RETRIES = 3
 let WAIT_SEC = 2
+let BUDGET_FILE = "/tmp/ag_gate_budget.count"
 
 fn get_cap() -> int {
     let env_cap = env("AG_BUDGET_CAP")
@@ -15,7 +18,8 @@ fn get_cap() -> int {
 }
 
 fn count_wrappers() -> int {
-    let out = exec("pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l").trim()
+    // Read PID counter file, prune dead PIDs, return live count
+    let out = exec("if [ -f " + BUDGET_FILE + " ]; then while IFS= read -r p; do [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && echo \"$p\"; done < " + BUDGET_FILE + " | wc -l | tr -d ' '; else echo 0; fi").trim()
     if len(out) == 0 { return 0 }
     return to_int(out)
 }

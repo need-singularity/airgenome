@@ -1,0 +1,212 @@
+// scripts/genome_pack.hexa — JSONL + .genome 파일 → 단일 바이너리 .pack 변환기
+//
+// 비-L0 모듈. 기존 파일을 수정하지 않으며 안전하게 재실행 가능.
+// 기존 .pack 파일이 있으면 덮어쓰기 전 백업 생성.
+//
+// Binary pack format:
+//   Header:     "AG" (2B) + version (1B) + record_count (4B) = 7 bytes
+//   Per record: ts (8B int64 LE) + pid (4B int32 LE) + comm_len (1B)
+//               + comm (variable, max 64B) + axes (6B) + signature (60B)
+//
+// Usage: $HEXA scripts/genome_pack.hexa [index_path] [output_path]
+//   defaults: forge/genomes.index.jsonl → forge/genomes.pack
+
+let ROOT = env("HOME") + "/Dev/airgenome"
+
+let argv = args()
+
+// Parse argv — scan for non-flag arguments
+let mut idx_path = ROOT + "/forge/genomes.index.jsonl"
+let mut out_path = ROOT + "/forge/genomes.pack"
+let mut ai = 0
+let mut pos_args = []
+while ai < len(argv) {
+    let v = argv[ai]
+    if v != "genome_pack" && v != "genome_pack.hexa" && v.contains("genome_pack") == false {
+        if v.contains("/") || v.contains(".") {
+            pos_args.push(v)
+        }
+    }
+    ai = ai + 1
+}
+if len(pos_args) >= 1 { idx_path = pos_args[0] }
+if len(pos_args) >= 2 { out_path = pos_args[1] }
+
+println("genome_pack — converting to binary pack format")
+println("  index: " + idx_path)
+println("  output: " + out_path)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  VALIDATION
+// ═══════════════════════════════════════════════════════════════════════
+
+if file_exists(idx_path) == false {
+    println("ERROR: index file not found: " + idx_path)
+    exit(1)
+}
+
+let idx_content = read_file(idx_path).trim()
+if len(idx_content) == 0 {
+    println("ERROR: index file is empty")
+    exit(1)
+}
+
+let lines = idx_content.split("\n")
+let total = len(lines)
+println("  records in index: " + to_string(total))
+
+// Backup existing pack file
+if file_exists(out_path) {
+    let bak = out_path + ".bak"
+    exec("cp " + out_path + " " + bak)
+    println("  backed up existing pack to: " + bak)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BATCH CONVERSION — python3 script for binary writing
+// ═══════════════════════════════════════════════════════════════════════
+// Strategy: build a TSV of (ts, pid, comm, axes_csv, genome_hex) rows,
+// then feed to a single python3 invocation that writes the entire .pack.
+// This avoids N python3 calls (one per record).
+
+// Phase 1: collect all records into a temp TSV
+let tmp_tsv = "/tmp/genome_pack_input_" + exec("date +%s%N 2>/dev/null || date +%s").trim() + ".tsv"
+let mut tsv_buf = ""
+let mut valid = 0
+let mut missing = 0
+let mut i = 0
+
+while i < total {
+    try {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            // Parse JSON fields via awk (same pattern as genome_harvest.hexa cfg_str)
+            let ts_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"ts\":' '{print $2}' | awk -F',' '{print $1}'").trim()
+            let pid_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"pid\":' '{print $2}' | awk -F',' '{print $1}'").trim()
+            let comm_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"comm\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+            let axes_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"axes\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+            let file_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"file\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+
+            if len(ts_s) > 0 && len(pid_s) > 0 && len(axes_s) > 0 && len(file_s) > 0 {
+                // Read genome file
+                let mut genome_hex = ""
+                if file_exists(file_s) {
+                    genome_hex = read_file(file_s).trim()
+                }
+                if len(genome_hex) == 120 {
+                    // TSV row: ts\tpid\tcomm\taxes\tgenome_hex
+                    let safe_comm = comm_s.replace("\t", " ").replace("'", "")
+                    tsv_buf = tsv_buf + ts_s + "\t" + pid_s + "\t" + safe_comm + "\t" + axes_s + "\t" + genome_hex + "\n"
+                    valid = valid + 1
+                } else {
+                    missing = missing + 1
+                }
+            }
+        }
+    } catch parse_err {
+        missing = missing + 1
+    }
+    i = i + 1
+    // Progress every 500 records
+    if i % 500 == 0 {
+        println("  scanned " + to_string(i) + "/" + to_string(total) + " ...")
+    }
+}
+
+println("  valid records: " + to_string(valid))
+if missing > 0 {
+    println("  skipped (missing/invalid genome): " + to_string(missing))
+}
+
+if valid == 0 {
+    println("ERROR: no valid records to pack")
+    exec("rm -f " + tmp_tsv)
+    exit(1)
+}
+
+// Write TSV to temp file
+write_file(tmp_tsv, tsv_buf)
+
+// Phase 2: python3 one-liner reads TSV, writes binary .pack
+let py = "python3 -c '" +
+    "import struct,sys\n" +
+    "tsv_path=sys.argv[1]; out_path=sys.argv[2]\n" +
+    "rows=[]\n" +
+    "with open(tsv_path,\"r\") as f:\n" +
+    "  for line in f:\n" +
+    "    line=line.strip()\n" +
+    "    if not line: continue\n" +
+    "    parts=line.split(\"\\t\",4)\n" +
+    "    if len(parts)<5: continue\n" +
+    "    ts=int(parts[0]); pid=int(parts[1])\n" +
+    "    comm=parts[2].encode(\"utf-8\")[:64]\n" +
+    "    axes=[int(x)&255 for x in parts[3].split(\",\")[:6]]\n" +
+    "    while len(axes)<6: axes.append(0)\n" +
+    "    sig=bytes.fromhex(parts[4])\n" +
+    "    if len(sig)!=60: continue\n" +
+    "    rows.append((ts,pid,comm,axes,sig))\n" +
+    "with open(out_path,\"wb\") as f:\n" +
+    "  f.write(b\"AG\"+struct.pack(\"<BI\",1,len(rows)))\n" +
+    "  for ts,pid,comm,axes,sig in rows:\n" +
+    "    f.write(struct.pack(\"<qI\",ts,pid))\n" +
+    "    f.write(struct.pack(\"B\",len(comm))+comm)\n" +
+    "    f.write(bytes(axes)+sig)\n" +
+    "import os\n" +
+    "sz=os.path.getsize(out_path)\n" +
+    "print(str(len(rows))+\" \"+str(sz))' " +
+    tmp_tsv + " " + out_path
+
+let result = exec(py).trim()
+
+// Cleanup temp
+exec("rm -f " + tmp_tsv)
+
+if len(result) == 0 {
+    println("ERROR: python3 pack writer failed")
+    exit(1)
+}
+
+let rparts = result.split(" ")
+let mut packed_count = 0
+let mut pack_size = 0
+try { packed_count = to_int(to_float(rparts[0])) } catch e {}
+if len(rparts) >= 2 {
+    try { pack_size = to_int(to_float(rparts[1])) } catch e {}
+}
+
+println("  packed: " + to_string(packed_count) + " records")
+println("  pack file size: " + to_string(pack_size) + " bytes")
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMPRESSION RATIO REPORT
+// ═══════════════════════════════════════════════════════════════════════
+
+// Original sizes: index JSONL + individual .genome files
+let idx_size_s = exec("wc -c < " + idx_path + " 2>/dev/null").trim()
+let mut idx_size = 0
+try { idx_size = to_int(to_float(idx_size_s)) } catch e {}
+
+// Each .genome file = 120 bytes content + filesystem overhead
+let genome_data_size = valid * 120
+let original_total = idx_size + genome_data_size
+
+println("")
+println("  === Compression Report ===")
+println("  original index size:   " + to_string(idx_size) + " bytes")
+println("  original genome data:  " + to_string(genome_data_size) + " bytes (" + to_string(valid) + " x 120B)")
+println("  original total (data): " + to_string(original_total) + " bytes")
+println("  packed size:           " + to_string(pack_size) + " bytes")
+
+if original_total > 0 {
+    let ratio_pct = pack_size * 100 / original_total
+    println("  ratio:                 " + to_string(ratio_pct) + "% of original data size")
+    println("  saved:                 " + to_string(original_total - pack_size) + " bytes")
+}
+
+// Note: filesystem overhead for thousands of small .genome files is not counted above.
+// Real savings include inode/block overhead which is typically 4KB per file on APFS/ext4.
+let fs_overhead = valid * 4096
+println("  est. filesystem saving: ~" + to_string(fs_overhead / 1024) + " KB (inode/block overhead)")
+
+println("")
+println("done. output: " + out_path)

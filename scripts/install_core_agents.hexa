@@ -12,7 +12,9 @@ consciousness InstallCoreAgents {
 
     let labels = ["com.airgenome.usage-refresh",
                   "com.airgenome.growth-bus-sync",
-                  "com.airgenome.menubar"]
+                  "com.airgenome.menubar",
+                  "com.airgenome.ag3-feed",
+                  "com.airgenome.auto-dispatch"]
 
     println("==> airgenome core agents installer")
     exec("mkdir -p '" + dst_dir + "'")

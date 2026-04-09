@@ -2,17 +2,13 @@
 # airgenome gate — hexa → Ubuntu 오프로드 (with pre-sync)
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
-[ -f "$CFG" ] && {
-  _h=$(awk -F'"' '/"remote_host"/{print $8}' "$CFG"); _p=$(awk -F'"' '/"remote_port"/{print $8}' "$CFG")
-  _s=$(awk -F'"' '/"ssh_alias"/{print $8}' "$CFG"); _t=$(awk -F'"' '/"tailscale_host"/{print $8}' "$CFG")
-  [ -n "$_h" ] && UBU_HOST="$_h"; [ -n "$_p" ] && UBU_PORT="$_p"; [ -n "$_s" ] && UBU_SSH="$_s"; [ -n "$_t" ] && TS_HOST="$_t"
-}
-# budget cap — 동시 wrapper 수 제한 (맥 폭주 방지)
-_AG_N=$(pgrep -f 'gate/wrappers/' 2>/dev/null | wc -l); [ "${_AG_N:-0}" -ge "${AG_BUDGET_CAP:-20}" ] && GATE_LOCAL=1
-
-GH=""
-nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null && GH="$UBU_HOST"
-[ -z "$GH" ] && [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null && GH="$TS_HOST"
+# budget + reachability + config cache (GATE_G1 optimization)
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SELF_DIR/_cache.sh"
+ag_load_config "$CFG"
+ag_budget_check && GATE_LOCAL=1
+ag_budget_enter
+ag_resolve_host
 
 HEXA_BIN="$HOME/Dev/hexa-lang/target/release/hexa"
 # 로컬 fallback
