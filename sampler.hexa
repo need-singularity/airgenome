@@ -177,23 +177,24 @@ while true {
             try { ubu_ram_total = to_int(to_float(urt)) } catch e {}
             try { ubu_ram_avail = to_int(to_float(ura)) } catch e {}
             if ubu_ram_total > 0 { ubu_ram_pct = ubu_ram_used * 100 / ubu_ram_total }
-        }
-        let ubu_ssh = exec("awk -F'\"' '/\"ssh_alias\"/{print $8}' " + gate_cfg + " 2>/dev/null").trim()
-        let ssh_alias = if len(ubu_ssh) > 0 { ubu_ssh } else { "ubu" }
-        let uj = exec("ssh -o ConnectTimeout=1 " + ssh_alias + " 'ps aux 2>/dev/null | grep -c \"[h]exa\\|[p]ython3\\|[c]argo\\|[r]ustc\"' 2>/dev/null | tr -d ' '").trim()
-        try { ubu_jobs = to_int(to_float(uj)) } catch e {}
-        let uc = exec("ssh -o ConnectTimeout=1 " + ssh_alias + " 'IDLE=$(top -bn1 2>/dev/null | grep Cpu | head -1 | grep -oP \"[\\d.]+(?= id)\"); echo $((100 - ${IDLE%%.*}))' 2>/dev/null | tr -d ' '").trim()
-        try { ubu_cpu = to_int(to_float(uc)) } catch e {}
-        // GPU (nvidia-smi가 있을 때만)
-        let gpu_csv = exec("ssh -o ConnectTimeout=1 " + ssh_alias + " 'nvidia-smi --query-gpu=utilization.gpu,utilization.memory,name --format=csv,noheader,nounits 2>/dev/null' 2>/dev/null").trim()
-        if len(gpu_csv) > 0 {
-            if gpu_csv.contains("No devices") == false {
-                if gpu_csv.contains("error") == false {
-                    let gparts = gpu_csv.split(",")
-                    if len(gparts) >= 3 {
-                        try { ubu_gpu_util = to_int(to_float(gparts[0].trim())) } catch e {}
-                        try { ubu_gpu_mem = to_int(to_float(gparts[1].trim())) } catch e {}
-                        ubu_gpu_name = gparts[2].trim()
+            // jobs/cpu/gpu 모두 STATUS 응답에서 파싱 (SSH 제거 — 렉 방지)
+            let uj = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'jobs=[^ ]*' | cut -d= -f2").trim()
+            try { ubu_jobs = to_int(to_float(uj)) } catch e {}
+            let uc = exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'cpu=[^ ]*' | cut -d= -f2").trim()
+            try { ubu_cpu = to_int(to_float(uc)) } catch e {}
+            // GPU: "gpu=<util>, <mem>, <name>" — 첫 gpu= 이후 전부
+            if ubu_status.contains("gpu=") {
+                let gpu_csv = ubu_status.split("gpu=")[1].trim()
+                if len(gpu_csv) > 0 {
+                    if gpu_csv.contains("No devices") == false {
+                        if gpu_csv.contains("error") == false {
+                            let gparts = gpu_csv.split(",")
+                            if len(gparts) >= 3 {
+                                try { ubu_gpu_util = to_int(to_float(gparts[0].trim())) } catch e {}
+                                try { ubu_gpu_mem = to_int(to_float(gparts[1].trim())) } catch e {}
+                                ubu_gpu_name = gparts[2].trim()
+                            }
+                        }
                     }
                 }
             }
