@@ -1,0 +1,141 @@
+// session_resume.hexa — 부팅 직후 1회 실행, 죽기 전 상태 마크다운 복원
+//
+// LaunchAgent RunAtLoad=true, no StartInterval. 부팅 직후 한 번만 실행.
+//
+// 입력: ~/.airgenome/session_now.json (마지막 1분 전 스냅샷)
+// 출력:
+//   /tmp/airgenome-resume.md       — 사람용 마크다운 리포트
+//   ~/.airgenome/last_resume.json  — 백업 (혹시 다른 도구가 읽을 경우)
+//   desktop notification (osascript display notification)
+
+let HOME = env("HOME")
+let SESSION_NOW = HOME + "/.airgenome/session_now.json"
+let RESUME_MD = "/tmp/airgenome-resume.md"
+let LAST_RESUME = HOME + "/.airgenome/last_resume.json"
+let RENDER_PY = "/tmp/_airgenome_resume_render.py"
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+if file_exists(SESSION_NOW) == false {
+    println("⬡ session_resume: no snapshot at " + SESSION_NOW)
+    exit(0)
+}
+
+// python 렌더러를 임시파일로 작성 — 인라인 escape 지옥 회피
+// 출력 전략: python 은 마크다운 본문을 stdout 으로 print, hexa write_file 로 디스크 기록
+//          (자식 프로세스 sandbox 가 /tmp 쓰기 차단해도 안전)
+let py = "#!/usr/bin/env python3\n" +
+"import json, sys, datetime\n" +
+"snap = json.load(open(sys.argv[1]))\n" +
+"now_ts = int(datetime.datetime.now().timestamp())\n" +
+"snap_ts = snap.get('ts', 0)\n" +
+"age = now_ts - snap_ts if snap_ts else -1\n" +
+"if age > 0:\n" +
+"    if age < 60: age_s = f'{age}초 전'\n" +
+"    elif age < 3600: age_s = f'{age//60}분 전'\n" +
+"    else: age_s = f'{age//3600}시간 {(age%3600)//60}분 전'\n" +
+"else:\n" +
+"    age_s = '시간 미상'\n" +
+"out = []\n" +
+"out.append('# 부팅 전 마지막 상태')\n" +
+"out.append('')\n" +
+"out.append(f'- 스냅샷: {snap.get(\"iso\",\"?\")} ({age_s})')\n" +
+"out.append(f'- load: {snap.get(\"load_avg\",\"?\")} · mem free: {snap.get(\"mem_free_pct\",0)}%')\n" +
+"out.append(f'- 프로젝트: {snap.get(\"projects_total\",0)}개 중 dirty {snap.get(\"projects_dirty\",0)}개')\n" +
+"out.append('')\n" +
+"out.append('## 작업 중이던 프로젝트 (dirty)')\n" +
+"out.append('')\n" +
+"projs = snap.get('projects', [])\n" +
+"dirty = [p for p in projs if p.get('dirty', 0) > 0]\n" +
+"if not dirty:\n" +
+"    out.append('_없음 — 모든 프로젝트가 깨끗했음_')\n" +
+"    out.append('')\n" +
+"for p in sorted(dirty, key=lambda x: -x.get('claude_session_mtime', 0)):\n" +
+"    out.append(f'### {p.get(\"name\",\"?\")}  [`{p.get(\"branch\",\"?\")}`]  · 변경 {p.get(\"dirty\",0)}건')\n" +
+"    out.append(f'- path: `{p.get(\"path\",\"?\")}`')\n" +
+"    out.append(f'- HEAD: `{p.get(\"head\",\"?\")}` — {p.get(\"last_commit_msg\",\"\")}')\n" +
+"    if p.get('last_modified_file'):\n" +
+"        out.append(f'- 마지막 수정 파일: `{p[\"last_modified_file\"]}`')\n" +
+"    if p.get('last_user_msg'):\n" +
+"        msg = p['last_user_msg'][:200].replace(chr(10),' ')\n" +
+"        out.append(f'- 마지막 Claude 입력: \"{msg}\"')\n" +
+"    if p.get('wip_sha'):\n" +
+"        out.append(f'- WIP 복구: `git -C {p[\"path\"]} show {p[\"wip_sha\"][:12]}` (refs/wip/snapshot)')\n" +
+"    out.append('')\n" +
+"out.append('## 깨끗했던 프로젝트')\n" +
+"out.append('')\n" +
+"clean = [p for p in projs if p.get('dirty', 0) == 0]\n" +
+"if clean:\n" +
+"    names = ', '.join(p.get('name','?') for p in clean)\n" +
+"    out.append(f'{len(clean)}개: {names}')\n" +
+"out.append('')\n" +
+"out.append('## iTerm 탭')\n" +
+"out.append('')\n" +
+"it = snap.get('iterm', '')\n" +
+"if it.strip():\n" +
+"    for tab in it.split(';'):\n" +
+"        t = tab.strip()\n" +
+"        if t: out.append(f'- `{t}`')\n" +
+"else:\n" +
+"    out.append('_iTerm 캡처 없음_')\n" +
+"out.append('')\n" +
+"out.append('## claude 인스턴스 (재해석)')\n" +
+"out.append('')\n" +
+"cl = snap.get('claude', {})\n" +
+"out.append(f'총 {cl.get(\"count\",0)}개 — active {cl.get(\"active\",0)} · spawning {cl.get(\"spawning\",0)} · idle {cl.get(\"idle\",0)} · **cwd 중복 {cl.get(\"cwd_dups\",0)}**')\n" +
+"out.append('')\n" +
+"if cl.get('instances'):\n" +
+"    by_cwd = {}\n" +
+"    for ci in cl['instances']:\n" +
+"        by_cwd.setdefault(ci.get('cwd','?'), []).append(ci)\n" +
+"    out.append('| cwd | n | dedup 후보 |')\n" +
+"    out.append('|---|---|---|')\n" +
+"    for cwd, lst in sorted(by_cwd.items(), key=lambda x: -len(x[1])):\n" +
+"        n = len(lst)\n" +
+"        if n > 1:\n" +
+"            cands = ', '.join(f'pid {x[\"pid\"]} ({x[\"status\"]}, {x[\"rss_mb\"]}MB)' for x in lst)\n" +
+"            out.append(f'| `{cwd}` | **{n}** | {cands} |')\n" +
+"        else:\n" +
+"            out.append(f'| `{cwd}` | {n} | — |')\n" +
+"out.append('')\n" +
+"out.append('## launchd airgenome')\n" +
+"out.append('')\n" +
+"ld = snap.get('launchd', '')\n" +
+"for ent in ld.split(';'):\n" +
+"    e = ent.strip()\n" +
+"    if e: out.append(f'- `{e}`')\n" +
+"sys.stdout.write('\\n'.join(out) + '\\n')\n"
+
+try { write_file(RENDER_PY, py) } catch e {
+    println("⬡ session_resume: write_file failed")
+    exit(1)
+}
+
+// 마크다운 본문 = python stdout
+let md_body = safe_exec("python3 '" + RENDER_PY + "' '" + SESSION_NOW + "'")
+try { write_file(RESUME_MD, md_body + "\n") } catch e {}
+
+// dirty 카운트는 snapshot JSON 에서 직접 추출
+let snap_raw = read_file(SESSION_NOW)
+let mut dirty_count = "0"
+if snap_raw.contains("\"projects_dirty\":") {
+    let after = snap_raw.split("\"projects_dirty\":")[1]
+    dirty_count = after.split(",")[0].split("}")[0].trim()
+}
+
+// 머신용 백업
+try { exec("cp '" + SESSION_NOW + "' '" + LAST_RESUME + "'") } catch e {}
+
+// 정리
+try { exec("rm -f '" + RENDER_PY + "'") } catch e {}
+
+// 알림
+let mut msg = "mac 부팅: 죽기 전 상태 복원됨"
+if dirty_count != "" && dirty_count != "0" {
+    msg = "mac 부팅: " + dirty_count + "개 프로젝트 dirty (open " + RESUME_MD + ")"
+}
+try { exec("osascript -e 'display notification \"" + msg + "\" with title \"airgenome resume\"' 2>/dev/null") } catch e {}
+
+println("⬡ session_resume: " + RESUME_MD + " (dirty_projs=" + dirty_count + ")")

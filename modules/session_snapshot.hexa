@@ -1,0 +1,188 @@
+// session_snapshot.hexa — mac 다운 대비 in-flight 상태 캡처
+//
+// 매분 실행 (LaunchAgent StartInterval=60). 캡처 대상:
+//   1. 모든 ~/Dev/* git repo: branch/HEAD/dirty count/last commit
+//   2. ~/.claude-claude4/projects/<proj>/ 최근 세션의 마지막 user 메시지
+//   3. iTerm 탭별 cwd (osascript)
+//   4. launchd airgenome agent 요약
+//   5. dirty repo 마다 git stash create → refs/wip/snapshot 갱신
+//      (working tree + index 가 reachable git object 로 박힘 → fsck 복구 가능)
+//
+// 출력:
+//   ~/.airgenome/session_now.json   — 항상 "지금" 한 장 (atomic write)
+//   nexus/shared/session_history.jsonl — append, 24h rotate
+//
+// Prime Directive 준수: read-only 조회 + git refs/wip/* 만 mutation.
+
+let HOME = env("HOME")
+let AG_HOME = HOME + "/Dev/airgenome"
+let SESSION_NOW = HOME + "/.airgenome/session_now.json"
+let SESSION_HISTORY = AG_HOME + "/nexus/shared/session_history.jsonl"
+let CLAUDE_PROJECTS_DIR = HOME + "/.claude-claude4/projects"
+let WIP_REF = "refs/wip/snapshot"
+
+exec("mkdir -p " + HOME + "/.airgenome")
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "").replace("\t", " ")
+}
+
+// ── 1. Timestamps ──────────────────────────────────────────────────────
+let ts = safe_exec("date +%s")
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+// ── 2. System snapshot ────────────────────────────────────────────────
+let load_avg = safe_exec("sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'")
+let mem_pressure = safe_exec("memory_pressure 2>/dev/null | awk -F: '/System-wide memory free percentage/{gsub(/[%[:space:]]/,\"\",$2); print $2}'")
+if mem_pressure == "" { mem_pressure = "0" }
+let top_procs = safe_exec("ps -arcwwwxo pcpu,rss,comm | awk 'NR>1 && NR<=6 {printf \"%s|%s|%s;\", $1, $2, $3}'")
+
+// ── 3. Project loop ───────────────────────────────────────────────────
+let proj_list_raw = safe_exec("ls -d " + HOME + "/Dev/*/ 2>/dev/null | while read d; do [ -d \"${d}.git\" ] && echo \"${d%/}\"; done")
+let projects = proj_list_raw.split("\n")
+
+let mut proj_entries = ""
+let mut dirty_count = 0
+let mut total_count = 0
+let mut i = 0
+while i < projects.len() {
+    let proj = projects[i].trim()
+    if proj == "" { i = i + 1; continue }
+    total_count = total_count + 1
+
+    let name = safe_exec("basename '" + proj + "'")
+    let branch = safe_exec("git -C '" + proj + "' rev-parse --abbrev-ref HEAD 2>/dev/null")
+    let head = safe_exec("git -C '" + proj + "' rev-parse --short HEAD 2>/dev/null")
+    let dirty_s = safe_exec("git -C '" + proj + "' status --porcelain 2>/dev/null | wc -l | tr -d ' '")
+    let mut dirty = 0
+    try { dirty = to_int(to_float(dirty_s)) } catch e {}
+    if dirty > 0 { dirty_count = dirty_count + 1 }
+
+    let last_commit_ts = safe_exec("git -C '" + proj + "' log -1 --format=%ct 2>/dev/null")
+    let last_commit_msg = safe_exec("git -C '" + proj + "' log -1 --format=%s 2>/dev/null")
+    let last_modified_file = safe_exec("git -C '" + proj + "' status --porcelain 2>/dev/null | head -1 | awk '{print $NF}'")
+
+    // 최근 Claude 세션 → 마지막 user 메시지 (task-notification 제외)
+    // proj 가 "/Users/.." 로 시작하므로 replace 결과가 "-Users-.." → 그대로 join
+    let claude_dir = CLAUDE_PROJECTS_DIR + "/" + proj.replace("/", "-")
+    let mut last_msg = ""
+    let mut last_session_mtime = ""
+    if file_exists(claude_dir) {
+        let recent_session = safe_exec("ls -t '" + claude_dir + "'/*.jsonl 2>/dev/null | head -1")
+        if recent_session != "" {
+            last_session_mtime = safe_exec("stat -f %m '" + recent_session + "' 2>/dev/null")
+            last_msg = safe_exec("python3 -c 'import sys,json\nfor l in reversed(open(sys.argv[1]).readlines()[-200:]):\n    try:\n        d=json.loads(l)\n        if d.get(\"type\")!=\"user\": continue\n        m=d.get(\"message\",{})\n        c=m.get(\"content\",\"\") if isinstance(m,dict) else \"\"\n        t=\"\"\n        if isinstance(c,list):\n            for it in c:\n                if isinstance(it,dict) and it.get(\"type\")==\"text\": t=it.get(\"text\",\"\"); break\n        elif isinstance(c,str): t=c\n        if not t: continue\n        if t.startswith(\"<task-notification>\") or t.startswith(\"<system-reminder>\"): continue\n        print(t[:240]); break\n    except: pass' '" + recent_session + "' 2>/dev/null")
+        }
+    }
+
+    // WIP ref: dirty 면 stash create → refs/wip/snapshot 갱신
+    let mut wip_sha = ""
+    if dirty > 0 {
+        // git stash create: working tree+index 를 commit object 로 만들기, refs/working tree 안 건드림
+        wip_sha = safe_exec("git -C '" + proj + "' stash create 2>/dev/null")
+        // untracked 도 포함하려면 -u 가 필요한데 stash create 는 -u 미지원 → write-tree 우회
+        if wip_sha == "" {
+            // tracked-only 변경마저 없으면 (예: untracked-only) HEAD tree 로 빈 wip 생성
+            let tree = safe_exec("git -C '" + proj + "' write-tree 2>/dev/null")
+            if tree != "" {
+                wip_sha = safe_exec("git -C '" + proj + "' commit-tree " + tree + " -p HEAD -m 'wip-snapshot " + iso + "' 2>/dev/null")
+            }
+        }
+        if wip_sha != "" {
+            exec("git -C '" + proj + "' update-ref " + WIP_REF + " " + wip_sha + " 2>/dev/null || true")
+        }
+    }
+
+    let entry = "{\"name\":\"" + json_escape(name) + "\",\"path\":\"" + json_escape(proj) + "\",\"branch\":\"" + json_escape(branch) + "\",\"head\":\"" + head + "\",\"dirty\":" + to_string(dirty) + ",\"last_commit_ts\":" + (if last_commit_ts == "" { "0" } else { last_commit_ts }) + ",\"last_commit_msg\":\"" + json_escape(last_commit_msg) + "\",\"last_modified_file\":\"" + json_escape(last_modified_file) + "\",\"claude_session_mtime\":" + (if last_session_mtime == "" { "0" } else { last_session_mtime }) + ",\"last_user_msg\":\"" + json_escape(last_msg) + "\",\"wip_sha\":\"" + wip_sha + "\"}"
+    if proj_entries != "" { proj_entries = proj_entries + "," }
+    proj_entries = proj_entries + entry
+    i = i + 1
+}
+
+// ── 4. iTerm tabs (best-effort, 권한 거부 시 빈 값) ────────────────────
+let iterm_raw = safe_exec("osascript -e 'tell application \"iTerm2\"\nset out to \"\"\nrepeat with w in windows\nrepeat with t in tabs of w\nset s to current session of t\ntry\nset out to out & (variable named \"session.path\" of s) & \"|\" & name of s & \";\"\nend try\nend repeat\nend repeat\nreturn out\nend tell' 2>/dev/null")
+
+// ── 5. launchd airgenome 요약 ─────────────────────────────────────────
+let launchd_raw = safe_exec("launchctl list 2>/dev/null | grep airgenome | awk '{printf \"%s|%s|%s;\", $3, $1, $2}'")
+
+// ── 5b. claude 인스턴스 재해석 ─────────────────────────────────────────
+// "8개 너무 많음" 이 아니라 "각각 어떤 cwd 에서 어떤 활동 중인지" 분류.
+// 같은 cwd 에 여러 active 면 dedup 후보. status: spawning(sub_zsh>=2) > active > idle.
+// last_input_age = parent zsh 의 stdin (tty) 마지막 활동 시각 → 진짜 idle 판정 보조.
+let cl_raw = safe_exec("ps -axo pid=,ppid=,etime=,pcpu=,rss=,comm= | awk '$NF ~ /\\/claude$/ {print $1\" \"$2\" \"$3\" \"$4\" \"$5}'")
+let cl_lines = cl_raw.split("\n")
+let mut cl_entries = ""
+let mut cl_count = 0
+let mut cl_active = 0
+let mut cl_spawning = 0
+let mut cl_idle = 0
+let mut cwd_seen = ""        // ";cwd1;cwd2;" 형식 (재해석: 같은 cwd 중복 카운트)
+let mut cwd_dups = 0
+let mut k = 0
+while k < cl_lines.len() {
+    let line = cl_lines[k].trim()
+    if line == "" { k = k + 1; continue }
+    let parts = line.split(" ")
+    if parts.len() < 5 { k = k + 1; continue }
+    let pid = parts[0]
+    let ppid = parts[1]
+    let etime = parts[2]
+    let cpu_s = parts[3]
+    let rss_s = parts[4]
+    let mut cpuf = 0.0
+    try { cpuf = to_float(cpu_s) } catch e {}
+    let mut rss_kb = 0
+    try { rss_kb = to_int(to_float(rss_s)) } catch e {}
+    let rss_mb = rss_kb / 1024
+    // cwd: parent zsh 의 cwd
+    let cwd = safe_exec("lsof -a -d cwd -p " + ppid + " 2>/dev/null | tail -1 | awk '{print $NF}'")
+    // sub_zsh: claude 가 spawn 한 child shell (parallel agent 표시)
+    let sub_s = safe_exec("pgrep -P " + pid + " 2>/dev/null | wc -l | tr -d ' '")
+    let mut sub = 0
+    try { sub = to_int(to_float(sub_s)) } catch e {}
+    // 재해석: status 분류
+    let mut status = "idle"
+    if sub >= 2 { status = "spawning"; cl_spawning = cl_spawning + 1 }
+    else if sub == 1 || cpuf >= 5.0 { status = "active"; cl_active = cl_active + 1 }
+    else { cl_idle = cl_idle + 1 }
+    // 같은 cwd 중복 (재해석 핵심: count 가 아니라 cwd dedup)
+    let cwd_marker = ";" + cwd + ";"
+    let mut is_dup = false
+    if cwd != "" && cwd_seen.contains(cwd_marker) { cwd_dups = cwd_dups + 1; is_dup = true }
+    if cwd != "" { cwd_seen = cwd_seen + cwd_marker }
+    let dup_s = if is_dup { "true" } else { "false" }
+    let entry = "{\"pid\":" + pid + ",\"zsh_ppid\":" + ppid + ",\"etime\":\"" + etime + "\",\"cpu\":" + cpu_s + ",\"rss_mb\":" + to_string(rss_mb) + ",\"cwd\":\"" + json_escape(cwd) + "\",\"sub_agents\":" + to_string(sub) + ",\"status\":\"" + status + "\",\"cwd_dup\":" + dup_s + "}"
+    if cl_count > 0 { cl_entries = cl_entries + "," }
+    cl_entries = cl_entries + entry
+    cl_count = cl_count + 1
+    k = k + 1
+}
+
+// ── 6. 최종 JSON 조립 ─────────────────────────────────────────────────
+let snapshot = "{\"ts\":" + (if ts == "" { "0" } else { ts }) + ",\"iso\":\"" + iso + "\",\"load_avg\":\"" + json_escape(load_avg) + "\",\"mem_free_pct\":" + mem_pressure + ",\"top_procs\":\"" + json_escape(top_procs) + "\",\"projects_total\":" + to_string(total_count) + ",\"projects_dirty\":" + to_string(dirty_count) + ",\"projects\":[" + proj_entries + "],\"claude\":{\"count\":" + to_string(cl_count) + ",\"active\":" + to_string(cl_active) + ",\"spawning\":" + to_string(cl_spawning) + ",\"idle\":" + to_string(cl_idle) + ",\"cwd_dups\":" + to_string(cwd_dups) + ",\"instances\":[" + cl_entries + "]},\"iterm\":\"" + json_escape(iterm_raw) + "\",\"launchd\":\"" + json_escape(launchd_raw) + "\"}"
+
+// atomic write
+let tmp_now = SESSION_NOW + ".tmp"
+try {
+    write_file(tmp_now, snapshot + "\n")
+    exec("mv -f '" + tmp_now + "' '" + SESSION_NOW + "'")
+} catch e {}
+
+// append history (1줄)
+try { exec("echo '" + snapshot.replace("'", "'\\''") + "' >> '" + SESSION_HISTORY + "'") } catch e {}
+
+// rotate: 24h(=1440줄) 이상이면 tail
+try {
+    let line_count_s = safe_exec("wc -l < '" + SESSION_HISTORY + "' 2>/dev/null | tr -d ' '")
+    let mut lc = 0
+    try { lc = to_int(to_float(line_count_s)) } catch e {}
+    if lc > 1500 {
+        exec("tail -1440 '" + SESSION_HISTORY + "' > '" + SESSION_HISTORY + ".rot' && mv -f '" + SESSION_HISTORY + ".rot' '" + SESSION_HISTORY + "'")
+    }
+} catch e {}
+
+println("⬡ session_snapshot " + iso + " projects=" + to_string(total_count) + " dirty=" + to_string(dirty_count) + " claude=" + to_string(cl_count) + "(act=" + to_string(cl_active) + " spw=" + to_string(cl_spawning) + " idl=" + to_string(cl_idle) + " dup=" + to_string(cwd_dups) + ")")

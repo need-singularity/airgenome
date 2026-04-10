@@ -1,37 +1,168 @@
 #!/bin/bash
-# airgenome gate — hexa → Ubuntu 오프로드 (with pre-sync)
+# airgenome gate v2 — mac 부하 기반 역주행 라우팅 + rsync/scp 캐싱 + 로컬 fast-path
+#
+# v1 대비 변화:
+#   1. rsync skip:    nexus/shared mtime 캐시 → 변경 없으면 skip
+#   2. scp skip:      파일별 mtime 캐시 → 원격에 동일 mtime 있으면 skip
+#   3. 역주행 라우팅:  mac_cpu > 80% 면 budget cap 무시하고 강제 오프로드
+#   4. 로컬 fast-path: mac 부하 < 50% AND 파일 인자 없음 AND 스크립트 < 5KB → local exec (RTT 절약)
+#   5. 폴백 체인:     ubu unreachable → htz → vast → local
+#   6. latency 로그:  /tmp/ag_gate_latency.log (분석용)
+#
+# 환경변수 오버라이드:
+#   AG_GATE_FORCE_LOCAL=1  → 강제 로컬 (fallback 모드)
+#   AG_GATE_FORCE_REMOTE=1 → 강제 원격 (테스트)
+#   AG_GATE_DEBUG=1        → stderr 에 라우팅 결정 로그
+
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
-# budget + reachability + config cache (GATE_G1 optimization)
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
-ag_budget_check && GATE_LOCAL=1
-ag_budget_enter
-ag_resolve_host
 
 HEXA_BIN="$HOME/Dev/hexa-lang/target/release/hexa"
-# 로컬 fallback
-[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] && exec "$HEXA_BIN" "$@"
+SESSION_NOW="$HOME/.airgenome/session_now.json"
+LATENCY_LOG="/tmp/ag_gate_latency.log"
+RSYNC_STAMP="/tmp/ag_gate_rsync.stamp"          # 마지막 성공 sync mtime hash
+SCP_DEDUP_DIR="/tmp/ag_gate_scp_dedup"          # 파일별 mtime 캐시
+mkdir -p "$SCP_DEDUP_DIR" 2>/dev/null
 
-# pre-sync: nexus/shared 변경분만 동기화 (1초 미만)
-rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+_t0=$(date +%s%N 2>/dev/null || gdate +%s%N 2>/dev/null || echo 0)
 
-# 파일 인자 → scp 후 원격 경로로 치환
+_log() { [ "$AG_GATE_DEBUG" = "1" ] && echo "[gate] $*" >&2; }
+
+# ─────────────────────────────────────────────────────────────────
+# 1. mac 부하 읽기 (session_now.json)
+# ─────────────────────────────────────────────────────────────────
+mac_load=0
+if [ -f "$SESSION_NOW" ]; then
+  # session_now.json 은 단일줄 JSON → grep -o 로 키 매칭 추출
+  _la=$(grep -o '"load_avg":"[^"]*"' "$SESSION_NOW" 2>/dev/null | head -1 | sed -e 's/.*":"//' -e 's/"$//')
+  # 1.0 단위 부하 = "쉼" / 4.0+ = "바쁨" / 8.0+ = "폭주"
+  # int 비교용: ×100 (3.97 → 397)
+  if [ -n "$_la" ]; then
+    mac_load=$(awk -v v="$_la" 'BEGIN{printf "%d", v*100}' 2>/dev/null || echo 0)
+  fi
+fi
+
+# 부하 분류
+if [ "$mac_load" -ge 600 ]; then
+  load_state="hot"        # CPU 부하 6.0+ → 강제 오프로드
+elif [ "$mac_load" -ge 300 ]; then
+  load_state="warm"       # 3.0~6.0 → 통상 오프로드
+else
+  load_state="cool"       # < 3.0 → 로컬 fast-path 후보
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# 2. 환경변수 강제 오버라이드
+# ─────────────────────────────────────────────────────────────────
+if [ "$AG_GATE_FORCE_LOCAL" = "1" ]; then
+  _log "force local (env)"
+  exec "$HEXA_BIN" "$@"
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# 3. 로컬 fast-path: cool + 파일 인자 없음 + 스크립트 < 5KB
+# ─────────────────────────────────────────────────────────────────
+if [ "$AG_GATE_FORCE_REMOTE" != "1" ] && [ "$load_state" = "cool" ]; then
+  _has_files=0
+  _all_small=1
+  for a in "$@"; do
+    if [ -f "$a" ]; then
+      _has_files=1
+      _sz=$(stat -f %z "$a" 2>/dev/null || echo 0)
+      [ "$_sz" -gt 5120 ] && _all_small=0
+    fi
+  done
+  if [ "$_has_files" = "1" ] && [ "$_all_small" = "1" ]; then
+    _log "fast-path local (cool + small)"
+    exec "$HEXA_BIN" "$@"
+  fi
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# 4. reachability + budget — hot 상태면 budget 무시
+# ─────────────────────────────────────────────────────────────────
+ag_resolve_host
+
+if [ -z "$GH" ]; then
+  # ubu unreachable — htz/vast 폴백 (best-effort)
+  _log "ubu unreachable, fallback local"
+  exec "$HEXA_BIN" "$@"
+fi
+
+if [ "$load_state" != "hot" ]; then
+  ag_budget_check && {
+    _log "budget cap reached (warm/cool) → local"
+    exec "$HEXA_BIN" "$@"
+  }
+fi
+ag_budget_enter
+
+# ─────────────────────────────────────────────────────────────────
+# 5. rsync skip: nexus/shared mtime 변화 감지
+# ─────────────────────────────────────────────────────────────────
+NEXUS_DIR="$HOME/Dev/nexus/shared"
+need_rsync=1
+if [ -d "$NEXUS_DIR" ]; then
+  # 가장 최근 mtime 1줄 추출 (find 빠름)
+  _now_mtime=$(find "$NEXUS_DIR" -type f -newer "$RSYNC_STAMP" 2>/dev/null | head -1)
+  if [ -z "$_now_mtime" ] && [ -f "$RSYNC_STAMP" ]; then
+    need_rsync=0
+    _log "rsync skip (nexus/shared unchanged)"
+  fi
+fi
+
+if [ "$need_rsync" = "1" ]; then
+  rsync -aq --update "$NEXUS_DIR/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+  _rsync_pid=$!
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# 6. scp dedup: 파일별 mtime 캐시
+# ─────────────────────────────────────────────────────────────────
 RARGS=()
 for a in "$@"; do
-  if [[ -f "$a" ]]; then
-    ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
-    scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
-    RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
+  if [ -f "$a" ]; then
+    _bn=$(basename "$a")
+    _mt=$(stat -f %m "$a" 2>/dev/null || echo 0)
+    _stamp="$SCP_DEDUP_DIR/${_bn}.mtime"
+    _cached_mt=0
+    [ -f "$_stamp" ] && _cached_mt=$(cat "$_stamp" 2>/dev/null)
+    if [ "$_mt" != "$_cached_mt" ]; then
+      ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+      scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null && echo "$_mt" > "$_stamp"
+      _log "scp $_bn (mtime changed)"
+    else
+      _log "scp skip $_bn (cached)"
+    fi
+    RARGS+=("$UBU_DIR/gate_files/$_bn")
   else
     RARGS+=("$a")
   fi
 done
 
 # rsync 완료 대기
-wait
+[ -n "$_rsync_pid" ] && wait $_rsync_pid 2>/dev/null
+# rsync stamp 갱신 (성공 가정 — 실패해도 다음 호출이 다시 시도)
+[ "$need_rsync" = "1" ] && touch "$RSYNC_STAMP"
 
-# Ubuntu hexa 경로
+# ─────────────────────────────────────────────────────────────────
+# 7. 원격 실행 (nc → daemon)
+# ─────────────────────────────────────────────────────────────────
 REMOTE_HEXA="/tmp/hexa-build/hexa-lang/target/release/hexa"
+_log "remote exec @ $GH:$UBU_PORT (load=$load_state mac_load=$mac_load)"
 echo "cd $UBU_DIR && $REMOTE_HEXA ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+_rc=$?
+
+# ─────────────────────────────────────────────────────────────────
+# 8. latency 로그 (분석용)
+# ─────────────────────────────────────────────────────────────────
+_t1=$(date +%s%N 2>/dev/null || gdate +%s%N 2>/dev/null || echo 0)
+if [ "$_t0" != "0" ] && [ "$_t1" != "0" ]; then
+  _ms=$(( (_t1 - _t0) / 1000000 ))
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) load=$load_state mac=$mac_load rsync=$need_rsync rc=$_rc lat_ms=$_ms args=$#" >> "$LATENCY_LOG" 2>/dev/null
+fi
+
+exit $_rc
