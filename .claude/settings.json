@@ -2,62 +2,65 @@
   "hooks": {
     "UserPromptSubmit": [
       {
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh prompt /Users/ghost/Dev/nexus/shared/hooks/nexus-prompt-scan.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa prompt /Users/ghost/Dev/nexus/shared/hooks/nexus-prompt-scan.hexa",
+            "timeout": 3
           },
           {
             "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh prompt /Users/ghost/Dev/anima/.growth/loop-hook.hexa"
-          },
-          {
-            "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh prompt /Users/ghost/Dev/nexus/shared/hooks/go-parallel.hexa"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh session /Users/ghost/Dev/nexus/shared/hooks/nexus-banner.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa prompt /Users/ghost/Dev/nexus/shared/hooks/go-parallel.hexa",
+            "timeout": 3
           }
         ]
       }
     ],
     "PreToolUse": [
       {
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh guard"
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa pretool /Users/ghost/Dev/nexus/shared/hooks/block-forbidden-ext.hexa"
           },
           {
             "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh pretool /Users/ghost/Dev/nexus/shared/hooks/nexus-pre-tool.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa pretool /Users/ghost/Dev/nexus/shared/hooks/absolute-rules-loader.hexa"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa guard"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh post /Users/ghost/Dev/nexus/shared/hooks/nexus-post-edit.hexa"
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash /Users/ghost/Dev/nexus/shared/hooks/hook-entry.sh post /Users/ghost/Dev/nexus/shared/hooks/nexus-post-bash.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa post /Users/ghost/Dev/nexus/shared/hooks/nexus-post-bash.hexa"
+          },
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa post /Users/ghost/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/hexa-lang/target/release/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa post /Users/ghost/Dev/nexus/shared/hooks/nexus-post-edit.hexa"
           }
         ]
       }
