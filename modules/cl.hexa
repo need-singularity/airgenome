@@ -1095,6 +1095,36 @@ fn main() {
         if count == 0 { println("  (없음)") }
     }
     if cmd == "help" { print_help() }
+
+    // ─── nexus 라우팅: cl todo / cl go (shared/blowup/ 자연창발) ───
+    if cmd == "todo" {
+        let mut target = ""
+        if len(argv) > 4 { target = argv[4] }
+        let nexus_todo = HOME + "/Dev/nexus/shared/blowup/todo.hexa"
+        let hexa_bin = HOME + "/Dev/hexa-lang/target/release/hexa"
+        let mut out = ""
+        try {
+            if target == "" {
+                out = exec(hexa_bin + " " + nexus_todo)
+            } else {
+                out = exec(hexa_bin + " " + nexus_todo + " " + target)
+            }
+        } catch e {
+            out = "ERROR: nexus todo — " + to_string(e)
+        }
+        println(out)
+    }
+    if cmd == "go" {
+        let go_loop = HOME + "/Dev/nexus/mk2_hexa/native/go_loop.hexa"
+        let hexa_bin = HOME + "/Dev/hexa-lang/target/release/hexa"
+        let mut out = ""
+        try {
+            out = exec(hexa_bin + " " + go_loop)
+        } catch e {
+            out = "ERROR: nexus go_loop — " + to_string(e)
+        }
+        println(out)
+    }
 }
 
 main()
