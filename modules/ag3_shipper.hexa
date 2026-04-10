@@ -116,13 +116,13 @@ fn ship(rows: auto) -> int {
         return 0
     }
     try {
-        exec("timeout 30 scp " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
+        exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + TMP_BIN + " " + REMOTE + ":" + REMOTE_BIN)
     } catch e {
         println("[warn] ag3_shipper: scp failed — " + to_string(e))
         return 0
     }
     try {
-        let result = exec("timeout 30 ssh -o ConnectTimeout=5 -o BatchMode=yes " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
+        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
         print("[AG3-SHIP] consumer: " + result)
     } catch e {
         print("[AG3-SHIP] ssh exec failed: " + to_string(e))

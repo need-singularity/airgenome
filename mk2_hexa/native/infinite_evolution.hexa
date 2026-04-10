@@ -40,7 +40,7 @@ let ROADMAP_SAT    = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ie_ssh.sh", cmd)
-    let result = exec("timeout 120 ssh -o ConnectTimeout=5 " + REMOTE + " bash /dev/stdin < /tmp/_ie_ssh.sh 2>/dev/null")
+    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_ie_ssh.sh 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }

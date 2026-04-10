@@ -151,13 +151,14 @@ let boot_pid = exec("lsof -iTCP:" + PORT + " -sTCP:LISTEN -t 2>/dev/null || true
 let pid_file = tmp + "/airgenome-api-" + PORT + ".pid"
 exec("echo " + boot_pid + " > '" + pid_file + "'")
 
-// 포트 LISTEN 확인
-exec("timeout 10 sh -c 'while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done' 2>/dev/null")
+// 포트 LISTEN 확인 — macOS lacks `timeout`, use perl alarm (portable)
+exec("perl -e 'alarm 10; exec @ARGV or die' /bin/sh -c 'while ! lsof -iTCP:" + PORT + " -sTCP:LISTEN >/dev/null 2>&1; do sleep 0.01; done' 2>/dev/null")
 println("[api] listener bound :" + PORT)
 
 while true {
     // 다음 request-line 을 블로킹 read (60초 타임아웃 — 무한 블록 방지)
-    let req_line = exec("timeout 60 head -n 1 '" + REQ_FIFO + "' 2>/dev/null").trim()
+    // macOS lacks `timeout`; perl alarm is portable across macOS/Linux.
+    let req_line = exec("perl -e 'alarm 60; exec @ARGV or die' head -n 1 '" + REQ_FIFO + "' 2>/dev/null").trim()
     if req_line == "" { continue }
     let mut method = "GET"
     let mut path = "/"

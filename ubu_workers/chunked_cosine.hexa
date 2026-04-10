@@ -216,7 +216,8 @@ if bench > 0 {
 } else {
     // stdin binary: read via exec, decode float32 little-endian
     // Primary use case is --bench; stdin path uses python struct fallback
-    let raw_hex = exec("timeout 30 xxd -p /dev/stdin 2>/dev/null | tr -d '\\n'").trim()
+    // macOS lacks `timeout`; use perl alarm (present on both macOS and Ubuntu)
+    let raw_hex = exec("perl -e 'alarm 30; exec @ARGV or die' /bin/sh -c 'xxd -p /dev/stdin 2>/dev/null | tr -d \"\\n\"'").trim()
     if len(raw_hex) > 0 {
         // Each float32 = 8 hex chars
         let total_floats = len(raw_hex) / 8

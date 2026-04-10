@@ -25,5 +25,7 @@ let hexa = env("HEXA")
 if len(hexa) == 0 { hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
 
 let full = hexa + " run " + base + "/modules/ring_io.hexa " + cmd_parts
-let out = exec("timeout 30 " + full)
+// macOS lacks `timeout`; use perl alarm (perl is preinstalled on macOS + Ubuntu).
+// Wrap the command via `sh -c` so argv-level quoting stays simple.
+let out = exec("perl -e 'alarm 30; exec @ARGV or die' /bin/sh -c \"" + full.replace("\"", "\\\"") + "\"")
 if len(out) > 0 { print(out) }

@@ -21,6 +21,11 @@ let GROWTH_BUS = NEXUS_HOME + "/shared/growth_bus.jsonl"
 let POLL_SEC = 5
 let IDLE_THRESHOLD_TICKS = 60   // 5초 * 60 = 300s (5분)
 
+// ONCE 모드 state 영속화 경로 — LaunchAgent StartInterval 호환 (골화 2026-04-10)
+// 원인: while-true + exec(ssh)×3-5 + sleep 9~10h 누적 → 81% CPU 폭주 (D1, ag3_menubar_feed 동일 패턴)
+// 해결: inter-iter 상태(last_write_idx / idle_ticks)를 JSON 1줄로 직렬화 → 재시작 시 복원
+let STATE_PATH = env("HOME") + "/.airgenome/ag3_loop_state.json"
+
 // ── CONFIG ──────────────────────────────────────────────────────────────
 fn load_cfg(key: str, fallback: str) -> str {
     if file_exists(CONFIG_PATH) == false { return fallback }
@@ -60,7 +65,8 @@ fn append_growth(ev_type: str, id: str, value: int, grade: str) -> void {
 // ── RING HEADER READ (write_idx @ offset 12, u32 LE) ────────────────────
 // od -An -v -t u4 -N 4 -j 12 <file>   → 단일 u32 값
 fn read_write_idx() -> int {
-    let cmd = "timeout 10 ssh -o ConnectTimeout=3 " + REMOTE + " \"od -An -v -t u4 -N 4 -j 12 " + RING_PATH + " 2>/dev/null\""
+    // macOS에 timeout 없음 — ssh ServerAliveInterval로 대체 (10s 후 세션 단절)
+    let cmd = "ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 " + REMOTE + " \"od -An -v -t u4 -N 4 -j 12 " + RING_PATH + " 2>/dev/null\""
     let out = exec(cmd).trim()
     if len(out) == 0 { return -1 }
     return to_int(out)
@@ -73,7 +79,7 @@ fn read_write_idx() -> int {
 fn count_recent_anomalies() -> int {
     let py = "import struct,sys,os\np='" + RING_PATH + "'\ntry:\n  f=open(p,'rb'); f.seek(0); hdr=f.read(16)\n  wi=struct.unpack('<I',hdr[12:16])[0]\n  ENT=80\n  fsz=os.path.getsize(p)\n  cap=(fsz-16)//ENT\n  n=0\n  for k in range(10):\n    idx=(wi-1-k)%cap\n    f.seek(16+idx*ENT); e=f.read(ENT)\n    if len(e)<ENT: continue\n    flags=struct.unpack('<I',e[76:80])[0]\n    if flags & 1: n+=1\n  print(n)\nexcept Exception as ex:\n  print(0)\n"
     write_file("/tmp/_ag3_loop_scan.py", py)
-    let out = exec("timeout 15 ssh -o ConnectTimeout=3 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
+    let out = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
     if len(out) == 0 { return 0 }
     return to_int(out)
 }
@@ -83,23 +89,53 @@ fn trigger_blowup(domain: str) -> bool {
     // R17: fire-and-forget — nohup+disown ensures blowup detaches from ssh session
     let cmd = "nohup " + UBU_HEXA + " run " + UBU_BLOWUP + " " + domain + " 3 --no-graph >/dev/null 2>&1 & disown"
     write_file("/tmp/_ag3_loop_blowup.sh", cmd + "\n")
-    let r = exec("timeout 15 ssh -o ConnectTimeout=3 " + REMOTE + " bash /dev/stdin < /tmp/_ag3_loop_blowup.sh 2>&1").trim()
+    let r = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_ag3_loop_blowup.sh 2>&1").trim()
     return true
 }
 
 // ── GPU UTILIZATION ─────────────────────────────────────────────────────
 fn gpu_util() -> int {
-    let raw = exec("timeout 10 ssh -o ConnectTimeout=3 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
+    let raw = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
     if len(raw) == 0 { return 100 }
     return to_int(raw)
+}
+
+// ── STATE PERSIST (ONCE 모드 inter-iter 상태 복원) ──────────────────────
+// 단순 정규식/split 파싱 — sampler.hexa read_jsonl_val 패턴 (R14: 외부 의존 X)
+fn parse_int_field(raw: str, key: str, default_val: int) -> int {
+    if raw.contains("\"" + key + "\"") == false { return default_val }
+    let p = raw.split("\"" + key + "\"")[1]
+    let v = p.split(":")[1].split(",")[0].split("}")[0].trim()
+    return to_int(v)
+}
+
+fn load_state() -> str {
+    if file_exists(STATE_PATH) == false { return "" }
+    return read_file(STATE_PATH).trim()
+}
+
+fn save_state(wi: int, idle: int) -> void {
+    let js = "{\"last_write_idx\":" + to_string(wi) + ",\"idle_ticks\":" + to_string(idle) + ",\"ts\":\"" + ts_now() + "\"}"
+    exec("mkdir -p " + env("HOME") + "/.airgenome")
+    write_file(STATE_PATH, js + "\n")
+    return
 }
 
 // ── MAIN LOOP ───────────────────────────────────────────────────────────
 fn main() {
     println("[AG3-LOOP v" + VERSION + "] started. remote=" + REMOTE + " ring=" + RING_PATH)
+    let once_mode = env("AG3LOOP_ONCE") == "1"
     let last_write_idx = -1
     let idle_ticks = 0
     let tick = 0
+
+    // state 복원 — ONCE 모드에서 anomaly detection delta 유지 필수
+    let prev = load_state()
+    if len(prev) > 0 {
+        last_write_idx = parse_int_field(prev, "last_write_idx", -1)
+        idle_ticks = parse_int_field(prev, "idle_ticks", 0)
+        println("[AG3-LOOP] state restored: wi=" + to_string(last_write_idx) + " idle=" + to_string(idle_ticks))
+    }
 
     while true {
         tick = tick + 1
@@ -136,6 +172,12 @@ fn main() {
         if tick % 6 == 0 {
             println("[AG3-LOOP] hb tick=" + to_string(tick) + " wi=" + to_string(last_write_idx) + " util=" + to_string(util) + " idle=" + to_string(idle_ticks))
         }
+
+        // 4) state 영속화 (sleep 직전) — 재실행 시 delta 연속성 보장
+        save_state(last_write_idx, idle_ticks)
+
+        // 5) ONCE 모드 — launchd StartInterval이 주기 담당 (while-true 폭주 방지)
+        if once_mode { exit(0) }
 
         sleep(POLL_SEC)
     }

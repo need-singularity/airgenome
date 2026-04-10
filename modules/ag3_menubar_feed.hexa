@@ -16,6 +16,14 @@
 //   hexa modules/ag3_menubar_feed.hexa [interval_sec]
 //
 // 하드코딩 금지: ssh_alias / remote tmpfs 경로는 gate_config.jsonl 동적 로드.
+//
+// ── 환경변수 & 인자 ──────────────────────────────────────────────────
+// HOME                        : 사용자 홈 디렉토리 (경로 생성 기반)
+// AIRGENOME_AG3FEED_ONCE="1"  : 1회 실행 모드 (LaunchAgent StartInterval 호환)
+//                              미설정 → while-true 무한 루프 (수동 디버그용)
+//                              "1" → 1 사이클 후 exit(0) — 골화 2026-04-10 D1
+// argv[2] (interval_sec)      : 수집 간격 (default: 5초, 최소: 2초)
+// ─────────────────────────────────────────────────────────────────────
 
 let HOME = env("HOME")
 let CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
@@ -50,6 +58,10 @@ if a.len() >= 3 {
     try { interval = to_int(to_float(a[2])) } catch e {}
 }
 if interval < 2 { interval = 2 }
+
+// ONCE 모드 — LaunchAgent StartInterval 호환 (인터프리터 GC 누적 방지, 골화)
+// 원인: while-true + exec/sleep 9~10h 누적 → 81% CPU 폭주 (D1 2026-04-10)
+let ONCE_MODE = env("AIRGENOME_AG3FEED_ONCE") == "1"
 
 exec("mkdir -p " + HOME + "/.airgenome")
 
@@ -167,5 +179,6 @@ while true {
         exec("mv -f '" + tmp_out + "' '" + OUT_PATH + "'")
     } catch e {}
 
+    if ONCE_MODE { exit(0) }
     exec("sleep " + to_string(interval))
 }

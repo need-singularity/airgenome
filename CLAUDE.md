@@ -11,6 +11,5 @@
 | 프로젝트 설정 | `shared/project_config.json` | CLI/육각 투영/HEXA-GATE/Prime Directive |
 | 시스템 코어 | `shared/core.json` | 시스템맵 + 14종 명령어 |
 | 수렴 | `shared/convergence/airgenome.json` | CDO 수렴 상태 |
-| 할일 | `shared/todo/airgenome.json` | 우선순위별 TODO |
 | 게이트 설정 | `shared/gate_config.jsonl` | HEXA-GATE 동적 설정 |
 | API | `shared/CLAUDE.md` | NEXUS-6 상세 사용법 |

@@ -40,7 +40,8 @@ fn cfg_str(key: str, default_val: str) -> str {
 let HEX_TBL = ["00","01","02","03","04","05","06","07","08","09","0a","0b","0c","0d","0e","0f","10","11","12","13","14","15","16","17","18","19","1a","1b","1c","1d","1e","1f","20","21","22","23","24","25","26","27","28","29","2a","2b","2c","2d","2e","2f","30","31","32","33","34","35","36","37","38","39","3a","3b","3c","3d","3e","3f","40","41","42","43","44","45","46","47","48","49","4a","4b","4c","4d","4e","4f","50","51","52","53","54","55","56","57","58","59","5a","5b","5c","5d","5e","5f","60","61","62","63","64","65","66","67","68","69","6a","6b","6c","6d","6e","6f","70","71","72","73","74","75","76","77","78","79","7a","7b","7c","7d","7e","7f","80","81","82","83","84","85","86","87","88","89","8a","8b","8c","8d","8e","8f","90","91","92","93","94","95","96","97","98","99","9a","9b","9c","9d","9e","9f","a0","a1","a2","a3","a4","a5","a6","a7","a8","a9","aa","ab","ac","ad","ae","af","b0","b1","b2","b3","b4","b5","b6","b7","b8","b9","ba","bb","bc","bd","be","bf","c0","c1","c2","c3","c4","c5","c6","c7","c8","c9","ca","cb","cc","cd","ce","cf","d0","d1","d2","d3","d4","d5","d6","d7","d8","d9","da","db","dc","dd","de","df","e0","e1","e2","e3","e4","e5","e6","e7","e8","e9","ea","eb","ec","ed","ee","ef","f0","f1","f2","f3","f4","f5","f6","f7","f8","f9","fa","fb","fc","fd","fe","ff"]
 
 fn hex2(v: int) -> str {
-    let b = v & 255
+    // R23/G7: hexa BitAnd token regression — use modulo 256 instead of `v & 255`
+    let b = v % 256
     return HEX_TBL[b]
 }
 
@@ -156,7 +157,8 @@ fn encode_genome(axes_csv: str) -> str {
         let mut y = x + 1
         while y < 6 {
             let r = (x + y) % 8
-            let xor_v = (a[x] ^ a[y]) & 255
+            // R23/G7: hexa BitAnd token regression — replace `& 255` with `% 256`
+            let xor_v = (a[x] ^ a[y]) % 256
             // rotate-left r bits without <<: use pow2 table
             let mut pow_r = 1
             let mut k = 0
@@ -164,12 +166,12 @@ fn encode_genome(axes_csv: str) -> str {
             let mut pow_8r = 1
             let mut k2 = 0
             while k2 < (8 - r) { pow_8r = pow_8r * 2; k2 = k2 + 1 }
-            let hi = (xor_v * pow_r) & 255
+            let hi = (xor_v * pow_r) % 256
             let lo = xor_v / pow_8r
-            let rot = (hi + lo) & 255
+            let rot = (hi + lo) % 256
             // 4 bytes per pair: [a[x], a[y], xor, rot]
-            let b0 = a[x] & 255
-            let b1 = a[y] & 255
+            let b0 = a[x] % 256
+            let b1 = a[y] % 256
             let b2 = xor_v
             let b3 = rot
             hex = hex + hex2(b0) + hex2(b1) + hex2(b2) + hex2(b3)
@@ -203,29 +205,31 @@ fn pack_append(pack_path: str, ts_str: str, pid_str: str, comm: str, axes_csv: s
     let mut ai = 1
     while ai < 6 { axes_arg = axes_arg + " " + axes_parts[ai]; ai = ai + 1 }
 
-    let py = "python3 -c '" +
-        "import struct,os,sys\n" +
-        "p=sys.argv[1]; ts=int(sys.argv[2]); pid=int(sys.argv[3])\n" +
-        "comm=sys.argv[4].encode(\"utf-8\")[:64]\n" +
-        "axes=[int(x) for x in sys.argv[5:11]]\n" +
-        "sig=bytes.fromhex(sys.argv[11])\n" +
-        "assert len(sig)==60\n" +
-        "need_hdr=not os.path.exists(p) or os.path.getsize(p)<7\n" +
-        "f=open(p,\"r+b\" if not need_hdr else \"wb\")\n" +
-        "if need_hdr:\n" +
-        "  f.write(b\"AG\" + struct.pack(\"<BI\",1,0))\n" +
-        "  cnt=0\n" +
-        "else:\n" +
-        "  f.seek(2); cnt=struct.unpack(\"<I\",f.read(5)[1:])[0]\n" +
-        "  f.seek(0,2)\n" +
-        "rec=struct.pack(\"<qI\",ts,pid)\n" +
-        "rec+=struct.pack(\"B\",len(comm))+comm\n" +
-        "rec+=bytes(a&255 for a in axes)+sig\n" +
-        "f.write(rec)\n" +
-        "cnt+=1; f.seek(3); f.write(struct.pack(\"<I\",cnt))\n" +
-        "f.close(); print(\"ok\")' " +
-        pack_path + " " + ts_str + " " + pid_str + " '" + safe_comm + "' " +
-        axes_arg + " " + genome_hex
+    // R23/G7: hexa release parser regression on multi-line string concat (`+` at EOL).
+    // Workaround: accumulate into mut var via single-line statements.
+    let mut py = "python3 -c '"
+    py = py + "import struct,os,sys\n"
+    py = py + "p=sys.argv[1]; ts=int(sys.argv[2]); pid=int(sys.argv[3])\n"
+    py = py + "comm=sys.argv[4].encode(\"utf-8\")[:64]\n"
+    py = py + "axes=[int(x) for x in sys.argv[5:11]]\n"
+    py = py + "sig=bytes.fromhex(sys.argv[11])\n"
+    py = py + "assert len(sig)==60\n"
+    py = py + "need_hdr=not os.path.exists(p) or os.path.getsize(p)<7\n"
+    py = py + "f=open(p,\"r+b\" if not need_hdr else \"wb\")\n"
+    py = py + "if need_hdr:\n"
+    py = py + "  f.write(b\"AG\" + struct.pack(\"<BI\",1,0))\n"
+    py = py + "  cnt=0\n"
+    py = py + "else:\n"
+    py = py + "  f.seek(2); cnt=struct.unpack(\"<I\",f.read(5)[1:])[0]\n"
+    py = py + "  f.seek(0,2)\n"
+    py = py + "rec=struct.pack(\"<qI\",ts,pid)\n"
+    py = py + "rec+=struct.pack(\"B\",len(comm))+comm\n"
+    py = py + "rec+=bytes(a&255 for a in axes)+sig\n"
+    py = py + "f.write(rec)\n"
+    py = py + "cnt+=1; f.seek(3); f.write(struct.pack(\"<I\",cnt))\n"
+    py = py + "f.close(); print(\"ok\")' "
+    py = py + pack_path + " " + ts_str + " " + pid_str + " '" + safe_comm + "' "
+    py = py + axes_arg + " " + genome_hex
     let out = exec(py).trim()
     return out == "ok"
 }
@@ -243,8 +247,8 @@ fn count_existing(out_dir: str) -> int {
 // LCG PRNG — ts-seeded; avoids fixed round-robin → kills τ=N self-revisit MI artifact.
 // Returns next state; caller derives index via state % range.
 fn lcg_next(state: int) -> int {
-    // Numerical Recipes constants, 32-bit wrap emulated via & 2147483647
-    let n = (state * 1103515245 + 12345) & 2147483647
+    // R23/G7: hexa BitAnd token regression — `% 2147483648` is arithmetically equivalent to `& 2147483647` for non-negative ints
+    let n = (state * 1103515245 + 12345) % 2147483648
     return n
 }
 
@@ -260,7 +264,7 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
         // Fisher-Yates in-place, ts-seeded LCG — kills τ=N self-revisit MI artifact.
         let seed_s = exec("date +%s").trim()
         let mut st = 1
-        try { st = to_int(to_float(seed_s)) & 2147483647 } catch e {}
+        try { st = to_int(to_float(seed_s)) % 2147483648 } catch e {}
         if st <= 0 { st = 1 }
         let n = len(lines)
         let mut si = n - 1

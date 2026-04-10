@@ -78,8 +78,8 @@ fn load_input(input_path: str) -> auto {
     if len(input_path) > 0 {
         content = read_file(input_path)
     } else {
-        // Read from stdin via exec
-        content = exec("timeout 30 cat /dev/stdin")
+        // Read from stdin via exec. macOS lacks `timeout`; perl alarm is portable.
+        content = exec("perl -e 'alarm 30; exec @ARGV or die' cat /dev/stdin")
     }
     let lines = content.split("\n")
     let rows = []

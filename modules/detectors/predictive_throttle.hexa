@@ -446,7 +446,7 @@ fn run_act() -> str {
         let target = targets[ti]
         if target == "top_ram_consumers" {
             // taskpolicy -b top RAM consumers (exclude system)
-            let cmd = "timeout 15 sh -c 'ps -eo pid=,rss=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
+            let cmd = "perl -e 'alarm 15; exec @ARGV' sh -c 'ps -eo pid=,rss=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TRSS TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
             let result = try { exec(cmd).trim() } catch e { "" }
             if len(result) > 0 {
                 let pids = result.split("\n")
@@ -459,7 +459,7 @@ fn run_act() -> str {
             }
         }
         if target == "top_cpu_consumers" {
-            let cmd = "timeout 15 sh -c 'ps -eo pid=,%cpu=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TCPU TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
+            let cmd = "perl -e 'alarm 15; exec @ARGV' sh -c 'ps -eo pid=,%cpu=,comm= | sort -rnk2 | head -" + to_string(top_n) + " | while read TPID TCPU TNAME; do [ \"$TPID\" -lt 200 ] 2>/dev/null && continue; case \"$TNAME\" in " + exclude_pattern + ") continue ;; esac; taskpolicy -b -p $TPID 2>/dev/null && echo $TPID; done'"
             let result = try { exec(cmd).trim() } catch e { "" }
             if len(result) > 0 {
                 let pids = result.split("\n")
@@ -504,7 +504,7 @@ fn main() {
             write_file(tmp + ".b", read_file(state_out).trim())
             write_file(tmp + ".p", result)
             let py = "python3 -c \"import json; b=json.load(open('" + tmp + ".b')); p=json.load(open('" + tmp + ".p')); b['predictions']=p.get('predictions',[]); b['cascade_confidence']=p.get('confidence',0); open('" + state_out + "','w').write(json.dumps(b,indent=2))\""
-            try { exec("timeout 10 " + py) } catch e {}
+            try { exec("perl -e 'alarm 10; exec @ARGV' " + py) } catch e {}
             try { exec("rm -f " + tmp + ".b " + tmp + ".p") } catch e {}
         }
         return

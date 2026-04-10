@@ -17,6 +17,14 @@
 //   hexa modules/auto_dispatch.hexa check <state_path> — 커스텀 상태 경로
 //
 // 출력: JSON (stdout) + forge/dispatch.log (JSONL append)
+//
+// ── 환경변수 & 인자 ──────────────────────────────────────────────────
+// HOME                : 사용자 홈 디렉토리 (설정/로그 기본 경로)
+// TMPDIR              : 임시 디렉토리 (default /tmp)
+//                     state_path 기본값: ${TMPDIR}/airgenome-state.json
+// argv[2] (command)   : "check" (1회) | "watch" (수동 디버그 전용)
+// argv[3] (state_path): 커스텀 상태 JSON 경로 (선택)
+// ─────────────────────────────────────────────────────────────────────
 
 let VERSION = "0.2.0"
 let HOME = env("HOME")
@@ -276,8 +284,11 @@ fn main() {
         let result = check_once(state_path)
         println(result)
     } else if cmd == "watch" {
+        // 골화 2026-04-10: watch 모드는 영구 실행 → 9~10h 후 81% CPU 폭주.
+        // 권장 사용: launchd StartInterval + `check` 명령 (이미 1회 모드).
+        // 본 watch 분기는 수동 디버깅 전용으로 유지.
         let interval = load_cfg_int("offload_scan_interval", 10)
-        println("[OFFLOAD_O1 v" + VERSION + "] watch mode. interval=" + to_string(interval) + "s state=" + state_path)
+        println("[OFFLOAD_O1 v" + VERSION + "] watch mode (manual debug only). interval=" + to_string(interval) + "s state=" + state_path)
         while true {
             let result = check_once(state_path)
             // 추천이 있을 때만 stdout 출력 (노이즈 감소)

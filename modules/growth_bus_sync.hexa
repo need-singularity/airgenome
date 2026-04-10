@@ -2,7 +2,7 @@
 //
 // ═══════════════════════════════════════════════════════════════════════
 //  단방향 merge: ubu(/home/aiden/Dev/nexus/shared/growth_bus.jsonl)
-//             → Mac(/Users/ghost/Dev/nexus/shared/growth_bus.jsonl)
+//             → Mac(~/Dev/airgenome/nexus/shared/growth_bus.jsonl)
 //
 //  - append only, 중복 라인 제거 (python set diff)
 //  - Mac 원본 무손상, 기존 라인 수정 금지
@@ -16,7 +16,7 @@
 
 let VERSION = "0.1.0"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
-let MAC_BUS     = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+let MAC_BUS     = env("HOME") + "/Dev/airgenome/nexus/shared/growth_bus.jsonl"
 let TMP_PULL    = "/tmp/_ag3_growth_pull.jsonl"
 let TMP_DIFF    = "/tmp/_ag3_growth_diff.jsonl"
 let INTERVAL    = 30
@@ -51,7 +51,7 @@ let UBU_BUS = load_cfg("ubu_growth_bus", env("HOME") + "/Dev/nexus/shared/growth
 
 fn sync_once() -> int {
     // 1) ubu → /tmp pull (scp)
-    let scp_cmd = "timeout 30 scp -q " + REMOTE + ":" + UBU_BUS + " " + TMP_PULL + " 2>&1; echo __rc=$?"
+    let scp_cmd = "scp -q -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + ":" + UBU_BUS + " " + TMP_PULL + " 2>&1; echo __rc=$?"
     let res = try { to_string(exec(scp_cmd)) } catch e {
         println("[warn] growth_bus_sync: scp exec failed — " + to_string(e))
         ""
@@ -70,7 +70,7 @@ fn sync_once() -> int {
     let py = "import sys\nmac_path=sys.argv[1]\nubu_path=sys.argv[2]\nout_path=sys.argv[3]\nseen=set()\ntry:\n  f=open(mac_path)\n  for l in f: seen.add(l.rstrip('\\n'))\n  f.close()\nexcept FileNotFoundError: pass\nn=0\nout=open(out_path,'w')\nf=open(ubu_path)\nfor l in f:\n  s=l.rstrip('\\n')\n  if not s: continue\n  if s in seen: continue\n  seen.add(s)\n  out.write(s+'\\n')\n  n+=1\nout.close(); f.close()\nprint(n)\n"
     write_file("/tmp/_ag3_growth_diff.py", py)
     let py3_bin = try { exec("which python3 2>/dev/null || echo python3").trim() } catch e { "python3" }
-    let diff_cmd = "timeout 30 " + py3_bin + " /tmp/_ag3_growth_diff.py '" + MAC_BUS + "' '" + TMP_PULL + "' '" + TMP_DIFF + "' 2>&1"
+    let diff_cmd = "perl -e 'alarm 30; exec @ARGV' " + py3_bin + " /tmp/_ag3_growth_diff.py '" + MAC_BUS + "' '" + TMP_PULL + "' '" + TMP_DIFF + "' 2>&1"
     let diff_out = try { to_string(exec(diff_cmd)).trim() } catch e {
         println("[warn] growth_bus_sync: diff exec failed — " + to_string(e))
         ""

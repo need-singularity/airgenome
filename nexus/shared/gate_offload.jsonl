@@ -13,6 +13,7 @@
 {"type":"ram","match":"*","threshold_mb":512,"desc":"RAM 512MB+ 프로세스 → Ubuntu 오프로드 후보"}
 {"type":"exclude","match":"cl.hexa","reason":"cl 런처 Mac 전용 (Prime Directive 보호)"}
 {"type":"exclude","match":"sampler.hexa","reason":"로컬 모니터링 전용"}
+{"type":"exclude","match":"ag3_loop.hexa","reason":"로컬 ONCE 모드 — state file ~/.airgenome 저장 + Ubuntu SSH 폴링"}
 {"type":"exclude","match":"menubar.js","reason":"Mac UI 전용"}
 {"type":"exclude","match":"gate_daemon.hexa","reason":"Ubuntu 측 데몬"}
 {"type":"exclude","match":"iTerm2","reason":"Mac 터미널 앱"}
@@ -26,6 +27,12 @@
 {"type":"exclude","match":"infinite_evolution","reason":"오케스트레이터 — Mac SSH로 Ubuntu 워커 호출"}
 {"type":"exclude","match":"ouroboros","reason":"진화 오케스트레이터 — Mac SSH 필요"}
 {"type":"exclude","match":"hook.hexa","reason":"Claude Code hook — Mac 전용 즉시 실행"}
+{"type":"exclude","match":"ag3_menubar_feed.hexa","reason":"LaunchAgent 데몬 — Mac state file ~/.airgenome/ag3_status.json 쓰기"}
+{"type":"exclude","match":"auto_dispatch.hexa","reason":"LaunchAgent 데몬 — Mac↔Ubu/Hetzner SSH 오케스트레이터 (Mac에서만 실행)"}
+{"type":"exclude","match":"genome_harvest.hexa","reason":"LaunchAgent 데몬 — sysctl hw.memsize (macOS 전용) + 로컬 harvest 로그"}
+{"type":"exclude","match":"growth_bus_sync.hexa","reason":"LaunchAgent 데몬 — scp ubu→mac 단방향 merge, Mac 측 ~/Dev/nexus/shared 쓰기"}
+{"type":"exclude","match":"usage.hexa","reason":"LaunchAgent 데몬 — Mac ~/.airgenome/usage-cache.json 캐시 갱신"}
+{"type":"exclude","match":"menubar.hexa","reason":"LaunchAgent 데몬 — osascript + Mac UI (menubar.js 런처는 별도 exclude)"}
 {"type":"config","key":"detect_cmd","value":"ps axo pid,pcpu,rss,comm | awk '$2>=15 || $3>=524288'","desc":"Mac CPU 15%+ 또는 RAM 512MB+ 탐지"}
 {"type":"config","key":"max_concurrent_ubu","value":"20","desc":"Ubuntu 동시 오프로드 상한 (12코어 활용)"}
 {"type":"config","key":"ubu_gpu","value":"RTX 5070 12GB","desc":"Ubuntu GPU 스펙"}
