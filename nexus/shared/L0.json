@@ -8,7 +8,24 @@
     { "path": "nexus/shared/bin/hexa",       "reason": "hexa 바이너리 심링크 — 단일 resolve 포인트" },
     { "path": "nexus/shared/L0.json",        "reason": "L0 보호 체계 자기 참조 (자기 보호)" },
     { "path": "nexus/shared/gate_config.jsonl", "reason": "HEXA-GATE 동적 설정 — 전 모듈 참조" },
-    { "path": ".claude/hooks/block-forbidden-ext.sh", "reason": "HEXA-FIRST 규칙 강제 (신규 .py/.rs/.sh 차단)" }
+    { "path": ".claude/hooks/block-forbidden-ext.sh", "reason": "HEXA-FIRST 규칙 강제 (신규 .py/.rs/.sh 차단)" },
+    { "path": "CLAUDE.md",                  "reason": "프로젝트 규칙 진입점" }
+  ],
+
+  "cross_project_claude_md": [
+    "airgenome",
+    "anima",
+    "claude-code",
+    "contact",
+    "contribution",
+    "hexa-lang",
+    "iTerm2",
+    "n6-architecture",
+    "n6-architecture-porting",
+    "nexus",
+    "openclaw",
+    "papers",
+    "void"
   ],
 
   "promote_procedure": [
