@@ -22,7 +22,7 @@ while i < len(argv) {
 }
 
 let hexa = env("HEXA")
-if len(hexa) == 0 { hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
+if len(hexa) == 0 { hexa = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa" }
 
 let full = hexa + " run " + base + "/modules/ring_io.hexa " + cmd_parts
 // macOS lacks `timeout`; use perl alarm (perl is preinstalled on macOS + Ubuntu).

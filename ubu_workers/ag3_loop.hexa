@@ -11,7 +11,7 @@ if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
 let mut NEXUS_HOME = env("NEXUS_HOME")
 if NEXUS_HOME == "" { NEXUS_HOME = env("HOME") + "/Dev/nexus" }
 let mut HEXA_BIN = env("HEXA")
-if HEXA_BIN == "" { HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa" }
+if HEXA_BIN == "" { HEXA_BIN = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa" }
 
 let mut CONFIG_PATH = env("AG3_CONFIG")
 if len(CONFIG_PATH) == 0 {

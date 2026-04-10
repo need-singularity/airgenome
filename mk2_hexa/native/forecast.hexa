@@ -324,7 +324,7 @@ fn preempt() -> str {
 
     println("  forecast breach detected — applying preemptive QoS...")
     // Delegate to qos apply
-    let result = exec(env("HOME") + "/Dev/hexa-lang/target/release/hexa run mk2_hexa/native/qos.hexa apply 2>&1").trim()
+    let result = exec(env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa run mk2_hexa/native/qos.hexa apply 2>&1").trim()
     println(result)
     return "ok"
 }

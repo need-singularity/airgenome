@@ -9,7 +9,35 @@
 // Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_anomaly.hexa [<sig_file>] [<by_pid_dir>]
 
 let AXIS_NAMES = ["cpu", "ram", "io", "net", "gpu", "wake"]
-let Z_THRESHOLD = 2.0
+let HOME = env("HOME")
+let CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Config loader — gate_config.jsonl (R2: no hardcoding)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn load_cfg_float(key: str, fallback: float) -> float {
+    let v = load_cfg(key, to_string(fallback))
+    try { return to_float(v) } catch e { return fallback }
+}
+
+let Z_THRESHOLD = load_cfg_float("genome_z_threshold", 2.0)
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MATH — abs

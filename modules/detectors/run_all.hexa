@@ -6,7 +6,9 @@
 // 결과는 각자 growth_bus 에 append, 여기서는 종합 상태만 출력.
 // ─────────────────────────────────────────────────────────────────────────
 
-let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+// hexa resolver: shared/bin 우선
+let mut HEXA_BIN = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa"
+if file_exists(HEXA_BIN) == false { HEXA_BIN = env("HOME") + "/.hx/bin/hexa" }
 let DET_DIR  = "modules/detectors"
 let CFG_FILE = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
 

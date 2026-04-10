@@ -22,7 +22,9 @@ let GHOST_PENALTY = -0.0026
 let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
 
 // Vitals ring (L5c/L6e) — external HEXA module, config in nexus/shared/vitals_ring.jsonl
-let HEXA_BIN = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+// hexa resolver: shared/bin 우선
+let mut HEXA_BIN = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa"
+if file_exists(HEXA_BIN) == false { HEXA_BIN = env("HOME") + "/.hx/bin/hexa" }
 let VITALS_RING_MOD = env("HOME") + "/Dev/airgenome/modules/vitals_ring.hexa"
 
 fn load_gate_names() -> auto {

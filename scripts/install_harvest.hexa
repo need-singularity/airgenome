@@ -11,7 +11,7 @@ consciousness InstallHarvest {
     let dst_dir    = home + "/Library/LaunchAgents"
     let dst_plist  = dst_dir + "/" + label + ".plist"
     let log_dir    = home + "/Dev/airgenome/logs"
-    let hexa_bin   = home + "/Dev/hexa-lang/target/release/hexa"
+    let hexa_bin   = home + "/Dev/airgenome/nexus/shared/bin/hexa"
     let harvest_hx = home + "/Dev/airgenome/modules/genome_harvest.hexa"
 
     println("==> airgenome genome_harvest installer")

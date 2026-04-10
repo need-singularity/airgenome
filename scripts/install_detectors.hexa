@@ -11,7 +11,7 @@ consciousness InstallDetectors {
     let dst_dir    = home + "/Library/LaunchAgents"
     let dst_plist  = dst_dir + "/" + label + ".plist"
     let log_dir    = home + "/Library/Logs/airgenome"
-    let hexa_bin   = home + "/Dev/hexa-lang/target/release/hexa"
+    let hexa_bin   = home + "/Dev/airgenome/nexus/shared/bin/hexa"
     let run_all_hx = home + "/Dev/airgenome/modules/detectors/run_all.hexa"
 
     println("==> airgenome detectors installer")

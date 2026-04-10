@@ -25,10 +25,7 @@ AIRGENOME=~/Dev/airgenome
 HEXA=""
 for _p in \
     "$AIRGENOME/nexus/shared/bin/hexa" \
-    "$HOME/Dev/nexus/shared/bin/hexa" \
-    "$HOME/Dev/hexa-lang/hexa" \
-    "$HOME/.hx/bin/hexa" \
-    "$HOME/Dev/hexa-lang/target/release/hexa" ; do
+    "$HOME/.hx/bin/hexa" ; do
     if [ -x "$_p" ]; then HEXA="$_p"; break; fi
 done
 if [ -z "$HEXA" ]; then

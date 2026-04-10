@@ -5,7 +5,12 @@
 // No Cargo build — Rust src/ is deprecated. Pure hexa execution.
 
 let HOME = env("HOME")
-let HEXA = HOME + "/Dev/hexa-lang/target/release/hexa"
+// hexa resolver: shared/bin 우선 (외부 의존 제거)
+let mut HEXA = ""
+let _hexa_candidates = [HOME + "/Dev/airgenome/nexus/shared/bin/hexa", HOME + "/.hx/bin/hexa"]
+let mut _hi = 0
+while _hi < _hexa_candidates.len() { if file_exists(_hexa_candidates[_hi]) { HEXA = _hexa_candidates[_hi]; _hi = 9999 }; _hi = _hi + 1 }
+if HEXA == "" { println("⬡ FATAL: hexa 바이너리 없음"); return }
 let mut DIR = HOME + "/Dev/airgenome"
 try { DIR = exec("cd \"$(dirname \"" + args()[1] + "\")\" 2>/dev/null && pwd || echo " + HOME + "/Dev/airgenome").trim() } catch e { println("⬡ warn: DIR resolve failed, using default") }
 let CONF_DIR = HOME + "/.airgenome"

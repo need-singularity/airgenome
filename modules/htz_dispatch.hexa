@@ -34,7 +34,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let HTZ          = load_cfg("htz_ssh_alias",    "hetzner")
-let HTZ_HEXA     = load_cfg("htz_hexa_bin",     "~/Dev/hexa-lang/target/release/hexa")
+let HTZ_HEXA     = load_cfg("htz_hexa_bin",     "~/Dev/airgenome/nexus/shared/bin/hexa")
 let HTZ_NEXUS    = load_cfg("htz_nexus_dir",    "~/Dev/nexus")
 let HTZ_HEXA_DIR = load_cfg("htz_hexa_lang_dir","~/Dev/hexa-lang")
 

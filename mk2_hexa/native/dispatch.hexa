@@ -35,7 +35,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 // Ubuntu hexa binary path (loaded from config, fallback to env-relative path)
-let UBU_HEXA = load_cfg("ubu_hexa_bin", env("HOME") + "/Dev/hexa-lang/target/release/hexa")
+let UBU_HEXA = load_cfg("ubu_hexa_bin", env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa")
 let REMOTE = load_cfg("ssh_alias", "ubu")
 let REMOTE_DIR = load_cfg("remote_dir", env("HOME") + "/airgenome")
 
@@ -215,7 +215,7 @@ fn dispatch_run(script_args: str) -> str {
     // Mac-only check
     if is_mac_only(script) {
         println("  [dispatch] " + script + " → MAC (mac-only rule)")
-        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let mac_hexa = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa"
         let result = exec(mac_hexa + " run " + script_args + " 2>&1")
         return result
     }
@@ -223,7 +223,7 @@ fn dispatch_run(script_args: str) -> str {
     // Ubuntu-first: try Ubuntu, fallback to Mac only if unreachable
     if ubu_reachable() == false {
         println("  [dispatch] Ubuntu unreachable → MAC fallback")
-        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let mac_hexa = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa"
         let result = exec(mac_hexa + " run " + script_args + " 2>&1")
         return result
     }
@@ -391,7 +391,7 @@ fn genome_fanout() -> str {
 
     if ubu_reachable() == false {
         println("  [genome] ubu unreachable — running fan-out locally, sequential")
-        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let mac_hexa = env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa"
         let r1 = exec(mac_hexa + " run " + diff_script + " " + baseline_path + " " + sig_path + " 2>&1")
         let r2 = exec(mac_hexa + " run " + anom_script + " " + sig_path + " " + by_pid_dir + " 2>&1")
         let r3 = exec(mac_hexa + " run " + source_script + " " + sig_path + " 2>&1")
