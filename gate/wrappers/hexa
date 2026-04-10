@@ -59,10 +59,15 @@ if [ "$AG_GATE_FORCE_REMOTE" = "1" ]; then
   FILTER_TARGET="ubu"
 fi
 
-# filter 결정이 local이면 즉시 로컬 실행
+# filter 결정이 local이면 — 단, ubu 연결 시에는 무시하고 원격 강제
 if [ "$FILTER_TARGET" = "local" ]; then
-  ag_gate_msg "local" "hexa $* [filter:$FILTER_REASON]"
-  exec "$HEXA_BIN" "$@"
+  if ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null; then
+    _log "filter=local BUT ubu reachable → override to remote"
+    FILTER_TARGET="ubu"
+  else
+    ag_gate_msg "local" "hexa $* [filter:$FILTER_REASON]"
+    exec "$HEXA_BIN" "$@"
+  fi
 fi
 
 # ─────────────────────────────────────────────────────────────────
@@ -106,16 +111,19 @@ if [ -z "$GH" ]; then
     ssh -p 19200 root@ssh9.vast.ai "/home/hexa-lang/hexa ${RARGS[*]}" 2>&1
     exit $?
   fi
+  # 골화: ag3_mode=strict 면 로컬 폴백 금지 — 실행 자체를 거부
+  _ag3_mode=$(grep '"ag3_mode"' "$CFG" 2>/dev/null | sed 's/.*"value":"//;s/".*//')
+  if [ "$_ag3_mode" = "strict" ]; then
+    echo "[GATE] STRICT: 모든 원격 호스트 unreachable — 로컬 실행 거부. 원격 연결 후 재시도." >&2
+    exit 1
+  fi
   ag_gate_msg "unreachable" "hexa $*"
   exec "$HEXA_BIN" "$@"
 fi
 
-if [ "$load_state" != "hot" ]; then
-  ag_budget_check && {
-    ag_gate_msg "local" "hexa $*"
-    exec "$HEXA_BIN" "$@"
-  }
-fi
+# 골화 2026-04-10: ubu 연결 시 로컬 실행 금지.
+# budget 여유 있어도 원격 실행 강제. Mac 자원 보호 최우선.
+# (기존: load_state!=hot + budget 여유 → 로컬 실행 허용 — 삭제)
 ag_budget_enter
 
 # ─────────────────────────────────────────────────────────────────
