@@ -31,3 +31,10 @@
 {"key":"htz_hexa_bin","value":"~/Dev/hexa-lang/target/release/hexa","desc":"Hetzner hexa 바이너리 경로"}
 {"key":"htz_nexus_dir","value":"~/Dev/nexus","desc":"Hetzner nexus 작업 디렉토리"}
 {"key":"htz_hexa_lang_dir","value":"~/Dev/hexa-lang","desc":"Hetzner hexa-lang 소스 디렉토리"}
+{"key":"per_process_by_pid_dir","value":"forge/by_pid","desc":"per-PID 샘플러 출력 디렉토리 (genome 체인 입력)"}
+{"key":"per_process_sig_path","value":"forge/per_process_sig.jsonl","desc":"per-PID 6축 시그니처 출력"}
+{"key":"per_process_baseline_path","value":"forge/per_process_sig.baseline.jsonl","desc":"이전 사이클 시그니처 (diff baseline)"}
+{"key":"per_process_diff_out","value":"forge/per_process_diff.jsonl","desc":"per-PID baseline↔current diff 출력"}
+{"key":"per_process_anomaly_out","value":"forge/per_process_anomaly.jsonl","desc":"per-PID z-score 이상치 출력"}
+{"key":"per_source_genome_out","value":"forge/per_source_genome.jsonl","desc":"source별 게놈 누적 (append 모드)"}
+{"key":"genome_z_threshold","value":"2.0","desc":"per_process_anomaly z-score 임계치 (|z|>T → flagged)"}

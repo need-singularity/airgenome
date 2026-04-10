@@ -334,6 +334,127 @@ fn dispatch_gpu(script_args: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  GENOME CHAIN — per-process pipeline (sig → diff || anomaly || source)
+//  R1: hexa only. R2: paths/thresholds from gate_config.jsonl.
+//  Spec: mk2_hexa/native/per_process_{sig,diff,anomaly}.hexa + per_source_genome.hexa
+// ═══════════════════════════════════════════════════════════════════════
+
+fn genome_roll_baseline() -> void {
+    // Copy current sig → baseline for next diff (if current exists).
+    let sig_path      = load_cfg("per_process_sig_path",      "forge/per_process_sig.jsonl")
+    let baseline_path = load_cfg("per_process_baseline_path", "forge/per_process_sig.baseline.jsonl")
+    let home = env("HOME")
+    let abs_sig = home + "/Dev/airgenome/" + sig_path
+    let abs_base = home + "/Dev/airgenome/" + baseline_path
+
+    if file_exists(abs_sig) == false {
+        println("  [genome] roll_baseline: no prior sig — skip (" + abs_sig + ")")
+        return
+    }
+    exec("cp " + abs_sig + " " + abs_base + " 2>&1")
+    println("  [genome] roll_baseline: " + sig_path + " → " + baseline_path)
+
+    // Mirror baseline to Ubuntu so per_process_diff finds it there.
+    if ubu_reachable() {
+        exec("scp -o ConnectTimeout=3 -q " + abs_base + " " + REMOTE + ":" + REMOTE_DIR + "/" + baseline_path + " 2>/dev/null")
+    }
+
+    let ts = exec("date +%s").trim()
+    append_file(LOG_FILE, ts + "\tgenome\troll_baseline\t" + sig_path + "\n")
+}
+
+fn genome_sig() -> str {
+    // Phase 1: per_process_sig — must complete before parallel fan-out.
+    let by_pid_dir = load_cfg("per_process_by_pid_dir", "forge/by_pid")
+    let script = "mk2_hexa/native/per_process_sig.hexa"
+    println("  [genome] phase 1/2: per_process_sig")
+    return dispatch_run(script + " " + by_pid_dir)
+}
+
+fn genome_fanout() -> str {
+    // Phase 2: diff + anomaly + source_genome fan out in parallel on Ubuntu.
+    // Run as one ssh command with backgrounded sub-shells + wait.
+    let sig_path      = load_cfg("per_process_sig_path",      "forge/per_process_sig.jsonl")
+    let baseline_path = load_cfg("per_process_baseline_path", "forge/per_process_sig.baseline.jsonl")
+    let by_pid_dir    = load_cfg("per_process_by_pid_dir",    "forge/by_pid")
+
+    let diff_script    = "mk2_hexa/native/per_process_diff.hexa"
+    let anom_script    = "mk2_hexa/native/per_process_anomaly.hexa"
+    let source_script  = "mk2_hexa/native/per_source_genome.hexa"
+
+    // Ensure scripts present on Ubuntu.
+    sync_to_ubu(diff_script)
+    sync_to_ubu(anom_script)
+    sync_to_ubu(source_script)
+
+    println("  [genome] phase 2/2: diff || anomaly || source_genome (parallel)")
+
+    if ubu_reachable() == false {
+        println("  [genome] ubu unreachable — running fan-out locally, sequential")
+        let mac_hexa = env("HOME") + "/Dev/hexa-lang/target/release/hexa"
+        let r1 = exec(mac_hexa + " run " + diff_script + " " + baseline_path + " " + sig_path + " 2>&1")
+        let r2 = exec(mac_hexa + " run " + anom_script + " " + sig_path + " " + by_pid_dir + " 2>&1")
+        let r3 = exec(mac_hexa + " run " + source_script + " " + sig_path + " 2>&1")
+        return r1 + "\n" + r2 + "\n" + r3
+    }
+
+    // AG3 enforce check for each op (logs violations; strict aborts).
+    ag3_enforce_by_script(diff_script, "run")
+    ag3_enforce_by_script(anom_script, "run")
+    ag3_enforce_by_script(source_script, "run")
+
+    // Extract basenames for remote execution.
+    let diff_name = "per_process_diff.hexa"
+    let anom_name = "per_process_anomaly.hexa"
+    let src_name  = "per_source_genome.hexa"
+
+    // Build parallel remote command: subshells + wait.
+    let remote_cmd = "cd " + REMOTE_DIR + " && mkdir -p forge && "
+        + "(" + UBU_HEXA + " run " + diff_name + " " + baseline_path + " " + sig_path + " > /tmp/genome_diff.log 2>&1) & P1=$! ; "
+        + "(" + UBU_HEXA + " run " + anom_name + " " + sig_path + " " + by_pid_dir + " > /tmp/genome_anom.log 2>&1) & P2=$! ; "
+        + "(" + UBU_HEXA + " run " + src_name  + " " + sig_path + " > /tmp/genome_src.log 2>&1) & P3=$! ; "
+        + "wait $P1 $P2 $P3 ; "
+        + "echo '---DIFF---' ; cat /tmp/genome_diff.log ; "
+        + "echo '---ANOM---' ; cat /tmp/genome_anom.log ; "
+        + "echo '---SRC---'  ; cat /tmp/genome_src.log"
+
+    let ts_start = exec("date +%s").trim()
+    let result = ssh_cmd(remote_cmd)
+    let ts_end = exec("date +%s").trim()
+    let elapsed = to_int(ts_end) - to_int(ts_start)
+
+    println(result)
+    println("  [genome] fan-out done on Ubuntu in " + to_string(elapsed) + "s")
+
+    // Pull outputs back to Mac so local consumers see them.
+    let out_diff = load_cfg("per_process_diff_out", "forge/per_process_diff.jsonl")
+    let out_anom = load_cfg("per_process_anomaly_out", "forge/per_process_anomaly.jsonl")
+    let out_src  = load_cfg("per_source_genome_out",  "forge/per_source_genome.jsonl")
+    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_diff + " " + env("HOME") + "/Dev/airgenome/" + out_diff + " 2>/dev/null")
+    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_anom + " " + env("HOME") + "/Dev/airgenome/" + out_anom + " 2>/dev/null")
+    // per_source_genome appends — merge by scp + cat.
+    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_src + " /tmp/_genome_src_remote.jsonl 2>/dev/null")
+    exec("cat /tmp/_genome_src_remote.jsonl >> " + env("HOME") + "/Dev/airgenome/" + out_src + " 2>/dev/null")
+
+    append_file(LOG_FILE, ts_start + "\tgenome\tfanout\tubu\t" + to_string(elapsed) + "s\n")
+    return result
+}
+
+fn dispatch_genome() -> str {
+    println("")
+    println("  dispatch genome — per-process pipeline")
+    println("  ══════════════════════════════════════════════════════════════")
+    // 1. roll baseline from previous run (if any)
+    genome_roll_baseline()
+    // 2. sig (blocking)
+    genome_sig()
+    // 3. parallel fan-out
+    let r = genome_fanout()
+    println("  [genome] chain complete")
+    return r
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  DRAIN — Mac heavy 프로세스 전부 tame (renice+taskpolicy)
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -508,6 +629,7 @@ fn dispatch_help() -> str {
     println("Commands:")
     println("  run <script.hexa> [args]  — run hexa on Ubuntu (Mac fallback if down)")
     println("  gpu <script.py> [args]    — run on Ubuntu GPU (RTX 5070, CUDA)")
+    println("  genome                    — per-process pipeline: sig → diff||anomaly||source")
     println("  drain                     — tame all Mac heavy procs (renice+bg)")
     println("  status                    — Mac vs Ubuntu resource dashboard")
     println("  help                      — this message")
@@ -536,6 +658,7 @@ fn main() {
     if cmd == "help"   { dispatch_help() }
     if cmd == "status" { status() }
     if cmd == "drain"  { drain() }
+    if cmd == "genome" { dispatch_genome() }
     if cmd == "run" {
         let run_args = ""
         if len(argv) > 4 {
@@ -568,6 +691,7 @@ fn main() {
     if cmd == "drain" { known = true }
     if cmd == "run" { known = true }
     if cmd == "gpu" { known = true }
+    if cmd == "genome" { known = true }
     if known == false {
         println("unknown command: " + cmd)
         dispatch_help()

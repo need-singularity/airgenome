@@ -3,3 +3,7 @@
 {"op":"forge_cycle","script":"forge.hexa","module":"modules/forge.hexa","fn":"forge","enforce":"strict","est_vram_mb":1024,"est_ram_mb":4096,"notes":"교차수분/돌연변이 — GPU"}
 {"op":"llm_query","script":"llm_query.py","module":"ubu_workers/py/llama","fn":"main","enforce":"strict","est_vram_mb":5120,"est_ram_mb":2048,"notes":"llama.cpp 7B Q4"}
 {"op":"implant_extract","script":"implant.hexa","module":"modules/implant.hexa","fn":"extract","enforce":"degrade","est_vram_mb":0,"est_ram_mb":512,"notes":"패턴 추출 — 가벼움, degrade 허용"}
+{"op":"per_process_sig","script":"per_process_sig.hexa","module":"mk2_hexa/native/per_process_sig.hexa","fn":"main","enforce":"degrade","est_vram_mb":0,"est_ram_mb":256,"notes":"per-PID 6축 시그니처 — forge/by_pid → forge/per_process_sig.jsonl"}
+{"op":"per_process_diff","script":"per_process_diff.hexa","module":"mk2_hexa/native/per_process_diff.hexa","fn":"main","enforce":"degrade","est_vram_mb":0,"est_ram_mb":256,"notes":"baseline↔current diff — forge/per_process_diff.jsonl"}
+{"op":"per_process_anomaly","script":"per_process_anomaly.hexa","module":"mk2_hexa/native/per_process_anomaly.hexa","fn":"main","enforce":"degrade","est_vram_mb":0,"est_ram_mb":256,"notes":"z-score 이상치 탐지 — forge/per_process_anomaly.jsonl"}
+{"op":"per_source_genome","script":"per_source_genome.hexa","module":"mk2_hexa/native/per_source_genome.hexa","fn":"main","enforce":"degrade","est_vram_mb":0,"est_ram_mb":256,"notes":"source별 게놈 누적 — forge/per_source_genome.jsonl (append)"}
