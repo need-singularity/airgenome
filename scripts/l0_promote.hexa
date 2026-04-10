@@ -1,0 +1,60 @@
+// l0_promote.hexa — L0 CORE 승격 도우미
+// Usage: hexa scripts/l0_promote.hexa <file_path> <reason>
+//
+// 1. L0.json files 배열에 엔트리 추가
+// 2. 대상 파일 상단에 L0 주석 태깅
+// 3. l0_guard 실행으로 검증
+
+let HOME = env("HOME")
+let AG = HOME + "/Dev/airgenome"
+let L0_PATH = AG + "/nexus/shared/L0.json"
+let GUARD = AG + "/scripts/l0_guard.hexa"
+
+let argv = args()
+if argv.len() < 4 {
+    println("Usage: hexa scripts/l0_promote.hexa <path> <reason>")
+    println("  path:   cl, run.hexa 등 (AG root 상대)")
+    println("  reason: 보호 사유")
+    return
+}
+
+let target_path = argv[2]
+let reason = argv[3]
+let full_path = AG + "/" + target_path
+
+// 1. 파일 존재 확인
+if file_exists(full_path) == false {
+    println("FAIL: 파일 없음 — " + full_path)
+    exit(1)
+}
+
+// 2. 이미 등록 여부 확인
+let l0_raw = read_file(L0_PATH)
+if l0_raw.contains("\"" + target_path + "\"") {
+    println("SKIP: 이미 L0 등록됨 — " + target_path)
+    return
+}
+
+// 3. L0.json에 엔트리 추가 (마지막 ] 앞에 삽입)
+let new_entry = "    { \"path\": \"" + target_path + "\", \"reason\": \"" + reason + "\" }"
+let updated = l0_raw.replace("\n  ],", ",\n" + new_entry + "\n  ],")
+write_file(L0_PATH, updated)
+println("OK: L0.json에 추가 — " + target_path)
+
+// 4. 대상 파일에 L0 주석 태깅 (이미 있으면 스킵)
+let content = read_file(full_path)
+if content.contains("L0 CORE") == false {
+    let tag = "// L0 CORE — 수정 금지 (사유: " + reason + ")\n"
+    write_file(full_path, tag + content)
+    println("OK: L0 태그 추가 — " + target_path)
+} else {
+    println("SKIP: L0 태그 이미 존재 — " + target_path)
+}
+
+// 5. guard 실행
+println("")
+println("=== L0 Guard 검증 ===")
+let mut hexa_bin = AG + "/nexus/shared/bin/hexa"
+if file_exists(hexa_bin) == false { hexa_bin = HOME + "/.hx/bin/hexa" }
+let result = exec(hexa_bin + " " + GUARD + " 2>&1")
+println(result)

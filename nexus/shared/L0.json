@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "description": "L0 CORE 보호 체계 — 수정 금지 파일 레지스트리 + 승격 절차",
+
+  "files": [
+    { "path": "cl",                          "reason": "multi-account launcher — 전체 워크플로우 진입점" },
+    { "path": "run.hexa",                    "reason": "airgenome 메인 런처 (sampler+menubar)" },
+    { "path": "nexus/shared/bin/hexa",       "reason": "hexa 바이너리 심링크 — 단일 resolve 포인트" },
+    { "path": "nexus/shared/L0.json",        "reason": "L0 보호 체계 자기 참조 (자기 보호)" },
+    { "path": "nexus/shared/gate_config.jsonl", "reason": "HEXA-GATE 동적 설정 — 전 모듈 참조" },
+    { "path": ".claude/hooks/block-forbidden-ext.sh", "reason": "HEXA-FIRST 규칙 강제 (신규 .py/.rs/.sh 차단)" }
+  ],
+
+  "promote_procedure": [
+    "1. L0.json files 배열에 path + reason 추가",
+    "2. 해당 파일 상단에 '// L0 CORE — 수정 금지' 주석 추가",
+    "3. scripts/l0_guard.hexa 실행으로 무결성 검증",
+    "4. CLAUDE.md 참조 테이블에 반영",
+    "5. 커밋 메시지에 'L0:' 접두사 사용"
+  ],
+
+  "automation": {
+    "guard_script": "scripts/l0_guard.hexa",
+    "promote_script": "scripts/l0_promote.hexa"
+  }
+}

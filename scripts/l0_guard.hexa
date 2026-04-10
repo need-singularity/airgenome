@@ -1,0 +1,43 @@
+// l0_guard.hexa — L0 CORE 무결성 검증
+// Usage: hexa scripts/l0_guard.hexa
+// L0.json에 등록된 파일들의 존재 여부 + L0 주석 태깅 확인
+
+let HOME = env("HOME")
+let AG = HOME + "/Dev/airgenome"
+let L0_PATH = AG + "/nexus/shared/L0.json"
+
+if file_exists(L0_PATH) == false {
+    println("FAIL: L0.json 없음 — " + L0_PATH)
+    exit(1)
+}
+
+let raw = read_file(L0_PATH)
+
+// files 배열에서 path 추출
+let entries = raw.split("\"path\":")
+let mut checked = 0
+let mut failed = 0
+let i = 1  // skip first split chunk (before first "path":)
+while i < entries.len() {
+    let after = entries[i].split("\"")
+    if after.len() >= 2 {
+        let path = after[1]
+        let full = AG + "/" + path
+        if file_exists(full) {
+            println("  OK  " + path)
+        } else {
+            println("  FAIL  " + path + " — 파일 없음")
+            failed = failed + 1
+        }
+        checked = checked + 1
+    }
+    i = i + 1
+}
+
+println("")
+if failed > 0 {
+    println("L0 guard: " + to_string(failed) + "/" + to_string(checked) + " FAILED")
+    exit(1)
+} else {
+    println("L0 guard: " + to_string(checked) + " files OK")
+}
