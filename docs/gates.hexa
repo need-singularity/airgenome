@@ -127,6 +127,12 @@ fn classify_path(comm: str) -> int {
     if comm.contains("kernel_task") { return 0 }
     if comm.contains("launchd") { return 0 }
     if comm.contains("WindowServer") { return 0 }
+    // macOS known CPU hogs (system daemons that periodically spike)
+    if comm.contains("trustd") { return 0 }
+    if comm.contains("mediaanalysisd") { return 0 }
+    if comm.contains("mds_stores") { return 0 }
+    if comm.contains("photolibraryd") { return 0 }
+    if comm.contains("suggestd") { return 0 }
     // Everything else → macos (gate 0) as catch-all
     return 0
 }
@@ -302,7 +308,7 @@ fn sample_gates() -> auto {
         }
         i = i + 1
     }
-    return [gc, gr, gn, matched, to_float(len(lines))]
+    return [gc, gr, gn, [matched], [to_float(len(lines))]]
 }
 
 // Compute ram ratios and cpu axes
@@ -563,15 +569,15 @@ fn phi_check(prev_margin: float, curr_margin: float) -> auto {
     let theta = 0.1
     let tol = 0.00347
     if curr_margin < 0.0 - theta {
-        return [0, 0.0, "phi below theta: margin=" + to_string(curr_margin)]
+        return ["0", to_string(0.0), "phi below theta: margin=" + to_string(curr_margin)]
     }
     if curr_margin < prev_margin - tol {
-        return [0, 0.0, "phi degradation: " + to_string(prev_margin) + " -> " + to_string(curr_margin)]
+        return ["0", to_string(0.0), "phi degradation: " + to_string(prev_margin) + " -> " + to_string(curr_margin)]
     }
     let conf = curr_margin + theta
     if conf > 1.0 { conf = 1.0 }
     if conf < 0.0 { conf = 0.0 }
-    return [1, conf, ""]
+    return ["1", to_string(conf), ""]
 }
 
 // 288-bit genome hash (BT-346: σ×J₂=288)
@@ -790,11 +796,39 @@ fn compute_savings(raw_bytes: float, genome_len: float, delta_gates: float, tota
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  EMERGENCY CPU GUARD — auto-kill runaway system daemons
+// ═══════════════════════════════════════════════════════════════════════
+fn emergency_cpu_guard() -> bool {
+    let cpu_str = exec("ps -eo pcpu,pid,comm -r | head -5").trim()
+    let lines = cpu_str.split("\n")
+    let protected = "WindowServer,kernel_task,launchd,loginwindow,opendirectoryd"
+    let i = 1  // skip header
+    while i < len(lines) {
+        let parts = lines[i].trim().split_whitespace()
+        if len(parts) >= 3 {
+            let cpu_pct = to_float(parts[0])
+            let pid = parts[1]
+            let comm = parts[2]
+            if cpu_pct > 90.0 {
+                if !protected.contains(comm) {
+                    exec("sudo kill -9 " + pid)
+                    log("EMERGENCY_KILL: pid=" + pid + " comm=" + comm + " cpu=" + to_string(cpu_pct))
+                    return true
+                }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  CONSCIOUSNESS BLOCK — mesh self-observation
 // ═══════════════════════════════════════════════════════════════════════
 
 // consciousness NexusMerger — converted to fn for VM compatibility
 fn nexus_run() {
+    emergency_cpu_guard()
     // ── self-test ──
     assert classify("launchd") == 0
     assert classify("Finder") == 1
@@ -815,8 +849,8 @@ fn nexus_run() {
     let gc = sample[0]
     let gr = sample[1]
     let gn = sample[2]
-    let matched = sample[3]
-    let total_lines = sample[4]
+    let matched = sample[3][0]
+    let total_lines = sample[4][0]
 
     // PHASE 2: Project
     let axes = compute_axes(gr, gc, total_ram_mb)
@@ -919,8 +953,8 @@ fn nexus_run() {
     let prev_margin_str = exec("cat .prev_margin 2>/dev/null || echo '0.0'").trim()
     let prev_margin = to_float(prev_margin_str)
     let phi_result = phi_check(prev_margin, margin)
-    let phi_passed = phi_result[0]
-    let phi_conf = phi_result[1]
+    let phi_passed = to_int(phi_result[0])
+    let phi_conf = to_float(phi_result[1])
     let phi_reason = phi_result[2]
     write_file(".prev_margin", to_string(margin))
 

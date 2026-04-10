@@ -1,3 +1,8 @@
 {"ts":1775488209,"type":"breakthrough","source":"nexus","passed":true,"confidence":0,"detail":"margin=1.523052443882713"}
 {"ts":1775488209,"type":"blocked","source":"airgenome","passed":false,"confidence":0,"detail":"gate=3 phi degradation: 1.6603334092331372 -> 1.523052443882713"}
 {"ts":1775488209,"type":"pipeline_ran","source":"airgenome","passed":false,"confidence":0}
+{"ts":1775831143,"type":"breakthrough","source":"nexus","passed":true,"confidence":0.0,"detail":"margin=0.16516653135805326"}
+{"ts":1775831143,"type":"blocked","source":"airgenome","passed":false,"confidence":0.0,"detail":"gate=3 phi degradation: 1.523052443882713 -> 0.16516653135805326"}
+{"ts":1775831143,"type":"pipeline_ran","source":"airgenome","passed":false,"confidence":0.0}
+{"ts":1775831173,"type":"breakthrough","source":"nexus","passed":true,"confidence":1.0,"detail":"margin=0.2111990153282567"}
+{"ts":1775831173,"type":"pipeline_ran","source":"airgenome","passed":true,"confidence":0.31119901532825667}
