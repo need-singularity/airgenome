@@ -10,9 +10,19 @@ ag_budget_enter
 ag_resolve_host
 
 # 로컬 fallback: gate없음, GATE_LOCAL=1, -c 인라인, 인자없음(REPL)
-[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] || [ "$1" = "-c" ] || [ $# -eq 0 ] && exec /opt/homebrew/bin/python3 "$@"
+if [ "$GATE_LOCAL" = "1" ]; then
+  ag_gate_msg "local" "python3 $*"
+  exec /opt/homebrew/bin/python3 "$@"
+elif [ -z "$GH" ]; then
+  ag_gate_msg "unreachable" "python3 $*"
+  exec /opt/homebrew/bin/python3 "$@"
+elif [ "$1" = "-c" ] || [ $# -eq 0 ]; then
+  ag_gate_msg "local" "python3 $*"
+  exec /opt/homebrew/bin/python3 "$@"
+fi
 
-# pre-sync: nexus/shared 변경분만 동기화
+# remote dispatch
+ag_gate_msg "remote" "python3 $*" "$GH:$UBU_PORT" "$UBU_DIR"
 rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
 
 RARGS=()

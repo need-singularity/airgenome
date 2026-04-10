@@ -77,6 +77,27 @@ ag_budget_prune() {
   mv "$_tmp" "$_AG_BUDGET_FILE" 2>/dev/null
 }
 
+# ── AI-native gate banner ──
+# Emit structured prefix so AI agents understand dispatch context.
+# Usage: ag_gate_msg "remote" "cargo test" "192.168.50.119:9900" "/tmp/airgenome"
+#        ag_gate_msg "local"  "cargo test"
+#        ag_gate_msg "unreachable" "cargo test"
+ag_gate_msg() {
+  _mode="$1"; _cmd="$2"; _host="$3"; _rdir="$4"
+  case "$_mode" in
+    remote)
+      echo "[GATE] dispatch=remote host=$_host remote_dir=$_rdir cmd=\"$_cmd\"" >&2
+      echo "[GATE] ⚠ paths in output below are REMOTE — not local filesystem." >&2
+      ;;
+    local)
+      echo "[GATE] dispatch=local cmd=\"$_cmd\"" >&2
+      ;;
+    unreachable)
+      echo "[GATE] dispatch=local reason=remote_unreachable cmd=\"$_cmd\"" >&2
+      ;;
+  esac
+}
+
 ag_budget_check() {
   _cap="${AG_BUDGET_CAP:-20}"
   # Prune stale PIDs every ~10th call (random chance)

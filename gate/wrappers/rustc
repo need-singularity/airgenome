@@ -8,10 +8,16 @@ ag_load_config "$CFG"
 ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
 ag_resolve_host
-[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] && exec "$HOME/.cargo/bin/rustc" "$@"
+if [ "$GATE_LOCAL" = "1" ]; then
+  ag_gate_msg "local" "rustc $*"
+  exec "$HOME/.cargo/bin/rustc" "$@"
+elif [ -z "$GH" ]; then
+  ag_gate_msg "unreachable" "rustc $*"
+  exec "$HOME/.cargo/bin/rustc" "$@"
+fi
 
-# --version 등 플래그만 있으면 그냥 원격 실행
-# pre-sync: nexus/shared 변경분만 동기화
+# remote dispatch
+ag_gate_msg "remote" "rustc $*" "$GH:$UBU_PORT" "$UBU_DIR"
 rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
 
 HAS_FILE=false

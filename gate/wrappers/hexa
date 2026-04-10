@@ -58,7 +58,7 @@ fi
 # 2. 환경변수 강제 오버라이드
 # ─────────────────────────────────────────────────────────────────
 if [ "$AG_GATE_FORCE_LOCAL" = "1" ]; then
-  _log "force local (env)"
+  ag_gate_msg "local" "hexa $*"
   exec "$HEXA_BIN" "$@"
 fi
 
@@ -76,7 +76,7 @@ if [ "$AG_GATE_FORCE_REMOTE" != "1" ] && [ "$load_state" = "cool" ]; then
     fi
   done
   if [ "$_has_files" = "1" ] && [ "$_all_small" = "1" ]; then
-    _log "fast-path local (cool + small)"
+    ag_gate_msg "local" "hexa $*"
     exec "$HEXA_BIN" "$@"
   fi
 fi
@@ -87,14 +87,13 @@ fi
 ag_resolve_host
 
 if [ -z "$GH" ]; then
-  # ubu unreachable — htz/vast 폴백 (best-effort)
-  _log "ubu unreachable, fallback local"
+  ag_gate_msg "unreachable" "hexa $*"
   exec "$HEXA_BIN" "$@"
 fi
 
 if [ "$load_state" != "hot" ]; then
   ag_budget_check && {
-    _log "budget cap reached (warm/cool) → local"
+    ag_gate_msg "local" "hexa $*"
     exec "$HEXA_BIN" "$@"
   }
 fi
@@ -152,7 +151,7 @@ done
 # 7. 원격 실행 (nc → daemon)
 # ─────────────────────────────────────────────────────────────────
 REMOTE_HEXA="/tmp/hexa-build/hexa-lang/target/release/hexa"
-_log "remote exec @ $GH:$UBU_PORT (load=$load_state mac_load=$mac_load)"
+ag_gate_msg "remote" "hexa ${RARGS[*]}" "$GH:$UBU_PORT" "$UBU_DIR"
 echo "cd $UBU_DIR && $REMOTE_HEXA ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
 _rc=$?
 

@@ -8,8 +8,15 @@ ag_load_config "$CFG"
 ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
 ag_resolve_host
-[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] && exec "$HOME/.cargo/bin/cargo" "$@"
+if [ "$GATE_LOCAL" = "1" ]; then
+  ag_gate_msg "local" "cargo $*"
+  exec "$HOME/.cargo/bin/cargo" "$@"
+elif [ -z "$GH" ]; then
+  ag_gate_msg "unreachable" "cargo $*"
+  exec "$HOME/.cargo/bin/cargo" "$@"
+fi
 
-# pre-sync: nexus/shared 변경분만 동기화
+# remote dispatch
+ag_gate_msg "remote" "cargo $*" "$GH:$UBU_PORT" "$UBU_DIR"
 rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null
 echo "cd $UBU_DIR && source ~/.cargo/env && cargo $*" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
