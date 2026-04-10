@@ -1,3 +1,4 @@
+<!-- L0 CORE — 수정 금지 -->
 # CLAUDE.md — AirGenome (OS 게놈 스캐너)
 
 > 모든 규칙/설정은 nexus/shared/ JSON이 단일 진실 (R14). 이 파일은 참조 링크만 유지.
