@@ -1,0 +1,284 @@
+// per_process_anomaly.hexa — per-PID 6-axis anomaly detector
+//
+// Phase 2 step 3 of airgenome-next task#1.
+// Loads forge/per_process_sig.jsonl (baseline: axes_mean[6], axes_std[6])
+// → reads each forge/by_pid/<PID>.jsonl latest record as current_axes[6]
+// → computes z-scores, flags axes with |z| > 2.0
+// → writes forge/per_process_anomaly.jsonl (sorted by anomaly_score desc).
+//
+// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_anomaly.hexa [<sig_file>] [<by_pid_dir>]
+
+let AXIS_NAMES = ["cpu", "ram", "io", "net", "gpu", "wake"]
+let Z_THRESHOLD = 2.0
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATH — abs
+// ═══════════════════════════════════════════════════════════════════════
+
+fn fabs(x: float) -> float {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSONL PARSE — extract axes CSV from one record line
+// ═══════════════════════════════════════════════════════════════════════
+
+fn extract_axes(line: str) -> str {
+    let parts = line.split("\"axes\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn extract_int_field(line: str, key: str) -> int {
+    let parts = line.split("\"" + key + "\":")
+    if len(parts) < 2 { return -1 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return -1 }
+    try { return to_int(to_float(tail[0].trim())) } catch e { return -1 }
+}
+
+fn extract_str_field(line: str, key: str) -> str {
+    let parts = line.split("\"" + key + "\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+// Extract an array of 6 floats from a JSON line field like "axes_mean":[..]
+fn extract_float_array6(line: str, key: str) -> auto {
+    let out = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let parts = line.split("\"" + key + "\":[")
+    if len(parts) < 2 { return out }
+    let tail = parts[1].split("]")
+    if len(tail) < 1 { return out }
+    let csv = tail[0]
+    let vals = csv.split(",")
+    let mut k = 0
+    while k < 6 {
+        if k < len(vals) {
+            try { out[k] = to_float(vals[k].trim()) } catch e {}
+        }
+        k = k + 1
+    }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CURRENT STATE — last non-empty record in forge/by_pid/<PID>.jsonl
+// ═══════════════════════════════════════════════════════════════════════
+
+fn last_axes(path: str) -> str {
+    if file_exists(path) == false { return "" }
+    let body = read_file(path)
+    let lines = body.split("\n")
+    let mut idx = len(lines) - 1
+    while idx >= 0 {
+        let line = lines[idx].trim()
+        if len(line) > 0 {
+            let axes = extract_axes(line)
+            if len(axes) > 0 { return axes }
+        }
+        idx = idx - 1
+    }
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Z-SCORE RECORD BUILDER
+// ═══════════════════════════════════════════════════════════════════════
+
+// Build a JSON record for one PID given baseline + current.
+// Returns [json_str, score_str, sev_code_str] — all strings, parse at call site.
+// severity_code: 0=ok, 1=warn, 2=alert.
+fn build_record(pid: int, comm: str, mean: auto, std: auto, current_csv: str) -> auto {
+    let vals = current_csv.split(",")
+    let mut cur = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut k = 0
+    while k < 6 {
+        if k < len(vals) {
+            try { cur[k] = to_float(vals[k].trim()) } catch e {}
+        }
+        k = k + 1
+    }
+
+    let mut z = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut abs_sum = 0.0
+    let mut flagged = ""
+    let mut flagged_n = 0
+    let mut j = 0
+    while j < 6 {
+        let mut s = std[j]
+        if s < 1.0 { s = 1.0 }
+        let zj = (cur[j] - mean[j]) / s
+        z[j] = zj
+        let az = fabs(zj)
+        abs_sum = abs_sum + az
+        if az > Z_THRESHOLD {
+            if flagged_n > 0 { flagged = flagged + "," }
+            flagged = flagged + "\"" + AXIS_NAMES[j] + "\""
+            flagged_n = flagged_n + 1
+        }
+        j = j + 1
+    }
+
+    let mut score = abs_sum / 6.0
+    if score < 0.0 { score = 0.0 }
+    if score > 10.0 { score = 10.0 }
+
+    let mut sev = "ok"
+    let mut sev_code = 0
+    if score >= 1.0 { sev = "warn"; sev_code = 1 }
+    if score > 2.0  { sev = "alert"; sev_code = 2 }
+
+    let mut z_parts = ""
+    let mut c_parts = ""
+    let mut p = 0
+    while p < 6 {
+        if p > 0 { z_parts = z_parts + ","; c_parts = c_parts + "," }
+        z_parts = z_parts + to_string(z[p])
+        c_parts = c_parts + to_string(cur[p])
+        p = p + 1
+    }
+
+    let safe_comm = comm.replace("\"", "").replace("\\", "")
+    let mut json = "{\"pid\":" + to_string(pid)
+    json = json + ",\"comm\":\"" + safe_comm + "\""
+    json = json + ",\"anomaly_score\":" + to_string(score)
+    json = json + ",\"severity\":\"" + sev + "\""
+    json = json + ",\"flagged_axes\":[" + flagged + "]"
+    json = json + ",\"z_scores\":[" + z_parts + "]"
+    json = json + ",\"current_axes\":[" + c_parts + "]}"
+    return [json, to_string(score), to_string(sev_code)]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI entry
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PerProcessAnomaly {
+    let t0 = exec("date +%s").trim()
+
+    // argv parse (skip hexa-bin, take positional slots after .hexa script)
+    let argv = args()
+    let mut sig_file = "forge/per_process_sig.jsonl"
+    let mut by_pid_dir = "forge/by_pid"
+    let mut saw_script = false
+    let mut pos = 0
+    let mut ai = 0
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        else {
+            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
+                if pos == 0 { sig_file = v }
+                if pos == 1 { by_pid_dir = v }
+                pos = pos + 1
+            }
+        }
+        ai = ai + 1
+    }
+
+    let out_file = "forge/per_process_anomaly.jsonl"
+    println("  per_process_anomaly — sig=" + sig_file + " dir=" + by_pid_dir)
+    println("  out=" + out_file)
+
+    if file_exists(sig_file) == false {
+        println("  baseline sig file missing: " + sig_file)
+        exit(1)
+    }
+
+    let body = read_file(sig_file)
+    let sig_lines = body.split("\n")
+    let n_sig = len(sig_lines)
+    println("  baseline lines: " + to_string(n_sig))
+
+    // Build per-PID records, accumulate into parallel arrays for sort.
+    let mut scores = []
+    let mut records = []
+    let mut ok_count = 0
+    let mut warn_count = 0
+    let mut alert_count = 0
+    let mut missing_current = 0
+
+    let mut si = 0
+    while si < n_sig {
+        let sline = sig_lines[si].trim()
+        if len(sline) > 0 {
+            let pid = extract_int_field(sline, "pid")
+            if pid >= 0 {
+                let comm = extract_str_field(sline, "comm")
+                let mean = extract_float_array6(sline, "axes_mean")
+                let std  = extract_float_array6(sline, "axes_std")
+
+                let path = by_pid_dir + "/" + to_string(pid) + ".jsonl"
+                let current = last_axes(path)
+                if len(current) == 0 {
+                    missing_current = missing_current + 1
+                } else {
+                    let rec = build_record(pid, comm, mean, std, current)
+                    let json = rec[0]
+                    let mut score = 0.0
+                    try { score = to_float(rec[1]) } catch e {}
+                    let mut sev_code = 0
+                    try { sev_code = to_int(to_float(rec[2])) } catch e2 {}
+                    scores = scores + [score]
+                    records = records + [json]
+                    if sev_code == 0 { ok_count = ok_count + 1 }
+                    if sev_code == 1 { warn_count = warn_count + 1 }
+                    if sev_code == 2 { alert_count = alert_count + 1 }
+                }
+            }
+        }
+        si = si + 1
+    }
+
+    let n_rec = len(records)
+    println("  records: " + to_string(n_rec) + "  missing_current: " + to_string(missing_current))
+
+    // Selection sort descending by score (n ≤ ~500, fine).
+    let mut idxs = []
+    let mut ii = 0
+    while ii < n_rec { idxs = idxs + [ii]; ii = ii + 1 }
+
+    let mut a = 0
+    while a < n_rec {
+        let mut b = a + 1
+        let mut best = a
+        while b < n_rec {
+            if scores[idxs[b]] > scores[idxs[best]] { best = b }
+            b = b + 1
+        }
+        if best != a {
+            let tmp = idxs[a]
+            idxs[a] = idxs[best]
+            idxs[best] = tmp
+        }
+        a = a + 1
+    }
+
+    // Reset + write output file.
+    write_file(out_file, "")
+    let mut first_line = ""
+    let mut last_line = ""
+    let mut wi = 0
+    while wi < n_rec {
+        let json = records[idxs[wi]]
+        exec("printf '%s\\n' " + "'" + json.replace("'", "") + "'" + " >> " + out_file)
+        if wi == 0 { first_line = json }
+        last_line = json
+        wi = wi + 1
+    }
+
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    println("  severity: ok=" + to_string(ok_count) + " warn=" + to_string(warn_count) + " alert=" + to_string(alert_count))
+    println("  elapsed:  " + to_string(dt) + "s")
+    println("  first: " + first_line)
+    println("  last:  " + last_line)
+}

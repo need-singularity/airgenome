@@ -1,10 +1,19 @@
 *.swp
 .DS_Store
-genomes.log
+*.log
 .genome_cache
 forge/genomes/
 forge/compressed/
 forge/state.json
+forge/.vitals_ema.json
+forge/by_pid/
+forge/per_process_*.jsonl
+forge/per_process_*.baseline.jsonl
+forge/per_source_genome.jsonl
+.growth/
+.playwright-mcp/
+nexus/shared/airgenome_convergence_*.jsonl
+nexus/shared/growth_bus.jsonl
 target/
 Cargo.lock
 

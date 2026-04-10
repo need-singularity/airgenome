@@ -1,0 +1,324 @@
+// per_process_diff.hexa — compare two per-PID 6-axis signature snapshots
+//
+// Phase 2 step 2 of airgenome-next task#1.
+// Reads two forge/per_process_sig*.jsonl files (baseline, current) →
+// computes per-PID delta_mean[6], euclidean distance, top-moving axis →
+// writes forge/per_process_diff.jsonl sorted by euclidean desc.
+//
+// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_diff.hexa [<baseline>] [<current>]
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATH — Newton sqrt + abs
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_newton(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+fn fabs(x: float) -> float {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSONL PARSE — pid / comm / axes_mean[6] / stability
+// ═══════════════════════════════════════════════════════════════════════
+
+fn extract_pid(line: str) -> int {
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return -1 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return -1 }
+    try { return to_int(to_float(tail[0].trim())) } catch e { return -1 }
+}
+
+fn extract_comm(line: str) -> str {
+    let parts = line.split("\"comm\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn extract_stability(line: str) -> float {
+    let parts = line.split("\"stability\":")
+    if len(parts) < 2 { return 0.0 }
+    let tail = parts[1].split("}")
+    if len(tail) < 1 { return 0.0 }
+    try { return to_float(tail[0].trim()) } catch e { return 0.0 }
+}
+
+// Return "a,b,c,d,e,f" csv of axes_mean values, or "" on failure.
+fn extract_axes_mean_csv(line: str) -> str {
+    let parts = line.split("\"axes_mean\":[")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("]")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+// Parse file → return array of parsed records as CSV "pid|comm|stability|m0,m1,m2,m3,m4,m5"
+fn load_sig_file(path: str) -> [str] {
+    let mut out: [str] = []
+    if file_exists(path) == false { return out }
+    let body = read_file(path)
+    let lines = body.split("\n")
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let pid = extract_pid(line)
+            if pid >= 0 {
+                let comm = extract_comm(line).replace("|", "_")
+                let stab = extract_stability(line)
+                let axes_csv = extract_axes_mean_csv(line)
+                if len(axes_csv) > 0 {
+                    let rec = to_string(pid) + "|" + comm + "|" + to_string(stab) + "|" + axes_csv
+                    out = out + [rec]
+                }
+            }
+        }
+        li = li + 1
+    }
+    return out
+}
+
+// Find record in list whose pid matches; return "" if not found.
+fn find_by_pid(list: [str], pid: int) -> str {
+    let target = to_string(pid)
+    let mut i = 0
+    while i < len(list) {
+        let rec = list[i]
+        let parts = rec.split("|")
+        if len(parts) >= 4 {
+            if parts[0] == target { return rec }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// Parse axes csv into array of 6 floats.
+fn parse_axes(csv: str) -> [float] {
+    let mut out: [float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let vals = csv.split(",")
+    let mut k = 0
+    while k < 6 && k < len(vals) {
+        let mut v = 0.0
+        try { v = to_float(vals[k].trim()) } catch e {}
+        out[k] = v
+        k = k + 1
+    }
+    return out
+}
+
+// Build a JSON array string from 6 floats.
+fn floats_to_json_array(a: [float]) -> str {
+    let mut s = "["
+    let mut k = 0
+    while k < 6 {
+        if k > 0 { s = s + "," }
+        s = s + to_string(a[k])
+        k = k + 1
+    }
+    return s + "]"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI entry
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PerProcessDiff {
+    let t0 = exec("date +%s").trim()
+
+    let argv = args()
+    let mut baseline_path = "forge/per_process_sig.baseline.jsonl"
+    let mut current_path  = "forge/per_process_sig.jsonl"
+
+    // hexa argv: prefer slots after the .hexa script path; ignore bin paths.
+    let mut positional: [str] = []
+    let mut ai = 0
+    let mut saw_script = false
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        else {
+            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
+                positional = positional + [v]
+            }
+        }
+        ai = ai + 1
+    }
+    if len(positional) >= 1 { baseline_path = positional[0] }
+    if len(positional) >= 2 { current_path  = positional[1] }
+
+    let out_file = "forge/per_process_diff.jsonl"
+    println("  per_process_diff — baseline=" + baseline_path)
+    println("                     current =" + current_path)
+    println("                     out     =" + out_file)
+
+    let base_list = load_sig_file(baseline_path)
+    let curr_list = load_sig_file(current_path)
+    println("  baseline records: " + to_string(len(base_list)))
+    println("  current records:  " + to_string(len(curr_list)))
+
+    if len(base_list) == 0 || len(curr_list) == 0 {
+        println("  empty input — aborting")
+        exit(1)
+    }
+
+    let axis_names = ["cpu", "ram", "swap", "net", "disk", "gpu"]
+
+    // Collect diff records as parallel arrays: json line + euclidean (for sort).
+    let mut result_lines: [str] = []
+    let mut result_eucs:  [float] = []
+
+    // Walk current: either "changed" (in both) or "appeared" (only in current).
+    let mut ci = 0
+    while ci < len(curr_list) {
+        let crec = curr_list[ci]
+        let cparts = crec.split("|")
+        if len(cparts) >= 4 {
+            let pid_str = cparts[0]
+            let comm    = cparts[1]
+            let cstab_s = cparts[2]
+            let caxes_s = cparts[3]
+            let mut pid = -1
+            try { pid = to_int(to_float(pid_str)) } catch e {}
+            let cstab = to_float(cstab_s)
+            let caxes = parse_axes(caxes_s)
+
+            let brec = find_by_pid(base_list, pid)
+            if len(brec) == 0 {
+                // appeared
+                let zero6 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let mut j = "{\"pid\":" + pid_str
+                j = j + ",\"comm\":\"" + comm + "\""
+                j = j + ",\"status\":\"appeared\""
+                j = j + ",\"euclidean\":0.0"
+                j = j + ",\"top_axis\":\"-\""
+                j = j + ",\"top_delta\":0.0"
+                j = j + ",\"stability_delta\":" + to_string(cstab)
+                j = j + ",\"delta_mean\":" + floats_to_json_array(zero6) + "}"
+                result_lines = result_lines + [j]
+                result_eucs  = result_eucs  + [0.0]
+            } else {
+                let bparts = brec.split("|")
+                let bstab = to_float(bparts[2])
+                let baxes = parse_axes(bparts[3])
+                let mut delta: [float] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let mut ssq = 0.0
+                let mut top_idx = 0
+                let mut top_abs = 0.0 - 1.0
+                let mut k = 0
+                while k < 6 {
+                    let d = caxes[k] - baxes[k]
+                    delta[k] = d
+                    ssq = ssq + d * d
+                    let ad = fabs(d)
+                    if ad > top_abs {
+                        top_abs = ad
+                        top_idx = k
+                    }
+                    k = k + 1
+                }
+                let euc = sqrt_newton(ssq)
+                let top_name = axis_names[top_idx]
+                let top_delta = delta[top_idx]
+                let stab_delta = cstab - bstab
+
+                let mut j = "{\"pid\":" + pid_str
+                j = j + ",\"comm\":\"" + comm + "\""
+                j = j + ",\"status\":\"changed\""
+                j = j + ",\"euclidean\":" + to_string(euc)
+                j = j + ",\"top_axis\":\"" + top_name + "\""
+                j = j + ",\"top_delta\":" + to_string(top_delta)
+                j = j + ",\"stability_delta\":" + to_string(stab_delta)
+                j = j + ",\"delta_mean\":" + floats_to_json_array(delta) + "}"
+                result_lines = result_lines + [j]
+                result_eucs  = result_eucs  + [euc]
+            }
+        }
+        ci = ci + 1
+    }
+
+    // Walk baseline: find "vanished" (in base but not in current).
+    let mut bi = 0
+    while bi < len(base_list) {
+        let brec = base_list[bi]
+        let bparts = brec.split("|")
+        if len(bparts) >= 4 {
+            let pid_str = bparts[0]
+            let comm    = bparts[1]
+            let bstab   = to_float(bparts[2])
+            let mut pid = -1
+            try { pid = to_int(to_float(pid_str)) } catch e {}
+            let crec = find_by_pid(curr_list, pid)
+            if len(crec) == 0 {
+                let zero6 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                let mut j = "{\"pid\":" + pid_str
+                j = j + ",\"comm\":\"" + comm + "\""
+                j = j + ",\"status\":\"vanished\""
+                j = j + ",\"euclidean\":0.0"
+                j = j + ",\"top_axis\":\"-\""
+                j = j + ",\"top_delta\":0.0"
+                j = j + ",\"stability_delta\":" + to_string(0.0 - bstab)
+                j = j + ",\"delta_mean\":" + floats_to_json_array(zero6) + "}"
+                result_lines = result_lines + [j]
+                result_eucs  = result_eucs  + [0.0]
+            }
+        }
+        bi = bi + 1
+    }
+
+    // Sort result_lines by result_eucs DESC (simple selection sort — N~50).
+    let n = len(result_lines)
+    let mut i = 0
+    while i < n {
+        let mut best = i
+        let mut j2 = i + 1
+        while j2 < n {
+            if result_eucs[j2] > result_eucs[best] { best = j2 }
+            j2 = j2 + 1
+        }
+        if best != i {
+            let tmpL = result_lines[i]
+            result_lines[i] = result_lines[best]
+            result_lines[best] = tmpL
+            let tmpE = result_eucs[i]
+            result_eucs[i] = result_eucs[best]
+            result_eucs[best] = tmpE
+        }
+        i = i + 1
+    }
+
+    // Write output file.
+    write_file(out_file, "")
+    let mut wi = 0
+    let mut first_line = ""
+    let mut last_line  = ""
+    while wi < n {
+        let line = result_lines[wi]
+        exec("printf '%s\\n' " + "'" + line.replace("'", "") + "'" + " >> " + out_file)
+        if wi == 0 { first_line = line }
+        last_line = line
+        wi = wi + 1
+    }
+
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    println("  diff records: " + to_string(n))
+    println("  elapsed:      " + to_string(dt) + "s")
+    println("  first: " + first_line)
+    println("  last:  " + last_line)
+}

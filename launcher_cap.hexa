@@ -1,0 +1,311 @@
+// launcher_cap.hexa — AG4 사전 캡 enforcement watchdog (Hetzner 32T)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  배경: 2026-04-10 06:30 사건
+//  hexa launcher 1134개가 9시간 누적 spawn → load=316 폭증
+//  사후 정리 끝 → AG4 규칙 골화 → 본 파일은 사전 cap enforcer
+//
+//  규칙 준수
+//    R1  HEXA-FIRST     — .hexa 전용
+//    R17 좀비 방지       — trap 'kill 0' EXIT + PPID 체크 권장
+//    R19 SILENT EXIT 금지 — 모든 에러 stderr 출력
+//    R20 pgrep -f substring 금지 — AG4 정의 정확 패턴 + 보호 PID 화이트리스트
+//
+//  동작
+//    60초 루프 → pgrep 정확 패턴으로 launcher PID 수집 → count > 8 이면
+//    보호 PID 검사 후 oldest(count-8)개 SIGTERM → 3초 → 잔존 SIGKILL
+//    결과 JSON-line 로그 /var/log/airgenome-cap.log
+//
+//  사용
+//    /root/Dev/hexa-lang/target/release/hexa /root/airgenome/launcher_cap.hexa            # daemon
+//    /root/Dev/hexa-lang/target/release/hexa /root/airgenome/launcher_cap.hexa --once     # 1회만
+//    /root/Dev/hexa-lang/target/release/hexa /root/airgenome/launcher_cap.hexa --check    # 파싱만
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION       = "0.1.0"
+let CAP           = 8
+let INTERVAL_SEC  = 20
+// 로그 경로 — 환경변수 AIRGENOME_CAP_LOG 로 오버라이드 가능 (R2: 하드코딩 금지)
+let LOG_PATH = if env("AIRGENOME_CAP_LOG") == "" { "/var/log/airgenome-cap.log" } else { env("AIRGENOME_CAP_LOG") }
+
+// AG4 정의 정확 launcher 패턴 (R20 예외 근거)
+// 매칭 조건: 실행 파일(comm)이 정확히 "hexa"이고, args에 지정된 launcher 6종 중 하나의 *.hexa 파일 경로 존재
+// → zsh/ssh/sh 등 문자열만 일치하는 shell wrapper 는 거부 (false positive 방지)
+let LAUNCHER_FILE_REGEX = "(breakthrough|blowup|auto_register|gap_finder|alien_index|lens_forge)\\.hexa"
+
+// 정적 보호 PID (사건 당시 확정된 안전 프로세스)
+let STATIC_WHITELIST = [9085, 9252, 9253, 9767, 3396]
+
+// 동적 보호 패턴 — 재부팅으로 정적 PID 소멸 시 fallback
+let DYNAMIC_WHITELIST_PATTERNS = [
+    "tmux: server",
+    "train_decoder_cpu.py",
+    "serve_conscious_cpu.py",
+    "ouroboros"
+]
+
+// 모드 플래그 (main()에서 argv 파싱 후 설정)
+let mut DRY_RUN = false
+
+// ── stderr 명시 출력 (R19) ──
+fn err(msg: str) -> void {
+    // hexa exec 기반 stderr write — println은 stdout 전용
+    exec("echo '[launcher_cap ERR] " + msg.replace("'", "") + "' >&2")
+}
+
+fn info(msg: str) -> void {
+    println("[launcher_cap] " + msg)
+}
+
+// ── 현재 epoch 초 ──
+fn now_epoch() -> int {
+    let raw = try { exec("date +%s").trim() } catch e { "0" }
+    let mut v = 0
+    try { v = to_int(to_float(raw)) } catch e {}
+    return v
+}
+
+// ── ISO-8601 UTC 타임스탬프 ──
+fn now_iso_utc() -> str {
+    let raw = try { exec("date -u +%FT%TZ").trim() } catch e { "" }
+    if len(raw) == 0 { return "unknown" }
+    return raw
+}
+
+// ── PPID 생존 체크 (R17) ──
+fn ppid_alive() -> bool {
+    let pp = try { exec("ps -o ppid= -p $$ 2>/dev/null").trim() } catch e { "1" }
+    // PPID == 1 이면 부모가 이미 죽어 init이 인수 → 데몬 모드로 간주 OK
+    let mut ppid_int = 1
+    try { ppid_int = to_int(to_float(pp)) } catch e {}
+    if ppid_int <= 1 { return true }
+    let chk = try { exec("kill -0 " + to_string(ppid_int) + " 2>&1").trim() } catch e { "err" }
+    if chk.contains("No such process") { return false }
+    return true
+}
+
+// ── pgrep 정확 패턴으로 launcher PID + etime 쌍 수집 ──
+// 반환: [[pid, etime_seconds], ...]  etime 내림차순 (oldest first)
+fn collect_launcher_procs() -> auto {
+    // AG4 정확 매칭: ps -o comm,args 에서 comm==hexa + args에 launcher .hexa 파일명 존재
+    // awk: $3(comm) ~ /(^|\/)hexa$/ 로 실행 파일 검증 → false positive(zsh/ssh wrapper) 차단
+    //      그 다음 전체 args($4~) 중 LAUNCHER_FILE_REGEX 매칭만 통과
+    // etime 포맷 [[DD-]HH:]MM:SS → 초 환산
+    // 한 줄 문자열 concat (release 파서는 multi-line let concat 불허)
+    let awk_body = "$3 ~ /(^|\\/)hexa$/ { argstr=\"\"; for (i=4; i<=NF; i++) argstr=argstr\" \"$i; if (argstr ~ /" + LAUNCHER_FILE_REGEX + "/) { pid=$1; et=$2; dd=0; hh=0; mm=0; ss=0; if (et ~ /-/) { n=split(et,A,\"-\"); dd=A[1]; et=A[2] } n=split(et,B,\":\"); if (n==3) { hh=B[1]; mm=B[2]; ss=B[3] } else if (n==2) { mm=B[1]; ss=B[2] } secs=dd*86400+hh*3600+mm*60+ss; print pid\",\"secs } }"
+    let cmd = "ps -eo pid=,etime=,comm=,args= 2>/dev/null | awk '" + awk_body + "' | sort -t, -k2,2 -n -r"
+    let raw = try { exec(cmd).trim() } catch e { "" }
+    let out = []
+    if len(raw) == 0 { return out }
+    let lines = raw.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 0 {
+            let p = line.split(",")
+            if len(p) >= 2 {
+                let mut pid = 0
+                let mut et = 0
+                try { pid = to_int(to_float(p[0])) } catch e {}
+                try { et = to_int(to_float(p[1])) } catch e {}
+                if pid > 0 { out = out + [[pid, et]] }
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ── 동적 보호 PID 수집 (fallback) ──
+fn collect_dynamic_whitelist() -> auto {
+    let out = []
+    let i = 0
+    while i < len(DYNAMIC_WHITELIST_PATTERNS) {
+        let pat = DYNAMIC_WHITELIST_PATTERNS[i]
+        // R20 예외: 이 패턴들은 사용자 지정 exact-mode 문자열 그대로
+        // pgrep -f 사용하되 결과는 아래 whitelist 검사에서만 사용 → kill 경로 밖
+        let esc = pat.replace("'", "")
+        let raw = try { exec("pgrep -f '" + esc + "' 2>/dev/null").trim() } catch e { "" }
+        if len(raw) > 0 {
+            let lines = raw.split("\n")
+            let k = 0
+            while k < len(lines) {
+                let s = lines[k].trim()
+                if len(s) > 0 {
+                    let mut pid = 0
+                    try { pid = to_int(to_float(s)) } catch e {}
+                    if pid > 0 { out = out + [pid] }
+                }
+                k = k + 1
+            }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// ── 화이트리스트 구성: static + dynamic 합집합 ──
+fn build_whitelist() -> auto {
+    let mut wl = []
+    let i = 0
+    while i < len(STATIC_WHITELIST) { wl = wl + [STATIC_WHITELIST[i]]; i = i + 1 }
+    let dynw = collect_dynamic_whitelist()
+    let j = 0
+    while j < len(dynw) { wl = wl + [dynw[j]]; j = j + 1 }
+    return wl
+}
+
+fn in_list(pid: int, list: auto) -> bool {
+    let i = 0
+    while i < len(list) {
+        if list[i] == pid { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// ── JSON-line 로그 기록 ──
+fn log_cycle(before: int, after: int, killed: auto, abort_reason: str) -> void {
+    let ts = now_iso_utc()
+    let mut kp = "["
+    let i = 0
+    while i < len(killed) {
+        if i > 0 { kp = kp + "," }
+        kp = kp + to_string(killed[i])
+        i = i + 1
+    }
+    kp = kp + "]"
+    let mut rec = "{\"ts\":\"" + ts + "\""
+    rec = rec + ",\"cap\":" + to_string(CAP)
+    rec = rec + ",\"before\":" + to_string(before)
+    rec = rec + ",\"after\":" + to_string(after)
+    rec = rec + ",\"killed_pids\":" + kp
+    rec = rec + ",\"abort\":\"" + abort_reason + "\""
+    rec = rec + ",\"ver\":\"" + VERSION + "\"}"
+    try { append_file(LOG_PATH, rec + "\n") } catch e {
+        err("log append failed path=" + LOG_PATH)
+    }
+}
+
+// ── 한 사이클: 수집 → 판단 → 필요시 정리 ──
+fn run_cycle() -> str {
+    let procs = collect_launcher_procs()
+    let n = len(procs)
+    if n <= CAP {
+        info("OK count=" + to_string(n) + "/" + to_string(CAP))
+        log_cycle(n, n, [], "")
+        return "ok"
+    }
+
+    let mode_label = if DRY_RUN { "DRY-RUN" } else { "pruning" }
+    info("CAP EXCEEDED count=" + to_string(n) + "/" + to_string(CAP) + " → " + mode_label)
+
+    // 보호 PID 화이트리스트
+    let wl = build_whitelist()
+
+    // 타겟 선정: oldest 순 (collect_launcher_procs 이미 etime 내림차순)
+    let need_kill = n - CAP
+    let mut targets = []
+    let mut idx = 0
+    while idx < len(procs) && len(targets) < need_kill {
+        let pid = procs[idx][0]
+        if in_list(pid, wl) {
+            err("abort — protected PID " + to_string(pid) + " in kill target set")
+            log_cycle(n, n, [], "protected_pid_in_targets")
+            return "abort"
+        }
+        targets = targets + [pid]
+        idx = idx + 1
+    }
+
+    // DRY-RUN 모드: 타겟 출력만 하고 실제 kill 생략
+    if DRY_RUN {
+        let mut buf = ""
+        let mut d = 0
+        while d < len(targets) {
+            if d > 0 { buf = buf + "," }
+            buf = buf + to_string(targets[d])
+            d = d + 1
+        }
+        info("DRY-RUN would kill " + to_string(len(targets)) + " PIDs: " + buf)
+        log_cycle(n, n, targets, "dry_run")
+        return "dry_run"
+    }
+
+    // SIGTERM 발사
+    let mut killed = []
+    let mut t = 0
+    while t < len(targets) {
+        let pid = targets[t]
+        let r = try { exec("kill -TERM " + to_string(pid) + " 2>&1").trim() } catch e { "err" }
+        if r.contains("No such process") == false {
+            killed = killed + [pid]
+        } else {
+            err("SIGTERM pid=" + to_string(pid) + " vanished")
+        }
+        t = t + 1
+    }
+
+    // 3초 grace
+    exec("sleep 3")
+
+    // 잔존 SIGKILL
+    let mut k2 = 0
+    while k2 < len(killed) {
+        let pid = killed[k2]
+        let chk = try { exec("kill -0 " + to_string(pid) + " 2>&1").trim() } catch e { "" }
+        if chk.contains("No such process") == false {
+            try { exec("kill -KILL " + to_string(pid) + " 2>&1") } catch e {}
+        }
+        k2 = k2 + 1
+    }
+
+    // 사후 확인
+    let after_procs = collect_launcher_procs()
+    let after_n = len(after_procs)
+    info("pruned " + to_string(len(killed)) + " → count=" + to_string(after_n))
+    log_cycle(n, after_n, killed, "")
+    return "pruned"
+}
+
+// ── 엔트리 ──
+fn main() -> void {
+    let argv = args()
+    let mut once_mode = false
+    let mut check_mode = false
+    let mut i = 2
+    while i < len(argv) {
+        let a = argv[i]
+        if a == "--once"    { once_mode = true }
+        if a == "--check"   { check_mode = true }
+        if a == "--dry-run" { DRY_RUN = true }
+        i = i + 1
+    }
+
+    if check_mode {
+        println("launcher_cap v" + VERSION + " parse ok")
+        return
+    }
+
+    info("start v" + VERSION + " cap=" + to_string(CAP) + " interval=" + to_string(INTERVAL_SEC) + "s")
+
+    if once_mode {
+        let r = run_cycle()
+        info("once done status=" + r)
+        return
+    }
+
+    // 데몬 루프
+    while true {
+        if ppid_alive() == false {
+            err("PPID dead — exiting to prevent zombie")
+            return
+        }
+        try { run_cycle() } catch e {
+            err("cycle crashed: " + to_string(e))
+        }
+        exec("sleep " + to_string(INTERVAL_SEC))
+    }
+}
+
+main()

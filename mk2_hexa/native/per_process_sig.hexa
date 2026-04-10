@@ -1,0 +1,218 @@
+// per_process_sig.hexa — per-PID 6-axis signature extractor
+//
+// Phase 2 of airgenome-next task#1 (per-process hexagon projection).
+// Reads forge/by_pid/<PID>.jsonl time-series → computes mean/std/min/max
+// per axis → writes forge/per_process_sig.jsonl (one line per PID).
+//
+// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_sig.hexa [<by_pid_dir>]
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATH — Newton sqrt (hexa lacks native sqrt in older builds)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_newton(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSONL PARSE — extract axes CSV + pid + comm from one record line
+// ═══════════════════════════════════════════════════════════════════════
+
+// Return "a,b,c,d,e,f" or "" on failure.
+fn extract_axes(line: str) -> str {
+    let parts = line.split("\"axes\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+// Return pid int or -1 on failure.
+fn extract_pid(line: str) -> int {
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return -1 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return -1 }
+    try { return to_int(to_float(tail[0].trim())) } catch e { return -1 }
+}
+
+// Return comm string or "" on failure.
+fn extract_comm(line: str) -> str {
+    let parts = line.split("\"comm\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PER-FILE PROCESSING — read jsonl → compute 6-axis stats
+// ═══════════════════════════════════════════════════════════════════════
+
+// Return compact JSON signature for one PID file, or "" if empty/invalid.
+fn process_pid_file(path: str) -> str {
+    if file_exists(path) == false { return "" }
+    let body = read_file(path)
+    let lines = body.split("\n")
+    let mut n = 0
+    let mut pid = -1
+    let mut comm = ""
+
+    // Accumulators: sum, sum_sq, min, max per axis
+    let mut sum   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut sum2  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let mut amin  = [255, 255, 255, 255, 255, 255]
+    let mut amax  = [0, 0, 0, 0, 0, 0]
+
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let axes_csv = extract_axes(line)
+            if len(axes_csv) > 0 {
+                let vals = axes_csv.split(",")
+                if len(vals) >= 6 {
+                    if pid < 0 { pid = extract_pid(line) }
+                    if len(comm) == 0 { comm = extract_comm(line) }
+                    let mut k = 0
+                    while k < 6 {
+                        let mut v = 0
+                        try { v = to_int(to_float(vals[k].trim())) } catch e {}
+                        let vf = to_float(to_string(v))
+                        sum[k]  = sum[k] + vf
+                        sum2[k] = sum2[k] + vf * vf
+                        if v < amin[k] { amin[k] = v }
+                        if v > amax[k] { amax[k] = v }
+                        k = k + 1
+                    }
+                    n = n + 1
+                }
+            }
+        }
+        li = li + 1
+    }
+
+    if n == 0 || pid < 0 { return "" }
+
+    let nf = to_float(to_string(n))
+    let mut mean_parts = ""
+    let mut std_parts  = ""
+    let mut min_parts  = ""
+    let mut max_parts  = ""
+    let mut std_sum    = 0.0
+
+    let mut k2 = 0
+    while k2 < 6 {
+        let mean_k = sum[k2] / nf
+        let var_k  = (sum2[k2] / nf) - (mean_k * mean_k)
+        let mut vv = var_k
+        if vv < 0.0 { vv = 0.0 }
+        let std_k  = sqrt_newton(vv)
+        std_sum = std_sum + std_k
+        if k2 > 0 {
+            mean_parts = mean_parts + ","
+            std_parts  = std_parts + ","
+            min_parts  = min_parts + ","
+            max_parts  = max_parts + ","
+        }
+        mean_parts = mean_parts + to_string(mean_k)
+        std_parts  = std_parts + to_string(std_k)
+        min_parts  = min_parts + to_string(amin[k2])
+        max_parts  = max_parts + to_string(amax[k2])
+        k2 = k2 + 1
+    }
+
+    // stability_score: 1.0 - (std_sum / 1530). 1530 = 6 axes * 255 max std.
+    let mut stability = 1.0 - (std_sum / 1530.0)
+    if stability < 0.0 { stability = 0.0 }
+    if stability > 1.0 { stability = 1.0 }
+
+    let safe_comm = comm.replace("\"", "").replace("\\", "")
+    let mut json = "{\"pid\":" + to_string(pid)
+    json = json + ",\"comm\":\"" + safe_comm + "\""
+    json = json + ",\"n_samples\":" + to_string(n)
+    json = json + ",\"axes_mean\":[" + mean_parts + "]"
+    json = json + ",\"axes_std\":["  + std_parts  + "]"
+    json = json + ",\"axes_min\":["  + min_parts  + "]"
+    json = json + ",\"axes_max\":["  + max_parts  + "]"
+    json = json + ",\"stability\":" + to_string(stability) + "}"
+    return json
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI entry
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PerProcessSig {
+    let t0 = exec("date +%s").trim()
+
+    let argv = args()
+    let mut by_pid_dir = "forge/by_pid"
+    // hexa argv: prefer slot after the .hexa script path; ignore bin paths.
+    let mut ai = 0
+    let mut saw_script = false
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        else {
+            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
+                by_pid_dir = v
+            }
+        }
+        ai = ai + 1
+    }
+
+    let out_file = "forge/per_process_sig.jsonl"
+    println("  per_process_sig — dir=" + by_pid_dir + " out=" + out_file)
+
+    // Use find instead of ls glob — find returns empty string (not error) when no matches.
+    let mut listing = ""
+    try { listing = exec("find " + by_pid_dir + " -maxdepth 1 -name '*.jsonl' 2>/dev/null").trim() } catch le { listing = "" }
+    if len(listing) == 0 {
+        println("  no .jsonl files found in " + by_pid_dir)
+        exit(1)
+    }
+    let files = listing.split("\n")
+    let n_files = len(files)
+    println("  files: " + to_string(n_files))
+
+    // Reset output file (not append mode)
+    write_file(out_file, "")
+
+    let mut ok = 0
+    let mut first_line = ""
+    let mut last_line  = ""
+    let mut fi = 0
+    while fi < n_files {
+        let path = files[fi].trim()
+        if len(path) > 0 {
+            try {
+                let sig = process_pid_file(path)
+                if len(sig) > 0 {
+                    exec("printf '%s\\n' " + "'" + sig.replace("'", "") + "'" + " >> " + out_file)
+                    if ok == 0 { first_line = sig }
+                    last_line = sig
+                    ok = ok + 1
+                }
+            } catch fe {}
+        }
+        fi = fi + 1
+    }
+
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    println("  processed: " + to_string(ok) + " / " + to_string(n_files))
+    println("  elapsed:   " + to_string(dt) + "s")
+    println("  first: " + first_line)
+    println("  last:  " + last_line)
+}
