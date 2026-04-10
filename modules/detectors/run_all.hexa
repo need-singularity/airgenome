@@ -12,11 +12,20 @@ if file_exists(HEXA_BIN) == false { HEXA_BIN = env("HOME") + "/.hx/bin/hexa" }
 let DET_DIR  = "modules/detectors"
 let CFG_FILE = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
 
+// 골화 2026-04-10: ubu 연결 시 원격 실행, Mac 로컬 금지
+let UBU_HEXA = "/home/aiden/Dev/hexa-lang/target/release/hexa"
+let UBU_DIR  = "/home/aiden/airgenome"
+let mut UBU_AVAILABLE = false
+try { UBU_AVAILABLE = exec("ssh -o ConnectTimeout=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e {}
+
 fn run_one(name: str) -> str {
     let path = DET_DIR + "/" + name + ".hexa"
-    // predictive_throttle은 predict 서브커맨드 필요
     let subcmd = if name == "predictive_throttle" { " predict" } else { "" }
-    let out = try { exec(HEXA_BIN + " " + path + subcmd + " 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
+    let out = if UBU_AVAILABLE {
+        try { exec("ssh -o ConnectTimeout=10 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + path + subcmd + "' 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
+    } else {
+        try { exec(HEXA_BIN + " " + path + subcmd + " 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
+    }
     if len(out) == 0 { return "{\"detector\":\"" + name + "\",\"status\":\"no_output\"}" }
     return out
 }
