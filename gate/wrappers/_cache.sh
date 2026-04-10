@@ -28,11 +28,15 @@ ag_resolve_host() {
       fi
     fi
   fi
-  # Cache miss or stale — do live nc check
+  # Cache miss or stale — do live nc check (ubu → tailscale → hetzner → vast)
   if nc -z -w 1 "$UBU_HOST" "$UBU_PORT" 2>/dev/null; then
     GH="$UBU_HOST"
   elif [ -n "$TS_HOST" ] && nc -z -w 2 "$TS_HOST" "$UBU_PORT" 2>/dev/null; then
     GH="$TS_HOST"
+  elif nc -z -w 2 157.180.8.154 "$UBU_PORT" 2>/dev/null; then
+    GH="157.180.8.154"; GH_NAME="hetzner"
+  elif nc -z -w 3 ssh9.vast.ai 19200 2>/dev/null; then
+    GH="ssh9.vast.ai"; GH_PORT=19200; GH_NAME="vast"
   fi
   # Write cache atomically
   _val="${GH:-NONE}|${UBU_PORT}"

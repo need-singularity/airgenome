@@ -1,7 +1,9 @@
 #!/bin/bash
+# cargo 자식 프로세스로 호출 시 게이트 skip (CARGO env = cargo가 설정)
+[ -n "$CARGO" ] && exec "$HOME/.cargo/bin/rustc" "$@"
+
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
-# budget + reachability + config cache (GATE_G1 optimization)
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"

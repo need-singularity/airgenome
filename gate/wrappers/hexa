@@ -45,13 +45,13 @@ if [ -f "$SESSION_NOW" ]; then
   fi
 fi
 
-# 부하 분류
-if [ "$mac_load" -ge 600 ]; then
-  load_state="hot"        # CPU 부하 6.0+ → 강제 오프로드
-elif [ "$mac_load" -ge 300 ]; then
-  load_state="warm"       # 3.0~6.0 → 통상 오프로드
+# 부하 분류 (mac 부하 최소화 정책: 적극 오프로드)
+if [ "$mac_load" -ge 300 ]; then
+  load_state="hot"        # CPU 부하 3.0+ → 강제 오프로드
+elif [ "$mac_load" -ge 100 ]; then
+  load_state="warm"       # 1.0~3.0 → 통상 오프로드
 else
-  load_state="cool"       # < 3.0 → 로컬 fast-path 후보
+  load_state="cool"       # < 1.0 → 로컬 fast-path 후보
 fi
 
 # ─────────────────────────────────────────────────────────────────
@@ -86,7 +86,37 @@ fi
 # ─────────────────────────────────────────────────────────────────
 ag_resolve_host
 
+# ubu unreachable → hetzner → vast → local
 if [ -z "$GH" ]; then
+  HTZ_HEXA="~/Dev/hexa-lang/target/release/hexa"
+  if ssh -o ConnectTimeout=3 hetzner true 2>/dev/null; then
+    ag_gate_msg "remote" "hexa $*" "hetzner" "~/Dev"
+    # scp files to hetzner
+    RARGS=()
+    for a in "$@"; do
+      if [ -f "$a" ]; then
+        scp -q "$a" "hetzner:/tmp/" 2>/dev/null
+        RARGS+=("/tmp/$(basename "$a")")
+      else
+        RARGS+=("$a")
+      fi
+    done
+    ssh hetzner "$HTZ_HEXA ${RARGS[*]}" 2>&1
+    exit $?
+  elif ssh -o ConnectTimeout=3 -p 19200 root@ssh9.vast.ai true 2>/dev/null; then
+    ag_gate_msg "remote" "hexa $*" "vast" "/root/Dev"
+    RARGS=()
+    for a in "$@"; do
+      if [ -f "$a" ]; then
+        scp -q -P 19200 "$a" "root@ssh9.vast.ai:/tmp/" 2>/dev/null
+        RARGS+=("/tmp/$(basename "$a")")
+      else
+        RARGS+=("$a")
+      fi
+    done
+    ssh -p 19200 root@ssh9.vast.ai "/home/hexa-lang/hexa ${RARGS[*]}" 2>&1
+    exit $?
+  fi
   ag_gate_msg "unreachable" "hexa $*"
   exec "$HEXA_BIN" "$@"
 fi

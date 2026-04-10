@@ -1,22 +1,48 @@
 #!/bin/bash
+# airgenome gate — cargo wrapper (ubu → hetzner → local fallback)
+# cargo 자식 프로세스(build script 등)로 재진입 방지
+[ -n "$__AG_CARGO_GATE" ] && exec "$HOME/.cargo/bin/cargo" "$@"
+export __AG_CARGO_GATE=1
+
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
+HTZ_SSH="hetzner"; HTZ_DIR="~/Dev/hexa-lang"
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
-# budget + reachability + config cache (GATE_G1 optimization)
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
+
+# hexa-lang 프로젝트만 원격 오프로드 대상 (원격에 소스가 있는 프로젝트)
+_cwd_project=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+case "$_cwd_project" in
+  hexa-lang) ;; # 원격 가능
+  *) ag_gate_msg "local" "cargo $*"
+     exec "$HOME/.cargo/bin/cargo" "$@" ;;
+esac
+
 ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
 ag_resolve_host
+
 if [ "$GATE_LOCAL" = "1" ]; then
   ag_gate_msg "local" "cargo $*"
   exec "$HOME/.cargo/bin/cargo" "$@"
-elif [ -z "$GH" ]; then
-  ag_gate_msg "unreachable" "cargo $*"
-  exec "$HOME/.cargo/bin/cargo" "$@"
 fi
 
-# remote dispatch
-ag_gate_msg "remote" "cargo $*" "$GH:$UBU_PORT" "$UBU_DIR"
-rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null
-echo "cd $UBU_DIR && source ~/.cargo/env && cargo $*" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+# ubu gate daemon reachable → nc dispatch
+if [ -n "$GH" ]; then
+  ag_gate_msg "remote" "cargo $*" "$GH:$UBU_PORT" "$UBU_DIR"
+  rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null
+  echo "cd $UBU_DIR && source ~/.cargo/env && cargo $*" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+  exit $?
+fi
+
+# hetzner fallback via SSH (no gate daemon needed)
+if ssh -o ConnectTimeout=3 "$HTZ_SSH" true 2>/dev/null; then
+  ag_gate_msg "remote" "cargo $*" "$HTZ_SSH" "$HTZ_DIR"
+  ssh "$HTZ_SSH" "cd $HTZ_DIR && source ~/.cargo/env 2>/dev/null; cargo $*" 2>&1
+  exit $?
+fi
+
+# all remotes unreachable
+ag_gate_msg "unreachable" "cargo $*"
+exec "$HOME/.cargo/bin/cargo" "$@"
