@@ -13,7 +13,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>exec __HOME__/Dev/hexa-lang/hexa __HOME__/Dev/airgenome/modules/usage.hexa -- next</string>
+        <string>exec __HOME__/Dev/hexa-lang/target/release/hexa __HOME__/Dev/airgenome/modules/usage.hexa -- next</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__HOME__/Dev/airgenome</string>

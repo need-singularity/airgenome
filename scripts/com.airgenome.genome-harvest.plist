@@ -16,7 +16,7 @@
     <integer>3600</integer>
 
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 
     <key>StandardOutPath</key>
     <string>/tmp/airgenome-harvest.out</string>
