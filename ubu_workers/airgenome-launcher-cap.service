@@ -1,0 +1,14 @@
+[Unit]
+Description=AG4 launcher_cap enforcement watchdog (airgenome)
+After=network.target
+
+[Service]
+Type=oneshot
+User=aiden
+WorkingDirectory=/home/aiden/airgenome
+ExecStart=/tmp/hexa-build/hexa-lang/hexa /home/aiden/airgenome/launcher_cap.hexa
+StandardOutput=append:/var/log/airgenome-cap.log
+StandardError=append:/var/log/airgenome-cap.err
+
+[Install]
+WantedBy=multi-user.target

@@ -15,6 +15,10 @@ forge/per_source_genome.jsonl
 .playwright-mcp/
 nexus/shared/airgenome_convergence_*.jsonl
 nexus/shared/growth_bus.jsonl
+nexus/shared/gate_*_state.jsonl
+nexus/shared/session_history.jsonl
+forge/vitals_ring.state
+_ttest.hexa
 target/
 Cargo.lock
 

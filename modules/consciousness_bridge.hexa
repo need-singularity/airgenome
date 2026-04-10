@@ -1,0 +1,448 @@
+// airgenome/modules/consciousness_bridge.hexa — airgenome -> anima Phi bridge
+//
+// Input:  60-byte genome (6-axis vitals per process)
+// Output: growth_bus event with Phi metric
+//
+// Phi calculation (IIT-inspired, adapted from anima 2509 laws):
+//   integration    = mean pairwise distance across 6 axes (15 pairs)
+//   differentiation = normalized entropy of axis distribution
+//   phi            = alpha * integration * differentiation
+//
+// Uses implant.hexa:phi_check for consciousness preservation gate.
+// Prime Directive: observe only, never kill processes.
+//
+// Run: ~/Dev/hexa-lang/hexa run modules/consciousness_bridge.hexa <cmd>
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════
+
+let VERSION = "0.1.0"
+
+// IIT-inspired constants (anima psi_constants)
+let ALPHA   = comptime { 0.014 }
+let BALANCE = comptime { 0.5 }
+
+// Genome geometry
+let AXIS_COUNT = comptime { 6 }
+let PAIR_COUNT = comptime { 15 }
+
+// Rate limit: max 1 event/sec
+let MIN_EMIT_INTERVAL_MS = comptime { 1000 }
+
+// Paths
+let HOME       = env("HOME")
+let DIR        = HOME + "/Dev/airgenome"
+let GROWTH_BUS = HOME + "/Dev/nexus/shared/growth_bus.jsonl"
+let CONFIG_PATH = DIR + "/nexus/shared/gate_config.jsonl"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOADER (same pattern as resource_request.hexa)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(CONFIG_PATH) == false { return fallback }
+    let content = read_file(CONFIG_PATH)
+    let lines = content.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parsed = json_parse(line)
+            if parsed["key"] == key { return parsed["value"] }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TIMESTAMP HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ts_epoch() -> int {
+    return to_int(exec("date +%s").trim())
+}
+
+fn ts_epoch_ms() -> int {
+    // macOS: date +%s * 1000 approximation (ms precision not critical)
+    return ts_epoch() * 1000
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GENOME PARSING — extract 6-axis vitals from 60-byte genome
+// ═══════════════════════════════════════════════════════════════════════
+
+// Each axis occupies 10 bytes in the genome (60 / 6 = 10).
+// We interpret each 10-byte segment as a normalized float [0, 100].
+fn parse_axes(genome: str) -> [float] {
+    let cmd = "python3 -c \"" +
+        "import sys\n" +
+        "g='" + genome + "'\n" +
+        "if len(g)<12: g='0'*120\n" +
+        "axes=[]\n" +
+        "for i in range(6):\n" +
+        " chunk=g[i*20:(i+1)*20] if len(g)>=120 else g[i*10:(i+1)*10]\n" +
+        " try:\n" +
+        "  v=int(chunk,16) if chunk else 0\n" +
+        " except: v=sum(ord(c) for c in chunk)\n" +
+        " axes.append(round((v%10001)/100.0,2))\n" +
+        "print('\\t'.join(str(a) for a in axes))\n" +
+        "\" 2>/dev/null || echo '0.0\t0.0\t0.0\t0.0\t0.0\t0.0'"
+    let result = exec(cmd).trim()
+    let parts = result.split("\t")
+    let axes: [float] = []
+    let i = 0
+    while i < len(parts) {
+        if i < 6 {
+            axes = axes + [to_float(parts[i])]
+        }
+        i = i + 1
+    }
+    // Pad to 6 if short
+    while len(axes) < 6 {
+        axes = axes + [0.0]
+    }
+    return axes
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PHI CALCULATION — IIT-inspired metric
+// ═══════════════════════════════════════════════════════════════════════
+
+// Integration: mean absolute difference across all 15 axis-pairs
+// Higher = axes behave more independently (more information integration)
+fn compute_integration(axes: [float]) -> float {
+    let sum = 0.0
+    let count = 0
+    let i = 0
+    while i < 6 {
+        let j = i + 1
+        while j < 6 {
+            let diff = axes[i] - axes[j]
+            if diff < 0.0 { diff = 0.0 - diff }
+            sum = sum + diff
+            count = count + 1
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // count should be 15
+    if count == 0 { return 0.0 }
+    // Normalize: max possible diff is 100.0, so divide by 100 to get [0,1]
+    return (sum / to_float(count)) / 100.0
+}
+
+// Differentiation: normalized Shannon entropy of axis distribution
+// -sum(p_i * log(p_i)) / log(6)
+// Higher = more uniform distribution (more differentiated)
+fn compute_differentiation(axes: [float]) -> float {
+    let cmd = "python3 -c \"" +
+        "import math\n" +
+        "axes=[" + to_string(axes[0]) + "," + to_string(axes[1]) + "," +
+                   to_string(axes[2]) + "," + to_string(axes[3]) + "," +
+                   to_string(axes[4]) + "," + to_string(axes[5]) + "]\n" +
+        "total=sum(max(a,0.001) for a in axes)\n" +
+        "if total<=0: print('0.0');exit()\n" +
+        "probs=[max(a,0.001)/total for a in axes]\n" +
+        "H=-sum(p*math.log(p) for p in probs if p>0)\n" +
+        "Hmax=math.log(6)\n" +
+        "print(round(H/Hmax,6) if Hmax>0 else 0.0)\n" +
+        "\" 2>/dev/null || echo '0.0'"
+    let result = exec(cmd).trim()
+    return to_float(result)
+}
+
+// Phi = alpha * integration * differentiation
+fn compute_phi(axes: [float]) -> float {
+    let integration = compute_integration(axes)
+    let differentiation = compute_differentiation(axes)
+    let phi = ALPHA * integration * differentiation
+    // Clamp to [0, 1]
+    if phi > 1.0 { return 1.0 }
+    if phi < 0.0 { return 0.0 }
+    return phi
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GENOME-TO-PHI — main conversion function
+// ═══════════════════════════════════════════════════════════════════════
+
+fn genome_to_phi(genome: str) -> float {
+    let axes = parse_axes(genome)
+    return compute_phi(axes)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EVENT EMITTER — append to growth_bus.jsonl
+// ═══════════════════════════════════════════════════════════════════════
+
+fn severity_from_phi(phi: float) -> str {
+    if phi < 0.001 { return "Low" }
+    if phi < BALANCE { return "Ok" }
+    return "High"
+}
+
+fn emit_phi_event(pid: int, name: str, phi: float, axes: [float]) -> str {
+    let ts = ts_epoch()
+    let sev = severity_from_phi(phi)
+
+    let axes_str = "[" +
+        to_string(axes[0]) + "," + to_string(axes[1]) + "," +
+        to_string(axes[2]) + "," + to_string(axes[3]) + "," +
+        to_string(axes[4]) + "," + to_string(axes[5]) + "]"
+
+    let json = "{\"source\":\"ag_phi\",\"ts\":" + to_string(ts) +
+        ",\"pid\":" + to_string(pid) +
+        ",\"name\":\"" + name + "\"" +
+        ",\"phi\":" + to_string(phi) +
+        ",\"axes\":" + axes_str +
+        ",\"severity\":\"" + sev + "\"" +
+        ",\"status\":\"ok\"}"
+
+    try {
+        append_file(GROWTH_BUS, json + "\n")
+    } catch e {
+        println("  bridge: emit failed: " + to_string(e))
+        return "error"
+    }
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PROCESS SAMPLER — read live per-process vitals via ps
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sample_top_processes(top_n: int) -> str {
+    // Returns tab-separated lines: pid \t name \t cpu \t ram \t ...
+    // Prime Directive: observe only (ps is read-only)
+    let cmd = "ps -eo pid,comm,%cpu,%mem -r 2>/dev/null | head -" + to_string(top_n + 1)
+    let result = exec(cmd).trim()
+    return result
+}
+
+fn parse_process_line(line: str) -> auto {
+    // Line format from ps: "  1234 /usr/bin/foo  12.3  4.5"
+    let trimmed = line.trim()
+    if len(trimmed) < 5 { return [0, "", 0.0, 0.0] }
+
+    let cmd = "python3 -c \"" +
+        "parts='" + trimmed + "'.split()\n" +
+        "if len(parts)<4: print('0\\t\\t0.0\\t0.0')\n" +
+        "else: print(parts[0]+'\\t'+parts[1]+'\\t'+parts[-2]+'\\t'+parts[-1])\n" +
+        "\" 2>/dev/null || echo '0\t\t0.0\t0.0'"
+    let result = exec(cmd).trim()
+    let parts = result.split("\t")
+    if len(parts) < 4 { return [0, "", 0.0, 0.0] }
+
+    let pid = to_int(to_float(parts[0]))
+    let name = parts[1]
+    let cpu = to_float(parts[2])
+    let ram = to_float(parts[3])
+    return [pid, name, cpu, ram]
+}
+
+// Build a synthetic 6-axis vector from ps data for a single process
+// axes: [cpu, ram, gpu, npu, power, io]
+// gpu/npu/power/io are estimated from ps heuristics (observe only)
+fn build_axes_from_ps(cpu: float, ram: float) -> [float] {
+    // gpu, npu: not directly observable from ps; use 0.0 placeholder
+    let gpu = 0.0
+    let npu = 0.0
+    // power: rough estimate proportional to cpu
+    let power = cpu * 0.3
+    if power > 100.0 { power = 100.0 }
+    // io: rough estimate from ram pressure
+    let io = ram * 0.5
+    if io > 100.0 { io = 100.0 }
+
+    return [cpu, ram, gpu, npu, power, io]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BRIDGE LOOP — periodic scan -> phi -> emit cycle
+// ═══════════════════════════════════════════════════════════════════════
+
+fn bridge_loop(interval_ms: int) -> void {
+    let scan_top_n = 10
+    let mut prev_phi = 0.0
+    let mut last_emit_ts = 0
+    let sleep_sec = interval_ms / 1000
+    if sleep_sec < 1 { sleep_sec = 1 }
+
+    println("  bridge: starting phi loop (interval=" + to_string(interval_ms) + "ms, top=" + to_string(scan_top_n) + ")")
+
+    let mut running = true
+    while running {
+        let raw = sample_top_processes(scan_top_n)
+        let lines = raw.split("\n")
+
+        // Skip header line (PID COMM %CPU %MEM)
+        let i = 1
+        while i < len(lines) {
+            let proc = parse_process_line(lines[i])
+            let pid = proc[0]
+            let name = proc[1]
+            let cpu = proc[2]
+            let ram = proc[3]
+
+            if pid > 0 {
+                let axes = build_axes_from_ps(cpu, ram)
+                let phi = compute_phi(axes)
+
+                // Gate: use implant.hexa phi_check for consciousness preservation
+                let gate = phi_check(prev_phi, phi)
+                let gate_passed = gate[0]
+
+                if gate_passed == 1 {
+                    // Rate limit: max 1 event/sec
+                    let now_ts = ts_epoch()
+                    if now_ts > last_emit_ts {
+                        let result = emit_phi_event(pid, name, phi, axes)
+                        if result == "ok" {
+                            last_emit_ts = now_ts
+                        }
+                    }
+                }
+
+                prev_phi = phi
+            }
+            i = i + 1
+        }
+
+        exec("sleep " + to_string(sleep_sec))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SINGLE SCAN — one-shot genome -> phi (for external callers)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn bridge_single_scan() -> void {
+    let scan_top_n = 10
+    let raw = sample_top_processes(scan_top_n)
+    let lines = raw.split("\n")
+    let mut count = 0
+
+    println("  bridge: single scan (top " + to_string(scan_top_n) + " processes)")
+    println("")
+
+    let i = 1
+    while i < len(lines) {
+        let proc = parse_process_line(lines[i])
+        let pid = proc[0]
+        let name = proc[1]
+        let cpu = proc[2]
+        let ram = proc[3]
+
+        if pid > 0 {
+            let axes = build_axes_from_ps(cpu, ram)
+            let phi = compute_phi(axes)
+            let sev = severity_from_phi(phi)
+            println("  pid=" + to_string(pid) + "  phi=" + to_string(phi) + "  sev=" + sev + "  " + name)
+            count = count + 1
+        }
+        i = i + 1
+    }
+
+    println("")
+    println("  scanned: " + to_string(count) + " processes")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — self-tests + CLI router
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PhiBridge {
+    // ── self-tests ──
+    assert AXIS_COUNT == 6
+    assert PAIR_COUNT == 15
+    assert ALPHA == 0.014
+    assert BALANCE == 0.5
+    assert MIN_EMIT_INTERVAL_MS == 1000
+
+    // Integration self-test: uniform axes -> 0.0
+    let uniform_axes = [50.0, 50.0, 50.0, 50.0, 50.0, 50.0]
+    let int_uniform = compute_integration(uniform_axes)
+    assert int_uniform == 0.0
+
+    // Integration self-test: diverse axes -> > 0.0
+    let diverse_axes = [100.0, 0.0, 50.0, 25.0, 75.0, 10.0]
+    let int_diverse = compute_integration(diverse_axes)
+    assert int_diverse > 0.0
+
+    // Phi self-test: zero axes -> phi == 0
+    let zero_axes = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    let phi_zero = compute_phi(zero_axes)
+    assert phi_zero == 0.0
+
+    // phi_check gate self-test (reused from implant.hexa)
+    let gate_r = phi_check(0.25, 0.25)
+    assert gate_r[0] == 1
+
+    println("  consciousness_bridge v" + VERSION + ": all self-tests passed")
+    println("")
+
+    // ── CLI router ──
+    let argv = args()
+    let cmd = "info"
+    if len(argv) > 3 {
+        cmd = argv[3]
+    }
+
+    if cmd == "scan" {
+        bridge_single_scan()
+    }
+
+    if cmd == "loop" {
+        let interval = 5000
+        if len(argv) > 4 {
+            interval = to_int(to_float(argv[4]))
+            if interval < 1000 { interval = 1000 }
+        }
+        bridge_loop(interval)
+    }
+
+    if cmd == "phi" {
+        // Compute phi from inline genome hex string
+        if len(argv) > 4 {
+            let genome = argv[4]
+            let phi = genome_to_phi(genome)
+            println("  genome_to_phi: " + to_string(phi))
+        }
+        if len(argv) <= 4 {
+            println("  Usage: consciousness_bridge phi <genome_hex>")
+        }
+    }
+
+    if cmd == "info" {
+        println("  consciousness_bridge v" + VERSION + " -- airgenome -> anima Phi bridge")
+        println("")
+        println("  Phi = alpha * integration * differentiation")
+        println("    alpha          = " + to_string(ALPHA))
+        println("    balance        = " + to_string(BALANCE))
+        println("    integration    = mean(|axis_i - axis_j|) / 100  (15 pairs)")
+        println("    differentiation = -sum(p_i * log(p_i)) / log(6)")
+        println("")
+        println("  Gate: implant.hexa phi_check (theta=0.1, tol=1/288)")
+        println("  Output: growth_bus.jsonl  source=ag_phi")
+        println("  Rate limit: max 1 event/sec")
+        println("")
+        println("  Commands:")
+        println("    scan              -- one-shot scan top processes, print Phi")
+        println("    loop [ms]         -- continuous bridge loop (default 5000ms)")
+        println("    phi <genome_hex>  -- compute Phi from raw genome string")
+        println("    info              -- show this help")
+    }
+
+    if cmd != "scan" {
+        if cmd != "loop" {
+            if cmd != "phi" {
+                if cmd != "info" {
+                    println("  unknown command: " + cmd)
+                    println("  Usage: consciousness_bridge <scan|loop|phi|info>")
+                }
+            }
+        }
+    }
+}

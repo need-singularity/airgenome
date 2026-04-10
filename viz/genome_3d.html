@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airgenome — Genome 3D · 6-Axis Hexagonal Prism</title>
+<style>
+  html,body{margin:0;height:100%;background:#060a12;color:#cfe;font-family:'SF Mono',Menlo,Consolas,monospace;overflow:hidden}
+  #hud{position:fixed;top:12px;left:12px;z-index:10;font-size:12px;line-height:1.6;
+       background:rgba(6,10,18,.82);padding:12px 16px;border:1px solid #1b3550;border-radius:8px;backdrop-filter:blur(8px);min-width:220px}
+  #hud h1{margin:0 0 8px;font-size:13px;color:#6df;letter-spacing:.6px;text-transform:uppercase}
+  .axis-row{display:flex;align-items:center;gap:8px;margin:3px 0}
+  .axis-row .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .axis-row .name{width:44px;color:#9cf;font-size:11px;font-weight:600}
+  .axis-row .bar-bg{flex:1;height:6px;background:#0a1420;border-radius:3px;overflow:hidden}
+  .axis-row .bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
+  .axis-row .val{width:40px;text-align:right;color:#fe8;font-size:11px;font-variant-numeric:tabular-nums}
+  #status{color:#8a8;font-size:10px;margin-top:8px}
+  #gate-panel{position:fixed;top:12px;right:12px;z-index:10;font-size:11px;
+              background:rgba(6,10,18,.82);padding:12px 16px;border:1px solid #1b3550;
+              border-radius:8px;backdrop-filter:blur(8px);max-height:calc(100vh - 40px);overflow-y:auto}
+  #gate-panel h2{margin:0 0 8px;font-size:12px;color:#6df;letter-spacing:.4px}
+  .gate-row{display:flex;align-items:center;gap:6px;margin:2px 0;cursor:default}
+  .gate-row .gate-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+  .gate-row .gate-label{color:#9cf;width:70px;font-size:10px}
+  .gate-row .gate-val{color:#fe8;font-size:10px;font-variant-numeric:tabular-nums}
+  #genome-bar{position:fixed;bottom:12px;left:12px;right:12px;z-index:10;
+              background:rgba(6,10,18,.82);border:1px solid #1b3550;border-radius:8px;
+              backdrop-filter:blur(8px);padding:10px 14px;display:flex;align-items:center;gap:12px}
+  #genome-bar .label{color:#6df;font-size:11px;font-weight:600;white-space:nowrap}
+  #genome-bytes{display:flex;gap:1px;flex:1;overflow:hidden}
+  #genome-bytes .byte{width:4px;height:16px;border-radius:1px;transition:background .4s}
+  #genome-bar .info{color:#688;font-size:10px;white-space:nowrap}
+  #legend{position:fixed;bottom:52px;right:12px;z-index:10;font-size:10px;color:#556;
+          background:rgba(6,10,18,.5);padding:4px 8px;border-radius:4px}
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <h1>Genome 3D -- 6-Axis Hexagonal Prism</h1>
+  <div id="axes-panel"></div>
+  <div id="status">connecting...</div>
+</div>
+
+<div id="gate-panel">
+  <h2>15 PAIR GATES</h2>
+  <div id="gates-list"></div>
+</div>
+
+<div id="genome-bar">
+  <span class="label">60-BYTE GENOME</span>
+  <div id="genome-bytes"></div>
+  <span class="info" id="genome-info">--</span>
+</div>
+
+<div id="legend">drag = rotate | scroll = zoom | vertices = axis load | edges = gate correlation</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ========== Constants ==========
+const AXES = ['CPU', 'RAM', 'GPU', 'NPU', 'Power', 'IO'];
+const AXIS_COLORS = [0xff5577, 0xffaa33, 0xaa77ff, 0x55ff88, 0xffee55, 0x55ccff];
+const AXIS_CSS = ['#ff5577','#ffaa33','#aa77ff','#55ff88','#ffee55','#55ccff'];
+const STATE_PATH = '/var/folders/2g/blzd56lx2rvfvt61c1pc9g7r0000gn/T/airgenome-state.json';
+const PRISM_R = 5;          // hexagonal radius
+const PRISM_H = 6;          // half-height of the prism
+const VERTEX_BASE = 0.3;    // minimum sphere size
+const VERTEX_MAX = 1.2;     // maximum sphere size
+const REFRESH_MS = 5000;
+
+// Gate pairs: C(6,2) = 15
+const PAIRS = [];
+for (let i = 0; i < 6; i++) for (let j = i + 1; j < 6; j++) PAIRS.push([i, j]);
+
+// State key mapping
+const STATE_KEYS = ['cpu', 'ram', 'gpu_local', 'npu', 'power', 'io'];
+
+// ========== Scene ==========
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x060a12);
+scene.fog = new THREE.FogExp2(0x060a12, 0.018);
+
+const cam = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+cam.position.set(10, 8, 12);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(cam, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.set(0, 0, 0);
+
+// ========== Lights ==========
+scene.add(new THREE.AmbientLight(0x334466, 0.8));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+keyLight.position.set(8, 12, 6);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0x6688ff, 0.4);
+fillLight.position.set(-6, 4, -8);
+scene.add(fillLight);
+const rimLight = new THREE.PointLight(0x66ffcc, 0.5, 30);
+rimLight.position.set(0, -8, 0);
+scene.add(rimLight);
+
+// ========== Grid ==========
+const gridHelper = new THREE.GridHelper(24, 24, 0x0f1a2a, 0x081018);
+gridHelper.position.y = -PRISM_H - 1;
+scene.add(gridHelper);
+
+// ========== Hexagonal prism wireframe ==========
+// 6 vertices on top ring, 6 on bottom ring
+function hexVertex(i, y) {
+  const a = (Math.PI / 3) * i - Math.PI / 2;
+  return new THREE.Vector3(Math.cos(a) * PRISM_R, y, Math.sin(a) * PRISM_R);
+}
+
+const topVerts = AXES.map((_, i) => hexVertex(i, PRISM_H));
+const botVerts = AXES.map((_, i) => hexVertex(i, -PRISM_H));
+
+// Prism wireframe edges (top ring, bottom ring, verticals)
+function buildPrismWire() {
+  const pts = [];
+  for (let i = 0; i < 6; i++) {
+    pts.push(topVerts[i], topVerts[(i + 1) % 6]);
+    pts.push(botVerts[i], botVerts[(i + 1) % 6]);
+    pts.push(topVerts[i], botVerts[i]);
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({ color: 0x1a3050, transparent: true, opacity: 0.4 });
+  return new THREE.LineSegments(geo, mat);
+}
+scene.add(buildPrismWire());
+
+// ========== Vertex spheres (top + bottom mirrored) ==========
+const vertexSpheres = []; // top ring spheres
+const vertexGlows = [];
+const vertexLabels = [];
+
+topVerts.forEach((v, i) => {
+  // Sphere
+  const geo = new THREE.SphereGeometry(0.5, 32, 24);
+  const mat = new THREE.MeshPhongMaterial({
+    color: AXIS_COLORS[i],
+    emissive: AXIS_COLORS[i],
+    emissiveIntensity: 0.3,
+    shininess: 100,
+    transparent: true,
+    opacity: 0.9
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(v);
+  scene.add(mesh);
+  vertexSpheres.push(mesh);
+
+  // Glow sprite
+  const glowCvs = document.createElement('canvas');
+  glowCvs.width = 64; glowCvs.height = 64;
+  const gctx = glowCvs.getContext('2d');
+  const grad = gctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  const c = new THREE.Color(AXIS_COLORS[i]);
+  grad.addColorStop(0, `rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},0.6)`);
+  grad.addColorStop(0.4, `rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},0.15)`);
+  grad.addColorStop(1, `rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},0)`);
+  gctx.fillStyle = grad;
+  gctx.fillRect(0, 0, 64, 64);
+  const glowTex = new THREE.CanvasTexture(glowCvs);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, transparent: true, blending: THREE.AdditiveBlending }));
+  glow.position.copy(v);
+  glow.scale.set(3, 3, 1);
+  scene.add(glow);
+  vertexGlows.push(glow);
+
+  // Label
+  const lblCvs = document.createElement('canvas');
+  lblCvs.width = 192; lblCvs.height = 64;
+  const lctx = lblCvs.getContext('2d');
+  lctx.fillStyle = AXIS_CSS[i];
+  lctx.font = 'bold 28px SF Mono, Menlo, monospace';
+  lctx.textAlign = 'center';
+  lctx.fillText(AXES[i], 96, 38);
+  const lblTex = new THREE.CanvasTexture(lblCvs);
+  const lbl = new THREE.Sprite(new THREE.SpriteMaterial({ map: lblTex, transparent: true }));
+  lbl.position.set(v.x * 1.3, v.y + 1.2, v.z * 1.3);
+  lbl.scale.set(2.5, 0.85, 1);
+  scene.add(lbl);
+  vertexLabels.push(lbl);
+});
+
+// Bottom vertex indicators (smaller, dimmer)
+const botSpheres = [];
+botVerts.forEach((v, i) => {
+  const geo = new THREE.SphereGeometry(0.25, 16, 12);
+  const mat = new THREE.MeshPhongMaterial({
+    color: AXIS_COLORS[i],
+    emissive: AXIS_COLORS[i],
+    emissiveIntensity: 0.15,
+    transparent: true,
+    opacity: 0.5
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(v);
+  scene.add(mesh);
+  botSpheres.push(mesh);
+});
+
+// ========== 15 Gate edges (between all pairs on top ring) ==========
+const gateEdges = [];
+const gateTubes = [];
+
+PAIRS.forEach(([i, j], idx) => {
+  // Thin line
+  const geo = new THREE.BufferGeometry().setFromPoints([topVerts[i].clone(), topVerts[j].clone()]);
+  const mat = new THREE.LineBasicMaterial({ color: 0x66ffcc, transparent: true, opacity: 0.3 });
+  const line = new THREE.Line(geo, mat);
+  scene.add(line);
+  gateEdges.push({ line, mat, geo });
+
+  // Tube for thickness
+  const tubeMat = new THREE.MeshBasicMaterial({
+    color: 0x66ffcc,
+    transparent: true,
+    opacity: 0.4,
+    blending: THREE.AdditiveBlending
+  });
+  const tubeMesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.03, 0.03, 1, 6),
+    tubeMat
+  );
+  scene.add(tubeMesh);
+  gateTubes.push(tubeMesh);
+});
+
+function updateTube(idx, a, b, strength) {
+  const tube = gateTubes[idx];
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  tube.position.copy(mid);
+  const thickness = 0.02 + strength * 0.25;
+  tube.scale.set(thickness, len, thickness);
+  tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  tube.material.opacity = 0.15 + strength * 0.55;
+
+  // Color: green=healthy, yellow=moderate, red=stressed
+  const h = 0.15 - strength * 0.15; // green to red
+  const c = new THREE.Color().setHSL(h < 0 ? 0 : h, 0.8, 0.5);
+  tube.material.color.copy(c);
+  gateEdges[idx].mat.color.copy(c);
+  gateEdges[idx].mat.opacity = 0.2 + strength * 0.5;
+}
+
+// ========== Diagonal cross-edges (top-i to bottom-j for pairs) ==========
+const crossEdges = [];
+PAIRS.forEach(([i, j]) => {
+  const pts = [topVerts[i].clone(), botVerts[j].clone()];
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({ color: 0x1a3050, transparent: true, opacity: 0.08 });
+  scene.add(new THREE.Line(geo, mat));
+  crossEdges.push(mat);
+});
+
+// ========== Central axis ==========
+const centerLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -PRISM_H, 0), new THREE.Vector3(0, PRISM_H, 0)]),
+  new THREE.LineBasicMaterial({ color: 0x6df, transparent: true, opacity: 0.15 })
+);
+scene.add(centerLine);
+
+// Central glow
+const centerGlowCvs = document.createElement('canvas');
+centerGlowCvs.width = 128; centerGlowCvs.height = 128;
+const cgctx = centerGlowCvs.getContext('2d');
+const cgrad = cgctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+cgrad.addColorStop(0, 'rgba(102,221,255,0.3)');
+cgrad.addColorStop(0.5, 'rgba(102,221,255,0.05)');
+cgrad.addColorStop(1, 'rgba(102,221,255,0)');
+cgctx.fillStyle = cgrad;
+cgctx.fillRect(0, 0, 128, 128);
+const centerGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: new THREE.CanvasTexture(centerGlowCvs),
+  transparent: true,
+  blending: THREE.AdditiveBlending
+}));
+centerGlow.scale.set(4, 4, 1);
+scene.add(centerGlow);
+
+// ========== Particle field ==========
+const particleCount = 300;
+const particleGeo = new THREE.BufferGeometry();
+const particlePos = new Float32Array(particleCount * 3);
+const particleVel = new Float32Array(particleCount * 3);
+for (let i = 0; i < particleCount; i++) {
+  particlePos[i * 3] = (Math.random() - 0.5) * 20;
+  particlePos[i * 3 + 1] = (Math.random() - 0.5) * 16;
+  particlePos[i * 3 + 2] = (Math.random() - 0.5) * 20;
+  particleVel[i * 3] = (Math.random() - 0.5) * 0.005;
+  particleVel[i * 3 + 1] = (Math.random() - 0.5) * 0.005;
+  particleVel[i * 3 + 2] = (Math.random() - 0.5) * 0.005;
+}
+particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePos, 3));
+const particleMat = new THREE.PointsMaterial({
+  color: 0x334466,
+  size: 0.06,
+  transparent: true,
+  opacity: 0.5,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const particles = new THREE.Points(particleGeo, particleMat);
+scene.add(particles);
+
+// ========== HUD Setup ==========
+const axesPanel = document.getElementById('axes-panel');
+const axisEls = AXES.map((name, i) => {
+  const row = document.createElement('div');
+  row.className = 'axis-row';
+  row.innerHTML = `
+    <span class="dot" style="background:${AXIS_CSS[i]}"></span>
+    <span class="name">${name}</span>
+    <span class="bar-bg"><span class="bar-fill" style="background:${AXIS_CSS[i]};width:0%"></span></span>
+    <span class="val">--</span>
+  `;
+  axesPanel.appendChild(row);
+  return {
+    fill: row.querySelector('.bar-fill'),
+    val: row.querySelector('.val')
+  };
+});
+
+// Gate list HUD
+const gatesList = document.getElementById('gates-list');
+const gateEls = PAIRS.map(([i, j]) => {
+  const row = document.createElement('div');
+  row.className = 'gate-row';
+  row.innerHTML = `
+    <span class="gate-dot"></span>
+    <span class="gate-label">${AXES[i]}-${AXES[j]}</span>
+    <span class="gate-val">--</span>
+  `;
+  gatesList.appendChild(row);
+  return {
+    dot: row.querySelector('.gate-dot'),
+    val: row.querySelector('.gate-val')
+  };
+});
+
+// Genome bytes bar
+const genomeBytesEl = document.getElementById('genome-bytes');
+const byteEls = [];
+for (let i = 0; i < 60; i++) {
+  const b = document.createElement('div');
+  b.className = 'byte';
+  b.style.background = '#0a1420';
+  genomeBytesEl.appendChild(b);
+  byteEls.push(b);
+}
+const genomeInfoEl = document.getElementById('genome-info');
+
+const statusEl = document.getElementById('status');
+
+// ========== Data ==========
+let axisValues = [0, 0, 0, 0, 0, 0];       // current (smoothed)
+let axisTargets = [0, 0, 0, 0, 0, 0];       // target
+let gateStrengths = new Array(15).fill(0);    // 0..1 per gate
+let genomeBytes = new Array(60).fill(0);      // 60-byte genome
+let lastState = null;
+
+function extractAxes(state) {
+  // Map state JSON keys to our 6 axes: CPU, RAM, GPU, NPU, Power, IO
+  const cpu = state.cpu ?? state.cpu_f ?? 0;
+  const ram = state.ram ?? state.ram_f ?? 0;
+  const gpu = state.gpu_local ?? state.gpu_local_f ?? state.ubu_gpu_util ?? 0;
+  const npu = state.npu ?? 0;
+  // Power: derive from load + throttled
+  const power = state.power ?? Math.min(100, (state.load ?? 0) * 5 + (state.throttled ? 30 : 0));
+  // IO: derive from disk + net
+  const io = state.io ?? Math.min(100,
+    (state.disk_mbps ?? state.disk_mbps_f ?? 0) * 2 +
+    (state.net_mbps ?? state.net_mbps_f ?? 0) * 2
+  );
+  return [cpu, ram, gpu, npu, power, io].map(v => Math.max(0, Math.min(100, Number(v) || 0)));
+}
+
+function computeGateStrengths(axes) {
+  // Gate strength = normalized interaction between two axes
+  // Higher when both axes are loaded; represents correlation/pressure
+  return PAIRS.map(([i, j]) => {
+    const ai = axes[i] / 100;
+    const aj = axes[j] / 100;
+    // Geometric mean biased: strong when both are high
+    return Math.sqrt(ai * aj) * 0.7 + Math.abs(ai - aj) * 0.3;
+  });
+}
+
+function synthesizeGenome(axes) {
+  // 60 bytes = 10 bytes per axis
+  // Each axis gets 10 slots: [raw, smoothed, delta, peak, floor, variance, trend, gate_sum, reserved, checksum]
+  const bytes = new Array(60).fill(0);
+  for (let i = 0; i < 6; i++) {
+    const base = i * 10;
+    const v = axes[i];
+    const v255 = Math.round(v * 2.55);
+    bytes[base + 0] = v255;                                    // raw
+    bytes[base + 1] = Math.round(axisValues[i] * 2.55);       // smoothed
+    bytes[base + 2] = Math.abs(v255 - bytes[base + 1]);       // delta
+    bytes[base + 3] = v255;                                    // peak (simplified)
+    bytes[base + 4] = Math.max(0, v255 - 20);                 // floor
+    bytes[base + 5] = Math.round(bytes[base + 2] * 1.5);      // variance proxy
+    bytes[base + 6] = v255 > bytes[base + 1] ? 1 : 0;        // trend up/down
+    // gate_sum: sum of gate strengths involving this axis
+    let gs = 0;
+    PAIRS.forEach(([a, b], idx) => {
+      if (a === i || b === i) gs += gateStrengths[idx];
+    });
+    bytes[base + 7] = Math.round(Math.min(255, gs * 51));     // gate_sum
+    bytes[base + 8] = 0;                                       // reserved
+    bytes[base + 9] = (bytes.slice(base, base + 9).reduce((s, x) => s + x, 0)) & 0xFF; // checksum
+  }
+  return bytes;
+}
+
+// ========== Fetch state ==========
+async function fetchState() {
+  // Try multiple sources in order
+  const sources = [
+    { url: 'http://localhost:17777/state', label: 'API :17777' },
+    { url: `file://${STATE_PATH}`, label: 'state file' },
+  ];
+
+  // Try API first
+  try {
+    const resp = await fetch(sources[0].url, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      lastState = data;
+      statusEl.textContent = `source: ${sources[0].label} | ${data.level || 'ok'} | ${new Date().toLocaleTimeString()}`;
+      statusEl.style.color = '#6f9';
+      return data;
+    }
+  } catch (_) {}
+
+  // Try direct file fetch (works if served by local server)
+  try {
+    const resp = await fetch('/tmp/airgenome-state.json', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      lastState = data;
+      statusEl.textContent = `source: state file | ${new Date().toLocaleTimeString()}`;
+      statusEl.style.color = '#8a8';
+      return data;
+    }
+  } catch (_) {}
+
+  // Fallback: generate plausible mock data
+  const t = performance.now();
+  statusEl.textContent = `source: simulated | ${new Date().toLocaleTimeString()}`;
+  statusEl.style.color = '#f96';
+  return {
+    cpu: 40 + 30 * Math.sin(t * 0.0004) + 10 * Math.sin(t * 0.0017),
+    ram: 45 + 20 * Math.sin(t * 0.0003 + 1) + 8 * Math.sin(t * 0.0013),
+    gpu_local: 10 + 15 * Math.sin(t * 0.0005 + 2),
+    npu: 2 + 3 * Math.sin(t * 0.0006 + 3),
+    load: 8 + 5 * Math.sin(t * 0.0004 + 4),
+    throttled: false,
+    disk_mbps: 5 * Math.abs(Math.sin(t * 0.0008)),
+    net_mbps: 2 * Math.abs(Math.sin(t * 0.001)),
+    level: 'sim',
+    active: true
+  };
+}
+
+async function refresh() {
+  const state = await fetchState();
+  axisTargets = extractAxes(state);
+  gateStrengths = computeGateStrengths(axisTargets);
+  genomeBytes = synthesizeGenome(axisTargets);
+
+  // Update genome bytes display
+  for (let i = 0; i < 60; i++) {
+    const v = genomeBytes[i];
+    const axIdx = Math.floor(i / 10);
+    const c = new THREE.Color(AXIS_COLORS[axIdx]);
+    const intensity = v / 255;
+    byteEls[i].style.background = `rgba(${c.r*255|0},${c.g*255|0},${c.b*255|0},${0.15 + intensity * 0.85})`;
+  }
+  genomeInfoEl.textContent = `${genomeBytes.filter(b => b > 0).length}/60 active`;
+
+  // Update gate HUD
+  PAIRS.forEach(([ai, aj], idx) => {
+    const s = gateStrengths[idx];
+    const hue = 120 - s * 120; // green to red
+    gateEls[idx].dot.style.background = `hsl(${hue},80%,50%)`;
+    gateEls[idx].val.textContent = (s * 100).toFixed(0) + '%';
+    gateEls[idx].val.style.color = s > 0.6 ? '#f96' : s > 0.3 ? '#fe8' : '#6f9';
+  });
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+
+// ========== Resize ==========
+addEventListener('resize', () => {
+  cam.aspect = innerWidth / innerHeight;
+  cam.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ========== Animation loop ==========
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  // Smooth axis values
+  for (let i = 0; i < 6; i++) {
+    axisValues[i] += (axisTargets[i] - axisValues[i]) * 0.06;
+  }
+
+  // Update vertex spheres
+  vertexSpheres.forEach((sphere, i) => {
+    const v = axisValues[i] / 100;
+    const s = VERTEX_BASE + v * (VERTEX_MAX - VERTEX_BASE);
+    sphere.scale.setScalar(s);
+    sphere.material.emissiveIntensity = 0.2 + v * 0.6;
+
+    // Gentle pulse
+    const pulse = 1 + Math.sin(t * 2 + i * 1.05) * 0.05;
+    sphere.scale.multiplyScalar(pulse);
+
+    // Glow size
+    vertexGlows[i].scale.setScalar(2 + v * 3);
+    vertexGlows[i].material.opacity = 0.3 + v * 0.5;
+
+    // Update HUD
+    axisEls[i].fill.style.width = axisValues[i].toFixed(1) + '%';
+    axisEls[i].val.textContent = axisValues[i].toFixed(1) + '%';
+  });
+
+  // Update bottom spheres (mirror with slight delay feel)
+  botSpheres.forEach((sphere, i) => {
+    const v = axisValues[i] / 100;
+    const s = 0.15 + v * 0.4;
+    sphere.scale.setScalar(s);
+    sphere.material.emissiveIntensity = 0.1 + v * 0.3;
+  });
+
+  // Update gate edges
+  PAIRS.forEach(([i, j], idx) => {
+    const a = vertexSpheres[i].position;
+    const b = vertexSpheres[j].position;
+    const s = gateStrengths[idx];
+
+    // Update line endpoints
+    const pos = gateEdges[idx].geo.attributes.position;
+    pos.setXYZ(0, a.x, a.y, a.z);
+    pos.setXYZ(1, b.x, b.y, b.z);
+    pos.needsUpdate = true;
+
+    updateTube(idx, a, b, s);
+  });
+
+  // Central glow pulses with overall system load
+  const avgLoad = axisValues.reduce((s, v) => s + v, 0) / 600;
+  centerGlow.scale.setScalar(3 + avgLoad * 4 + Math.sin(t * 1.5) * 0.5);
+  centerGlow.material.opacity = 0.2 + avgLoad * 0.4;
+
+  // Particles drift
+  const ppos = particles.geometry.attributes.position;
+  for (let i = 0; i < particleCount; i++) {
+    ppos.array[i * 3] += particleVel[i * 3];
+    ppos.array[i * 3 + 1] += particleVel[i * 3 + 1];
+    ppos.array[i * 3 + 2] += particleVel[i * 3 + 2];
+    // Wrap around
+    for (let c = 0; c < 3; c++) {
+      const idx = i * 3 + c;
+      if (Math.abs(ppos.array[idx]) > 12) ppos.array[idx] *= -0.9;
+    }
+  }
+  ppos.needsUpdate = true;
+
+  controls.update();
+  renderer.render(scene, cam);
+}
+animate();
+</script>
+</body>
+</html>

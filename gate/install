@@ -1,0 +1,154 @@
+#!/bin/bash
+# airgenome/gate/install — wrapper deploy automation (T6, 2026-04-10)
+#
+# Source-of-truth: /Users/ghost/Dev/airgenome/gate/wrappers/
+# Deploy target:   ~/.hx/bin/   (permanent shell wrappers)
+#
+# Why: wrappers edited in-repo (git committed) but runtime copies in ~/.hx/bin
+#      drift silently. This script sha256-compares & copies only when needed.
+#
+# Usage:
+#   bash install              # interactive: print plan, copy only drifted
+#   bash install --dry-run    # print what WOULD happen, no writes
+#   bash install --check      # report drift state only (no writes)
+#   bash install --force      # copy all regardless of sha256
+#
+# Safety: default mode performs installs (copies). Use --check first.
+# Auto-install is NOT wired into any hook by this script (manual by design).
+#
+# Exit codes:
+#   0 = success (or --check: all in sync)
+#   1 = drift detected in --check mode, or install error
+
+set -euo pipefail
+
+REPO_DIR="/Users/ghost/Dev/airgenome"
+WRAPPER_SRC="$REPO_DIR/gate/wrappers"
+HX_BIN_DIR="$HOME/.hx/bin"
+
+# Main wrappers: deploy to ~/.hx/bin/
+# hexa-bin / hexa-bin-real currently live only in patched/ (not deployed here).
+WRAPPERS=(hexa python3 cargo rustc sh-run)
+
+# Supporting files sourced by wrappers — must live alongside them.
+SUPPORT=(_cache.sh)
+
+MODE="install"
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) MODE="dry-run" ;;
+    --check)   MODE="check" ;;
+    --force)   MODE="force" ;;
+    -h|--help)
+      sed -n '2,25p' "$0"
+      exit 0
+      ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+sha() { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+
+printf "=== airgenome wrapper install (mode=%s) ===\n" "$MODE"
+printf "src: %s\n" "$WRAPPER_SRC"
+printf "dst: %s\n\n" "$HX_BIN_DIR"
+
+if [ ! -d "$WRAPPER_SRC" ]; then
+  echo "ERROR: source dir missing: $WRAPPER_SRC" >&2
+  exit 1
+fi
+if [ ! -d "$HX_BIN_DIR" ]; then
+  if [ "$MODE" = "install" ] || [ "$MODE" = "force" ]; then
+    mkdir -p "$HX_BIN_DIR"
+    echo "created: $HX_BIN_DIR"
+  else
+    echo "NOTE: dst dir missing: $HX_BIN_DIR (would be created)"
+  fi
+fi
+
+drift_count=0
+missing_count=0
+installed_count=0
+skipped_count=0
+
+process_file() {
+  local name="$1"
+  local src="$WRAPPER_SRC/$name"
+  local dst="$HX_BIN_DIR/$name"
+
+  if [ ! -f "$src" ]; then
+    printf "  MISSING-SRC  %-14s (source not found: %s)\n" "$name" "$src"
+    missing_count=$((missing_count + 1))
+    return
+  fi
+
+  local s d
+  s=$(sha "$src")
+  if [ -f "$dst" ]; then
+    d=$(sha "$dst")
+  else
+    d=""
+  fi
+
+  if [ -z "$d" ]; then
+    printf "  NEW          %-14s (dst missing)\n" "$name"
+    drift_count=$((drift_count + 1))
+  elif [ "$s" = "$d" ]; then
+    printf "  SAME         %-14s sha=%s\n" "$name" "${s:0:12}"
+    if [ "$MODE" != "force" ]; then
+      skipped_count=$((skipped_count + 1))
+      return
+    fi
+  else
+    printf "  DRIFT        %-14s src=%s dst=%s\n" "$name" "${s:0:12}" "${d:0:12}"
+    drift_count=$((drift_count + 1))
+  fi
+
+  case "$MODE" in
+    check|dry-run)
+      printf "               -> would copy %s -> %s\n" "$src" "$dst"
+      ;;
+    install|force)
+      cp "$src" "$dst"
+      chmod +x "$dst"
+      printf "               -> installed\n"
+      installed_count=$((installed_count + 1))
+      ;;
+  esac
+}
+
+echo "-- wrappers --"
+for w in "${WRAPPERS[@]}"; do
+  process_file "$w"
+done
+
+echo
+echo "-- support --"
+for s in "${SUPPORT[@]}"; do
+  process_file "$s"
+done
+
+echo
+echo "-- verify dst --"
+for f in "${WRAPPERS[@]}" "${SUPPORT[@]}"; do
+  dst="$HX_BIN_DIR/$f"
+  if [ -e "$dst" ]; then
+    ls -la "$dst"
+  else
+    printf "  (absent) %s\n" "$dst"
+  fi
+done
+
+echo
+printf "summary: drift=%d missing=%d installed=%d skipped=%d\n" \
+  "$drift_count" "$missing_count" "$installed_count" "$skipped_count"
+
+if [ "$MODE" = "check" ]; then
+  if [ "$drift_count" -gt 0 ] || [ "$missing_count" -gt 0 ]; then
+    echo "RESULT: out-of-sync (run 'bash install' to fix)"
+    exit 1
+  fi
+  echo "RESULT: in sync"
+fi
+
+exit 0
