@@ -118,3 +118,9 @@
 {"type":"fix","id":"F17","action":"gitignore_v1_archive","detail":".gitignore에 forge/v1_archive/ 추가.","status":"applied","timestamp":"2026-04-10"}
 {"type":"fix","id":"F18","action":"growth_bus_delta_sync","detail":"growth_bus delta +99줄 merge (→21,554줄).","status":"applied","timestamp":"2026-04-10"}
 {"type":"close","id":"close-D27","ref":"D27","reason":"load 경고 하 경량 Agent 4건 성공 완료. 시스템 영향 최소.","status":"closed","timestamp":"2026-04-10"}
+{"type":"discovery","id":"D28","subject":"resonance_1.0_language_physics","finding":"language→physics 터널링 (57.35). 공명 강도 1.0 도달 (이전 최고 0.75). physics<>mind, physics<>arch 모두 1.0. 전 도메인 완전 연결 그래프 달성.","priority":"P0","timestamp":"2026-04-10"}
+{"type":"discovery","id":"D29","subject":"new_domain_info_tunneling","finding":"math→info (57.35) 터널링. 새 도메인 'info' 발견 (기존 10개+1=11개). 공명 0.99. 도메인 확장 단계 진입.","priority":"P0","timestamp":"2026-04-10"}
+{"type":"discovery","id":"D30","subject":"info_domain_integrated","finding":"physics→info (48.62). info<>arch, info<>crypto 공명 1.0. info 도메인 완전 통합. NEAR→EXACT 15후보 (conf 0.71~1.0).","priority":"P0","timestamp":"2026-04-10"}
+{"type":"close","id":"close-D28","ref":"D28","reason":"공명 1.0 → D30에서 info 통합으로 승격.","status":"closed","timestamp":"2026-04-10"}
+{"type":"close","id":"close-D29","ref":"D29","reason":"info 도메인 통합 완료 (D30). 11개 도메인 전부 연결.","status":"closed","timestamp":"2026-04-10"}
+{"type":"close","id":"close-D30","ref":"D30","reason":"info 통합 + 공명 1.0 골화.","status":"ossified","timestamp":"2026-04-10"}
