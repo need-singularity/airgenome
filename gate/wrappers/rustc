@@ -1,46 +1,98 @@
 #!/bin/bash
-# cargo 자식 프로세스로 호출 시 게이트 skip (CARGO env = cargo가 설정)
-[ -n "$CARGO" ] && exec "$HOME/.cargo/bin/rustc" "$@"
+# rustc wrapper — cargo 얽힘 상속 (AG_ENTANGLE_PARENT via env)
+# CARGO env 설정만으론 local skip 하지 않는다 — 얽힘 필터가 부모 cargo의
+# remote 선택을 0-probe로 상속하기 때문.
 
 UBU_HOST="192.168.50.119"; UBU_PORT="9900"; UBU_SSH="ubu"; UBU_DIR="/tmp/airgenome"; TS_HOST=""
+HTZ_SSH="hetzner"; HTZ_DIR="~/Dev/hexa-lang"
 CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
-ag_budget_check && GATE_LOCAL=1
+
 ag_budget_enter
-ag_resolve_host
-if [ "$GATE_LOCAL" = "1" ]; then
+ag_filter_decide rustc "$@"
+_t0=$(date +%s)
+
+# 얽힘 없음 + CARGO env → cargo 자식이니 부모 가이드 없으면 그대로 local
+if [ -z "$FILTER_ENTANGLE_KEY" ] && [ -n "$CARGO" ]; then
+  ag_gate_msg "local" "rustc $* [no-entangle]"
+  "$HOME/.cargo/bin/rustc" "$@"
+  _rc=$?
+  ag_filter_record rustc local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
+fi
+
+# budget check (tunneling 비활성 시)
+if [ "$FILTER_BUDGET_BYPASS" != "1" ]; then
+  ag_budget_check && FILTER_TARGET="local"
+fi
+
+if [ "$FILTER_TARGET" = "local" ]; then
   ag_gate_msg "local" "rustc $*"
-  exec "$HOME/.cargo/bin/rustc" "$@"
-elif [ -z "$GH" ]; then
-  ag_gate_msg "unreachable" "rustc $*"
-  exec "$HOME/.cargo/bin/rustc" "$@"
+  "$HOME/.cargo/bin/rustc" "$@"
+  _rc=$?
+  ag_filter_record rustc local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
 fi
 
-# remote dispatch
-ag_gate_msg "remote" "rustc $*" "$GH:$UBU_PORT" "$UBU_DIR"
-rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+# ubu unreachable 강등
+ag_resolve_host
+if [ "$FILTER_TARGET" = "ubu" ] && [ -z "$GH" ]; then
+  FILTER_TARGET="htz"
+fi
 
-HAS_FILE=false
-RARGS=()
-BASENAME=""
-for a in "$@"; do
-  if [[ -f "$a" && "$a" == *.rs ]]; then
-    HAS_FILE=true
-    BASENAME="$(basename "$a" .rs)"
-    ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
-    scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
-    RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
-  else
-    RARGS+=("$a")
+# htz dispatch (rustc는 소스파일 전송)
+if [ "$FILTER_TARGET" = "htz" ]; then
+  if ssh -o ConnectTimeout=3 "$HTZ_SSH" true 2>/dev/null; then
+    ag_gate_msg "remote" "rustc $* [entangle:$FILTER_ENTANGLE_KEY]" "$HTZ_SSH" "$HTZ_DIR"
+    RARGS=()
+    for a in "$@"; do
+      if [[ -f "$a" && "$a" == *.rs ]]; then
+        scp -q "$a" "$HTZ_SSH:/tmp/" 2>/dev/null
+        RARGS+=("/tmp/$(basename "$a")")
+      else
+        RARGS+=("$a")
+      fi
+    done
+    ssh "$HTZ_SSH" "source ~/.cargo/env 2>/dev/null; rustc ${RARGS[*]}" 2>&1
+    _rc=$?
+    ag_filter_record rustc htz "$_rc" $(( $(date +%s) - _t0 ))
+    exit $_rc
   fi
-done
-
-wait  # rsync 완료 대기
-if [ "$HAS_FILE" = "true" ]; then
-  # 컴파일 + 실행
-  echo "cd $UBU_DIR/gate_files && source ~/.cargo/env && rustc ${RARGS[*]} -o $UBU_DIR/gate_files/$BASENAME && $UBU_DIR/gate_files/$BASENAME" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
-else
-  echo "source ~/.cargo/env && rustc ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+  FILTER_TARGET="local"
 fi
+
+# ubu dispatch
+if [ "$FILTER_TARGET" = "ubu" ] && [ -n "$GH" ]; then
+  ag_gate_msg "remote" "rustc $* [entangle:$FILTER_ENTANGLE_KEY]" "$GH:$UBU_PORT" "$UBU_DIR"
+  rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null &
+  HAS_FILE=false; RARGS=(); BASENAME=""
+  for a in "$@"; do
+    if [[ -f "$a" && "$a" == *.rs ]]; then
+      HAS_FILE=true
+      BASENAME="$(basename "$a" .rs)"
+      ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+      scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
+      RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
+    else
+      RARGS+=("$a")
+    fi
+  done
+  wait
+  if [ "$HAS_FILE" = "true" ]; then
+    echo "cd $UBU_DIR/gate_files && source ~/.cargo/env && rustc ${RARGS[*]} -o $UBU_DIR/gate_files/$BASENAME && $UBU_DIR/gate_files/$BASENAME" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+  else
+    echo "source ~/.cargo/env && rustc ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+  fi
+  _rc=$?
+  ag_filter_record rustc ubu "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
+fi
+
+# fallthrough local
+ag_gate_msg "unreachable" "rustc $*"
+"$HOME/.cargo/bin/rustc" "$@"
+_rc=$?
+ag_filter_record rustc local "$_rc" $(( $(date +%s) - _t0 ))
+exit $_rc

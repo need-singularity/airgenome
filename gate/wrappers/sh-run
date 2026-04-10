@@ -5,11 +5,26 @@ CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
-ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
-ag_resolve_host
-[ "$GATE_LOCAL" = "1" ] || [ -z "$GH" ] && exec /bin/bash "$@"
+ag_filter_decide sh-run "$@"
+_t0=$(date +%s)
 
+if [ "$FILTER_BUDGET_BYPASS" != "1" ]; then
+  ag_budget_check && FILTER_TARGET="local"
+fi
+
+ag_resolve_host
+if [ "$FILTER_TARGET" = "ubu" ] && [ -z "$GH" ]; then FILTER_TARGET="local"; fi
+
+if [ "$FILTER_TARGET" = "local" ]; then
+  ag_gate_msg "local" "sh-run $* [filter:$FILTER_REASON]"
+  /bin/bash "$@"
+  _rc=$?
+  ag_filter_record sh-run local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
+fi
+
+ag_gate_msg "remote" "sh-run $* [filter:$FILTER_REASON]" "$GH:$UBU_PORT" "$UBU_DIR"
 RARGS=()
 for a in "$@"; do
   if [[ -f "$a" ]]; then
@@ -21,3 +36,6 @@ for a in "$@"; do
   fi
 done
 echo "cd $UBU_DIR && bash ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+_rc=$?
+ag_filter_record sh-run "${FILTER_TARGET:-ubu}" "$_rc" $(( $(date +%s) - _t0 ))
+exit $_rc

@@ -19,30 +19,53 @@ case "$_cwd_project" in
      exec "$HOME/.cargo/bin/cargo" "$@" ;;
 esac
 
-ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
+# ── FILTER PIPELINE ──
+ag_filter_decide cargo "$@"
 ag_resolve_host
+_t0=$(date +%s)
 
-if [ "$GATE_LOCAL" = "1" ]; then
-  ag_gate_msg "local" "cargo $*"
-  exec "$HOME/.cargo/bin/cargo" "$@"
+# budget-full but no tunnel hint → force local
+if [ "$FILTER_BUDGET_BYPASS" != "1" ]; then
+  ag_budget_check && FILTER_TARGET="local"
+fi
+# ubu 선택이지만 unreachable → htz로 강등 (vast는 cargo 지원 없음)
+if [ "$FILTER_TARGET" = "ubu" ] && [ -z "$GH" ]; then
+  FILTER_TARGET="htz"
+  _ag_reason_push "demote:ubu-unreachable"
 fi
 
-# ubu gate daemon reachable → nc dispatch
-if [ -n "$GH" ]; then
-  ag_gate_msg "remote" "cargo $*" "$GH:$UBU_PORT" "$UBU_DIR"
+if [ "$FILTER_TARGET" = "local" ]; then
+  ag_gate_msg "local" "cargo $* [filter:$FILTER_REASON]"
+  "$HOME/.cargo/bin/cargo" "$@"
+  _rc=$?
+  ag_filter_record cargo local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
+fi
+
+# remote branch chosen — emit entanglement for rustc children (10min TTL)
+ag_filter_entangle_emit "$FILTER_TARGET" 600
+
+if [ "$FILTER_TARGET" = "ubu" ] && [ -n "$GH" ]; then
+  ag_gate_msg "remote" "cargo $* [entangle:$FILTER_ENTANGLE_KEY]" "$GH:$UBU_PORT" "$UBU_DIR"
   rsync -aq --update "$HOME/Dev/nexus/shared/" "$UBU_SSH:$UBU_DIR/nexus/shared/" 2>/dev/null
   echo "cd $UBU_DIR && source ~/.cargo/env && cargo $*" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
-  exit $?
+  _rc=$?
+  ag_filter_record cargo ubu "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
 fi
 
-# hetzner fallback via SSH (no gate daemon needed)
-if ssh -o ConnectTimeout=3 "$HTZ_SSH" true 2>/dev/null; then
-  ag_gate_msg "remote" "cargo $*" "$HTZ_SSH" "$HTZ_DIR"
+if [ "$FILTER_TARGET" = "htz" ] && ssh -o ConnectTimeout=3 "$HTZ_SSH" true 2>/dev/null; then
+  ag_gate_msg "remote" "cargo $* [entangle:$FILTER_ENTANGLE_KEY]" "$HTZ_SSH" "$HTZ_DIR"
   ssh "$HTZ_SSH" "cd $HTZ_DIR && source ~/.cargo/env 2>/dev/null; cargo $*" 2>&1
-  exit $?
+  _rc=$?
+  ag_filter_record cargo htz "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
 fi
 
-# all remotes unreachable
+# all remotes unreachable → local + record collapse
 ag_gate_msg "unreachable" "cargo $*"
-exec "$HOME/.cargo/bin/cargo" "$@"
+"$HOME/.cargo/bin/cargo" "$@"
+_rc=$?
+ag_filter_record cargo local "$_rc" $(( $(date +%s) - _t0 ))
+exit $_rc

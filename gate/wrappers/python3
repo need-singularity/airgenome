@@ -5,20 +5,30 @@ CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
-ag_budget_check && GATE_LOCAL=1
 ag_budget_enter
-ag_resolve_host
+ag_filter_decide python3 "$@"
+_t0=$(date +%s)
 
-# 로컬 fallback: gate없음, GATE_LOCAL=1, -c 인라인, 인자없음(REPL)
-if [ "$GATE_LOCAL" = "1" ]; then
+# -c 인라인·REPL은 무조건 local (filter와 무관)
+if [ "$1" = "-c" ] || [ $# -eq 0 ]; then
   ag_gate_msg "local" "python3 $*"
   exec /opt/homebrew/bin/python3 "$@"
-elif [ -z "$GH" ]; then
-  ag_gate_msg "unreachable" "python3 $*"
-  exec /opt/homebrew/bin/python3 "$@"
-elif [ "$1" = "-c" ] || [ $# -eq 0 ]; then
-  ag_gate_msg "local" "python3 $*"
-  exec /opt/homebrew/bin/python3 "$@"
+fi
+
+# budget check (tunneling 비활성 시)
+if [ "$FILTER_BUDGET_BYPASS" != "1" ]; then
+  ag_budget_check && FILTER_TARGET="local"
+fi
+
+ag_resolve_host
+if [ "$FILTER_TARGET" = "ubu" ] && [ -z "$GH" ]; then FILTER_TARGET="local"; fi
+
+if [ "$FILTER_TARGET" = "local" ]; then
+  ag_gate_msg "local" "python3 $* [filter:$FILTER_REASON]"
+  /opt/homebrew/bin/python3 "$@"
+  _rc=$?
+  ag_filter_record python3 local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
 fi
 
 # remote dispatch
@@ -37,3 +47,6 @@ for a in "$@"; do
 done
 wait  # rsync 완료 대기
 echo "cd $UBU_DIR && python3 ${RARGS[*]}" | nc -w 600 "$GH" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+_rc=$?
+ag_filter_record python3 "${FILTER_TARGET:-ubu}" "$_rc" $(( $(date +%s) - _t0 ))
+exit $_rc

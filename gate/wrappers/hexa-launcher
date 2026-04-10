@@ -13,19 +13,29 @@ CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
 # budget + reachability + config cache (GATE_G1 optimization)
 . "$SELF_DIR/_cache.sh"
 ag_load_config "$CFG"
-ag_budget_check && HEXA_LOCAL=1
 ag_budget_enter
-ag_resolve_host
-GATE_HOST="$GH"
+ag_filter_decide hexa-launcher "$@"
+_t0=$(date +%s)
 
-# HEXA_LOCAL=1 강제 로컬
-if [ "$HEXA_LOCAL" = "1" ] || [ -z "$GATE_HOST" ]; then
+# run이 아니면 무조건 로컬
+if [ "$1" != "run" ] || [ -z "$2" ]; then
   exec "$LOCAL_BIN" "$@"
 fi
 
-# run이 아니면 로컬
-if [ "$1" != "run" ] || [ -z "$2" ]; then
-  exec "$LOCAL_BIN" "$@"
+if [ "$FILTER_BUDGET_BYPASS" != "1" ]; then
+  ag_budget_check && FILTER_TARGET="local"
+fi
+
+ag_resolve_host
+GATE_HOST="$GH"
+if [ "$FILTER_TARGET" = "ubu" ] && [ -z "$GATE_HOST" ]; then FILTER_TARGET="local"; fi
+
+if [ "$FILTER_TARGET" = "local" ]; then
+  ag_gate_msg "local" "hexa-launcher $* [filter:$FILTER_REASON]"
+  "$LOCAL_BIN" "$@"
+  _rc=$?
+  ag_filter_record hexa-launcher local "$_rc" $(( $(date +%s) - _t0 ))
+  exit $_rc
 fi
 
 SCRIPT="$2"
@@ -49,3 +59,6 @@ done
 REMOTE_HEXA="/tmp/hexa-build/hexa-lang/target/release/hexa"
 CMD="cd $UBU_DIR && $REMOTE_HEXA run $REMOTE_SCRIPT $*"
 echo "$CMD" | nc -w 600 "$GATE_HOST" "$UBU_PORT" 2>/dev/null | sed '/^---END---$/d'
+_rc=$?
+ag_filter_record hexa-launcher "${FILTER_TARGET:-ubu}" "$_rc" $(( $(date +%s) - _t0 ))
+exit $_rc
