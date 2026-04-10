@@ -1,0 +1,95 @@
+// sync_remote.hexa — mac → ubu/htz airgenome (modules + nexus/shared) 정기 sync
+//
+// SSOT 메타: nexus/shared/config/infrastructure.json sync.policies (참조용 정책 정의)
+// 실제 호스트/경로: nexus/shared/gate_config.jsonl 동적 로드 (R2 — 하드코딩 금지)
+//
+// Usage:
+//   hexa modules/sync_remote.hexa             — airgenome 전체 sync (기본)
+//   hexa modules/sync_remote.hexa airgenome   — 동일
+//   hexa modules/sync_remote.hexa nexus       — nexus 도 함께 sync
+//   hexa modules/sync_remote.hexa all         — airgenome + nexus
+//
+// 안전 정책:
+//   - rsync -az (no --delete) — drift 방지보다 안전 우선
+//   - 각 rsync 명령에 `|| true` 추가 — 한 호스트 실패가 다른 호스트 sync 중단시키지 않음
+//   - exec().trim() 의 Error 함정 회피
+
+let HOME_DIR = env("HOME")
+let AG_DIR = HOME_DIR + "/Dev/airgenome"
+let NX_DIR = HOME_DIR + "/Dev/nexus"
+let GATE_CFG = AG_DIR + "/nexus/shared/gate_config.jsonl"
+
+// gate_config.jsonl 에서 키 읽기 (infra_probe.hexa load_cfg 패턴 차용)
+fn cfg(key: str, fallback: str) -> str {
+    if file_exists(GATE_CFG) == false { return fallback }
+    let raw = read_file(GATE_CFG)
+    let lines = raw.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let p = json_parse(line)
+                if p["key"] == key { return p["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+fn rsync_to(label: str, src: str, alias: str, dst: str) {
+    println("[sync_remote] " + label + " : " + alias + ":" + dst)
+    // 1) 원격 디렉토리 mkdir -p (없으면 생성)
+    let mkdir_cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes '" + alias + "' 'mkdir -p \"" + dst + "\"' 2>&1 || true"
+    exec(mkdir_cmd)
+    // 2) rsync -az (no --delete, --timeout 으로 hang 방지, || true 로 부분 실패 격리)
+    let cmd = "rsync -az --timeout=30 '" + src + "/' '" + alias + ":" + dst + "/' 2>&1 || true"
+    let out = exec(cmd).trim()
+    if len(out) > 0 {
+        println("  " + out)
+    } else {
+        println("  ok")
+    }
+}
+
+let argv = args()
+let mut target = "airgenome"
+let mut ai = 0
+while ai < len(argv) {
+    let v = argv[ai]
+    if v == "airgenome" { target = "airgenome" }
+    if v == "nexus" { target = "nexus" }
+    if v == "all" { target = "all" }
+    ai = ai + 1
+}
+
+let ubu_alias  = cfg("ssh_alias", "ubu")
+let ubu_dir    = cfg("remote_dir", "/home/aiden/airgenome")
+let htz_alias  = cfg("htz_ssh_alias", "hetzner")
+let htz_ag_dir = cfg("htz_airgenome_dir", "/root/Dev/airgenome")
+let htz_nx_dir = cfg("htz_nexus_dir", "/root/Dev/nexus")
+
+println("[sync_remote] start — target=" + target + " ubu=" + ubu_alias + " htz=" + htz_alias)
+let t0 = exec("date +%s 2>/dev/null || echo 0").trim()
+println("[sync_remote] t0=" + t0)
+
+if target == "airgenome" {
+    rsync_to("ag-modules → ubu",      AG_DIR + "/modules",      ubu_alias, ubu_dir + "/modules")
+    rsync_to("ag-modules → htz",      AG_DIR + "/modules",      htz_alias, htz_ag_dir + "/modules")
+    rsync_to("ag-nexus/shared → ubu", AG_DIR + "/nexus/shared", ubu_alias, ubu_dir + "/nexus/shared")
+    rsync_to("ag-nexus/shared → htz", AG_DIR + "/nexus/shared", htz_alias, htz_ag_dir + "/nexus/shared")
+}
+if target == "nexus" {
+    rsync_to("nexus → htz",           NX_DIR,                   htz_alias, htz_nx_dir)
+}
+if target == "all" {
+    rsync_to("ag-modules → ubu",      AG_DIR + "/modules",      ubu_alias, ubu_dir + "/modules")
+    rsync_to("ag-modules → htz",      AG_DIR + "/modules",      htz_alias, htz_ag_dir + "/modules")
+    rsync_to("ag-nexus/shared → ubu", AG_DIR + "/nexus/shared", ubu_alias, ubu_dir + "/nexus/shared")
+    rsync_to("ag-nexus/shared → htz", AG_DIR + "/nexus/shared", htz_alias, htz_ag_dir + "/nexus/shared")
+    rsync_to("nexus → htz",           NX_DIR,                   htz_alias, htz_nx_dir)
+}
+
+let t1 = exec("date +%s 2>/dev/null || echo 0").trim()
+println("[sync_remote] done t1=" + t1)

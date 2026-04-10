@@ -8,8 +8,32 @@ CFG="$AG_HOME/nexus/shared/gate_config.jsonl"
 LOCAL_HEXA="$AG_HOME/nexus/shared/bin/hexa.real"
 [ ! -x "$LOCAL_HEXA" ] && LOCAL_HEXA="$HOME/Dev/hexa-lang/target/release/hexa"
 
+# ── 외부 프로젝트 pass-through ──
+# 첫 .hexa 인자가 $AG_HOME 외부에 있으면 게이트 전체 우회 (직접 LOCAL_HEXA exec).
+# 이유: 이 wrapper 는 ~/.hx/bin/hexa 로 단일화돼서 글로벌 hexa 호출을 받음 →
+#       nexus 같은 타프로젝트 .hexa 까지 airgenome gate 가 잘못 적용되는 것 방지.
+# 메시지는 stderr 로 명시 출력하여 silent 변화 방지.
+for _ag_arg in "$@"; do
+    case "$_ag_arg" in
+        *.hexa)
+            _ag_dir=$(cd "$(dirname "$_ag_arg")" 2>/dev/null && pwd)
+            if [ -n "$_ag_dir" ]; then
+                _ag_abs="$_ag_dir/$(basename "$_ag_arg")"
+                case "$_ag_abs" in
+                    "$AG_HOME"/*) ;;  # 내부 → 게이트 진입
+                    *)
+                        echo "[GATE PASS-THROUGH] 외부 프로젝트: $_ag_abs — airgenome gate 미적용" >&2
+                        exec "$LOCAL_HEXA" "$@"
+                        ;;
+                esac
+            fi
+            break  # 첫 .hexa 만 판정
+            ;;
+    esac
+done
+
 # gate_config에서 원격 설정 읽기 (외부 경로 하드코딩 제거)
-_cfg() { grep "\"$1\"" "$CFG" 2>/dev/null | sed 's/.*"value":"//;s/".*//'; }
+_cfg() { grep "\"$1\"" "$CFG" 2>/dev/null | sed 's/.*"value": "//;s/".*//'; }
 UBU_SSH=$(_cfg ssh_alias); [ -z "$UBU_SSH" ] && UBU_SSH="ubu"
 UBU_DIR=$(_cfg remote_dir); [ -z "$UBU_DIR" ] && UBU_DIR="/home/aiden/airgenome"
 UBU_HEXA=$(_cfg ubu_hexa_bin); [ -z "$UBU_HEXA" ] && UBU_HEXA="/home/aiden/Dev/hexa-lang/target/release/hexa"
@@ -21,7 +45,7 @@ HTZ_DIR=$(_cfg htz_nexus_dir);  [ -z "$HTZ_DIR" ]  && HTZ_DIR="/root/Dev/nexus"
 HEXA_TARGET="${HEXA_TARGET:-auto}"
 
 # ── Mac 전용 스크립트 (절대 원격 라우팅 금지) ──
-MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa"
+MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa|sync_remote.hexa"
 
 # 인자에서 Mac 전용 스크립트 감지
 for a in "$@"; do

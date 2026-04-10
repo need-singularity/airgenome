@@ -16,7 +16,7 @@ let CONFIG_FILE = "nexus/shared/genome_harvest.jsonl"
 
 fn cfg_int(key: str, default_val: int) -> int {
     if file_exists(CONFIG_FILE) == false { return default_val }
-    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null || true").trim()
     if len(grep) == 0 { return default_val }
     let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
     if len(v) == 0 { return default_val }
@@ -25,7 +25,7 @@ fn cfg_int(key: str, default_val: int) -> int {
 
 fn cfg_str(key: str, default_val: str) -> str {
     if file_exists(CONFIG_FILE) == false { return default_val }
-    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null").trim()
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null || true").trim()
     if len(grep) == 0 { return default_val }
     let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
     if len(v) == 0 { return default_val }
@@ -340,7 +340,7 @@ consciousness HarvestRouter {
     let pid_shuffle = cfg_int("pid_shuffle", 1)
     let pack_file  = cfg_str("pack_file", "forge/genomes.pack")
 
-    let total_ram_mb = to_int(to_float(exec("sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}'").trim()))
+    let total_ram_mb = to_int(to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0)
 
     let argv = args()
     let mut mode = "once"
