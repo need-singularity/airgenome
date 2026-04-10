@@ -4,6 +4,7 @@
 .genome_cache
 forge/genomes/
 forge/compressed/
+forge/v1_archive/
 forge/state.json
 forge/.vitals_ema.json
 forge/by_pid/

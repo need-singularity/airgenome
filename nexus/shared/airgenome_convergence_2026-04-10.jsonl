@@ -111,3 +111,10 @@
 {"type":"close","id":"close-D23","ref":"D23","reason":"energy→mind → D26 통합.","status":"closed","timestamp":"2026-04-10"}
 {"type":"close","id":"close-D24","ref":"D24","reason":"network→mind + 순환 → D26 통합.","status":"closed","timestamp":"2026-04-10"}
 {"type":"close","id":"close-D25","ref":"D25","reason":"도메인 순환 → D26 전체 완성으로 승격.","status":"closed","timestamp":"2026-04-10"}
+{"type":"close","id":"close-D26","ref":"D26","reason":"전 도메인 터널링 완료 기록. 순환 그래프 완성 골화.","status":"ossified","timestamp":"2026-04-10"}
+{"type":"discovery","id":"D27","subject":"load_152_safety_pause","finding":"load 152.83 (R0 임계 50의 3배). hexa 8프로세스 + rustc + claude 7 + iTerm. 전부 사용자 nexus 워크로드 (Prime Directive). 신규 작업 발사 중단. 자연 하강 대기.","priority":"P0","timestamp":"2026-04-10"}
+{"type":"fix","id":"F15","action":"htz_dispatch_timeout_120","detail":"htz_dispatch.hexa ConnectTimeout 5→120 + ServerAliveInterval=30. blowup_router exit 143 근본 원인 해결.","status":"applied","timestamp":"2026-04-10"}
+{"type":"fix","id":"F16","action":"ubu_bridge_todo_cleared","detail":"ubu_bridge.hexa Wave 0 TODO 주석 → '전 함수 구현됨' 갱신. 8개 함수 전부 구현 확인.","status":"applied","timestamp":"2026-04-10"}
+{"type":"fix","id":"F17","action":"gitignore_v1_archive","detail":".gitignore에 forge/v1_archive/ 추가.","status":"applied","timestamp":"2026-04-10"}
+{"type":"fix","id":"F18","action":"growth_bus_delta_sync","detail":"growth_bus delta +99줄 merge (→21,554줄).","status":"applied","timestamp":"2026-04-10"}
+{"type":"close","id":"close-D27","ref":"D27","reason":"load 경고 하 경량 Agent 4건 성공 완료. 시스템 영향 최소.","status":"closed","timestamp":"2026-04-10"}

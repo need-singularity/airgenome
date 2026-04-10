@@ -13,7 +13,7 @@
 //
 //  스펙: docs/superpowers/specs/2026-04-09-ubuntu-first-breakthrough-design.md
 //
-//  인터페이스 (Wave 0 스캐폴딩 — body=TODO)
+//  인터페이스 (Wave 0 완료 — 전 함수 구현됨)
 //    fn health() -> bool
 //    fn remote_exec(cmd: str) -> str   // (스펙상 exec — 빌트인 exec 와 충돌 회피)
 //    fn exec_python(script: str) -> str
