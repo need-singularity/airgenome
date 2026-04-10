@@ -1,1 +1,72 @@
-/Users/ghost/Dev/hexa-lang/target/release/hexa
+#!/bin/bash
+# nexus/shared/bin/hexa — 중앙 자원 가드 래퍼
+# 골화 2026-04-10: Mac 자원 사용 금지 중앙 집행
+# 외부 폴더 의존 제거: 모든 경로는 프로젝트 내부 또는 gate_config.jsonl 참조
+
+AG_HOME="${AIRGENOME_HOME:-$HOME/Dev/airgenome}"
+CFG="$AG_HOME/nexus/shared/gate_config.jsonl"
+LOCAL_HEXA="$AG_HOME/nexus/shared/bin/hexa.real"
+[ ! -x "$LOCAL_HEXA" ] && LOCAL_HEXA="$HOME/Dev/hexa-lang/target/release/hexa"
+
+# gate_config에서 원격 설정 읽기 (외부 경로 하드코딩 제거)
+_cfg() { grep "\"$1\"" "$CFG" 2>/dev/null | sed 's/.*"value":"//;s/".*//'; }
+UBU_SSH=$(_cfg ssh_alias); [ -z "$UBU_SSH" ] && UBU_SSH="ubu"
+UBU_DIR=$(_cfg remote_dir); [ -z "$UBU_DIR" ] && UBU_DIR="/home/aiden/airgenome"
+UBU_HEXA=$(_cfg ubu_hexa_bin); [ -z "$UBU_HEXA" ] && UBU_HEXA="/home/aiden/Dev/hexa-lang/target/release/hexa"
+HTZ_SSH=$(_cfg htz_ssh_alias); [ -z "$HTZ_SSH" ] && HTZ_SSH="hetzner"
+HTZ_HEXA=$(_cfg htz_hexa_bin); [ -z "$HTZ_HEXA" ] && HTZ_HEXA="~/Dev/hexa-lang/target/release/hexa"
+
+# ── Mac 전용 스크립트 (절대 원격 라우팅 금지) ──
+MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa"
+
+# 인자에서 Mac 전용 스크립트 감지
+for a in "$@"; do
+    _bn=$(basename "$a" 2>/dev/null)
+    if echo "$_bn" | grep -qE "$MAC_ONLY"; then
+        exec "$LOCAL_HEXA" "$@"
+    fi
+done
+
+# mac_compute_allowed 플래그
+mac_allowed=$(_cfg mac_compute_allowed)
+[ -z "$mac_allowed" ] && mac_allowed="false"
+
+if [ "$mac_allowed" = "true" ]; then
+    exec "$LOCAL_HEXA" "$@"
+fi
+
+# ── Mac 연산 금지 → 원격 라우팅 ──
+
+# 1) ubu
+if ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null; then
+    RARGS=()
+    for a in "$@"; do
+        if [ -f "$a" ]; then
+            ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
+            scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
+            RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
+        else
+            RARGS+=("$a")
+        fi
+    done
+    ssh -o ConnectTimeout=30 "$UBU_SSH" "cd $UBU_DIR && $UBU_HEXA ${RARGS[*]}" 2>&1
+    exit $?
+fi
+
+# 2) hetzner
+if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HTZ_SSH" true 2>/dev/null; then
+    RARGS=()
+    for a in "$@"; do
+        if [ -f "$a" ]; then
+            scp -q "$a" "$HTZ_SSH:/tmp/" 2>/dev/null
+            RARGS+=("/tmp/$(basename "$a")")
+        else
+            RARGS+=("$a")
+        fi
+    done
+    ssh "$HTZ_SSH" "$HTZ_HEXA ${RARGS[*]}" 2>&1
+    exit $?
+fi
+
+echo "[GUARD] Mac 연산 금지 + 원격 unreachable — 실행 거부" >&2
+exit 1

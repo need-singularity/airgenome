@@ -30,7 +30,7 @@ let RATE_PATTERNS = RATE_PATTERNS_STR.split(",")
 // ═══════════════════════════════════════════════════════════════════════
 let SESSION_FILE = HOME + "/.airgenome/cli-sessions.json"
 let MAX_CONCURRENT_STR = load_config_val("max_concurrent")
-let MAX_CONCURRENT = to_int(MAX_CONCURRENT_STR)
+let MAX_CONCURRENT = if len(MAX_CONCURRENT_STR) == 0 { 2 } else { try { to_int(MAX_CONCURRENT_STR) } catch e { 2 } }
 // fallback: config 로드 실패 시 기본값 2
 fn safe_max_concurrent() -> int {
     if MAX_CONCURRENT < 1 { return 2 }
