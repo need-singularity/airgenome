@@ -1,0 +1,122 @@
+// safari_gate.hexa — Safari 탭별 WebContent 게이트
+//
+// 입력: argv[2]=state, argv[3]=hid_idle_sec
+//
+// 데이터 소스:
+//   ps              — Safari + WebContent + Networking + GPU helpers
+//   osascript       — frontmost app (Safari 인지)
+//
+// 재해석:
+//   Safari 자체 = 메인 GUI (BG 절대 금지 — UI freeze)
+//   Networking helper = 모든 탭 공용 네트워크 스택 (BG 금지 — 모든 탭 멎음)
+//   GPU helper = 렌더링 (BG 금지 — 화면 freeze)
+//   WebContent.* = 탭 단위 컨텐츠 프로세스 (BG 가능)
+//
+// BG 후보:
+//   state >= hot  AND  Safari 가 frontmost 가 아님  → 모든 WebContent BG
+//   state == critical  AND  Safari frontmost  → cpu > 10% 인 background WebContent BG
+//                                                (foreground 탭 식별 어려움 → cpu 상위만)
+//
+// Networking/GPU/Safari 본체 는 절대 BG 안 함 (HARD_NEVER)
+
+let HOME = env("HOME")
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_safari_state.jsonl"
+
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+// ── frontmost ──────────────────────────────────────────────────────────
+let mut frontmost = env("AG_COORD_FRONTMOST")
+if frontmost == "" {
+    frontmost = safe_exec("lsappinfo info -only name \"$(lsappinfo front)\" 2>/dev/null | awk -F'\"' 'NF>=4{print $4}'")
+}
+let is_safari_front = frontmost == "Safari"
+
+// ── ps census: Safari WebContent (탭) + main + helpers ────────────────
+let ps_raw = safe_exec("ps -axo pid=,pcpu=,rss=,comm= | awk '$1+0>100 {pid=$1; cpu=$2; rss=$3; $1=$2=$3=\"\"; sub(/^  */,\"\"); printf \"%s|%s|%s|%s\\n\", pid, cpu, rss, $0}' | grep -E '(Safari|com.apple.WebKit)'")
+let ps_lines = ps_raw.split("\n")
+
+let mut webcontent = 0
+let mut total = 0
+let mut main_safari_pid = ""
+let mut max_wc_cpu = 0.0
+
+let mut i = 0
+while i < ps_lines.len() {
+    let line = ps_lines[i].trim()
+    if line == "" { i = i + 1; continue }
+    let parts = line.split("|")
+    if parts.len() < 4 { i = i + 1; continue }
+    let pid = parts[0].trim()
+    let cpu_s = parts[1].trim()
+    let comm = parts[3].trim()
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+    total = total + 1
+    if comm.contains("WebContent") {
+        webcontent = webcontent + 1
+        if cpu > max_wc_cpu { max_wc_cpu = cpu }
+    } else if comm.contains("/Safari.app/Contents/MacOS/Safari") {
+        main_safari_pid = pid
+    }
+    i = i + 1
+}
+
+// 상태 로그
+let log_entry = "{\"ts\":\"" + iso + "\",\"state\":\"" + state + "\",\"frontmost\":\"" + json_escape(frontmost) + "\",\"is_safari_front\":" + (if is_safari_front { "true" } else { "false" }) + ",\"total\":" + to_string(total) + ",\"webcontent\":" + to_string(webcontent) + ",\"max_wc_cpu\":" + to_string(to_int(max_wc_cpu * 10)) + ",\"main_pid\":\"" + main_safari_pid + "\"}"
+try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+// ── 액션 결정 ──────────────────────────────────────────────────────────
+let mut recommendations = ""
+let mut rec_count = 0
+
+// 모드 1: Safari NOT frontmost AND state >= hot → 모든 WebContent BG
+let mode_full_bg = (state == "hot" || state == "critical") && is_safari_front == false
+// 모드 2: Safari frontmost AND state == critical → cpu > 10% WebContent 만 BG (foreground 탭 휴리스틱: cpu 가장 큰 것 보호)
+let mode_partial_bg = state == "critical" && is_safari_front
+
+if mode_full_bg || mode_partial_bg {
+    let mut j = 0
+    while j < ps_lines.len() {
+        let line = ps_lines[j].trim()
+        if line == "" { j = j + 1; continue }
+        let parts = line.split("|")
+        if parts.len() < 4 { j = j + 1; continue }
+        let pid = parts[0].trim()
+        let cpu_s = parts[1].trim()
+        let comm = parts[3].trim()
+        // HARD_NEVER 가드: WebContent 만 대상, Networking/GPU/Safari 본체는 제외
+        if comm.contains("WebContent") == false { j = j + 1; continue }
+        let mut cpu = 0.0
+        try { cpu = to_float(cpu_s) } catch e {}
+        if mode_partial_bg {
+            // foreground 탭 보호: 최대 cpu 인 WebContent 는 제외
+            if cpu >= max_wc_cpu { j = j + 1; continue }
+            // 추가로 cpu < 5 인 idle 탭은 굳이 안 만짐
+            if cpu < 5.0 { j = j + 1; continue }
+        }
+        let conf = if mode_full_bg { "95/100" } else { "75/100" }
+        let reason = if mode_full_bg { "safari_not_front" } else { "critical_bg_tab" }
+        let rec = "{\"app\":\"safari\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"" + reason + "\",\"confidence\":\"" + conf + "\",\"cpu\":" + cpu_s + ",\"comm\":\"" + json_escape(comm) + "\"}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+        j = j + 1
+    }
+}
+
+println("# safari_gate state=" + state + " front=" + frontmost + " is_safari_front=" + (if is_safari_front { "true" } else { "false" }) + " total=" + to_string(total) + " webcontent=" + to_string(webcontent) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }

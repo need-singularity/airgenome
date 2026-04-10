@@ -1,0 +1,86 @@
+// calendar_gate.hexa — Apple Calendar 게이트
+//
+// 입력: argv[2]=state, argv[3]=hid_idle_sec
+//
+// 데이터 소스:
+//   ps              — Calendar.app + CalendarAgent (event sync) + CalNCService
+//   osascript       — frontmost (Calendar 활성?)
+//
+// 재해석:
+//   Calendar 본체  = 메인 GUI (BG 가능 — 알림 정상)
+//   CalendarAgent  = 이벤트 동기화 (BG 안전, sync 살아있음)
+//   CalNCService   = Notification Center widget — 잠깐 BG 가능
+//
+// BG 후보:
+//   state >= hot  AND  Calendar 가 frontmost 가 아님 → Calendar 본체 + Agent BG
+
+let HOME = env("HOME")
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_calendar_state.jsonl"
+
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+let mut frontmost = env("AG_COORD_FRONTMOST")
+if frontmost == "" {
+    frontmost = safe_exec("lsappinfo info -only name \"$(lsappinfo front)\" 2>/dev/null | awk -F'\"' 'NF>=4{print $4}'")
+}
+let is_cal_front = frontmost == "Calendar"
+
+let ps_raw = safe_exec("ps -axo pid=,pcpu=,rss=,comm= | awk '$1+0>100 {pid=$1; cpu=$2; rss=$3; $1=$2=$3=\"\"; sub(/^  */,\"\"); printf \"%s|%s|%s|%s\\n\", pid, cpu, rss, $0}' | grep -E '/Calendar\\.app|CalendarAgent|CalNCService|com\\.apple\\.iCal'")
+let ps_lines = ps_raw.split("\n")
+
+let mut total = 0
+let mut max_cpu = 0.0
+let mut i = 0
+while i < ps_lines.len() {
+    let line = ps_lines[i].trim()
+    if line == "" { i = i + 1; continue }
+    let parts = line.split("|")
+    if parts.len() < 4 { i = i + 1; continue }
+    let cpu_s = parts[1].trim()
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+    if cpu > max_cpu { max_cpu = cpu }
+    total = total + 1
+    i = i + 1
+}
+
+let log_entry = "{\"ts\":\"" + iso + "\",\"state\":\"" + state + "\",\"frontmost\":\"" + json_escape(frontmost) + "\",\"is_cal_front\":" + (if is_cal_front { "true" } else { "false" }) + ",\"total\":" + to_string(total) + ",\"max_cpu\":" + to_string(to_int(max_cpu * 10)) + "}"
+try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+let mut recommendations = ""
+let mut rec_count = 0
+
+if (state == "hot" || state == "critical") && is_cal_front == false && total > 0 {
+    let mut j = 0
+    while j < ps_lines.len() {
+        let line = ps_lines[j].trim()
+        if line == "" { j = j + 1; continue }
+        let parts = line.split("|")
+        if parts.len() < 4 { j = j + 1; continue }
+        let pid = parts[0].trim()
+        let cpu_s = parts[1].trim()
+        let comm = parts[3].trim()
+        let rec = "{\"app\":\"calendar\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"cal_not_front\",\"confidence\":\"95/100\",\"cpu\":" + cpu_s + ",\"comm\":\"" + json_escape(comm) + "\"}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+        j = j + 1
+    }
+}
+
+println("# calendar_gate state=" + state + " front=" + frontmost + " is_cal_front=" + (if is_cal_front { "true" } else { "false" }) + " total=" + to_string(total) + " max_cpu=" + to_string(to_int(max_cpu * 10)) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }

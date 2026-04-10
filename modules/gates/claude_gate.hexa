@@ -1,0 +1,170 @@
+// claude_gate.hexa — claude code CLI 인스턴스 개별 재해석 게이트
+//
+// 입력 (CLI 인자):
+//   $1 = state          (cool / warm / hot / critical)
+//   $2 = hid_idle_sec   (현재 사용자 idle 초)
+//
+// 데이터 소스:
+//   ~/.airgenome/session_now.json    — claude.instances 배열 (재해석 결과)
+//   ps                               — 실시간 cpu/etime 보강
+//
+// 재해석 로직:
+//   active   = sub_agents > 0  OR  cpu >= 5.0  OR  session_jsonl mtime < 30s
+//   spawning = sub_agents >= 2 (parallel agent 실행 중)
+//   idle     = cpu < 1.0  AND  sub_agents == 0  AND  session_jsonl mtime > 60s
+//   cwd_dup  = 같은 cwd 에 다른 claude 가 있음
+//
+// BG 후보 = idle AND cwd_dup
+//   (단독 cwd 는 절대 안 건드림 — 사용자가 다시 쓸 때 freeze 보임)
+//   (active/spawning 도 절대 안 건드림)
+//
+// 출력 (stdout, JSONL — 한 줄당 하나의 추천):
+//   {"app":"claude","pid":N,"action":"taskpolicy_bg","reason":"cwd_dup_idle","confidence":0..1,"comm":"...","cwd":"..."}
+//
+// 부가 출력:
+//   nexus/shared/gate_claude_state.jsonl — append, 매 호출의 해석 결과 (관측성)
+
+let HOME = env("HOME")
+let SESSION_NOW = HOME + "/.airgenome/session_now.json"
+let CLAUDE_PROJECTS = HOME + "/.claude-claude4/projects"
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_claude_state.jsonl"
+
+// argv[0]=hexa argv[1]=script_path argv[2]=state argv[3]=hid_idle (auto_dispatch 컨벤션)
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+// ── session_now.json 의 claude 섹션 읽기 ────────────────────────────────
+if file_exists(SESSION_NOW) == false {
+    println("# claude_gate: no session_now.json")
+    exit(0)
+}
+
+let snap = read_file(SESSION_NOW)
+if snap.contains("\"claude\":{") == false {
+    println("# claude_gate: no claude section in snapshot")
+    exit(0)
+}
+
+// instances 배열 추출 (간단 파서)
+let cl_section = snap.split("\"claude\":{")[1]
+if cl_section.contains("\"instances\":[") == false {
+    println("# claude_gate: no instances")
+    exit(0)
+}
+let instances_raw = cl_section.split("\"instances\":[")[1].split("]")[0]
+
+// 객체별 분리 (단일줄 JSON 가정 — split by "},{" 후 양끝 정리)
+let mut entries = instances_raw.split("},{")
+let n = entries.len()
+
+// ── 각 instance 재해석 ──────────────────────────────────────────────────
+let mut recommendations = ""
+let mut rec_count = 0
+let mut total = 0
+let mut active = 0
+let mut spawning = 0
+let mut idle = 0
+let mut dup_idle = 0
+let mut cwd_seen = ";"
+
+let mut i = 0
+while i < n {
+    // 첫/마지막 entry 의 잔여 brace 는 그대로 두고 substring 으로 필드만 추출
+    let e = entries[i].replace("{", "").replace("}", "")
+    if e == "" { i = i + 1; continue }
+
+    // 필드 추출
+    let mut pid = ""
+    let mut zsh_ppid = ""
+    let mut etime = ""
+    let mut cpu_s = "0"
+    let mut rss_mb = "0"
+    let mut cwd = ""
+    let mut sub_s = "0"
+    let mut snap_status = "idle"
+    let mut snap_dup = "false"
+
+    if e.contains("\"pid\":") { pid = e.split("\"pid\":")[1].split(",")[0].trim() }
+    if e.contains("\"zsh_ppid\":") { zsh_ppid = e.split("\"zsh_ppid\":")[1].split(",")[0].trim() }
+    if e.contains("\"etime\":\"") { etime = e.split("\"etime\":\"")[1].split("\"")[0] }
+    if e.contains("\"cpu\":") { cpu_s = e.split("\"cpu\":")[1].split(",")[0].trim() }
+    if e.contains("\"rss_mb\":") { rss_mb = e.split("\"rss_mb\":")[1].split(",")[0].trim() }
+    if e.contains("\"cwd\":\"") { cwd = e.split("\"cwd\":\"")[1].split("\"")[0] }
+    if e.contains("\"sub_agents\":") { sub_s = e.split("\"sub_agents\":")[1].split(",")[0].trim() }
+    if e.contains("\"status\":\"") { snap_status = e.split("\"status\":\"")[1].split("\"")[0] }
+    if e.contains("\"cwd_dup\":") { snap_dup = e.split("\"cwd_dup\":")[1].split(",")[0].split("}")[0].trim() }
+
+    if pid == "" { i = i + 1; continue }
+    total = total + 1
+
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+    let mut sub = 0
+    try { sub = to_int(to_float(sub_s)) } catch e {}
+
+    // ── 보강: claude 세션 jsonl mtime 으로 last_activity 추정 ──
+    let claude_dir = CLAUDE_PROJECTS + "/" + cwd.replace("/", "-")
+    let mut session_age = 9999
+    if file_exists(claude_dir) {
+        let recent = safe_exec("ls -t '" + claude_dir + "'/*.jsonl 2>/dev/null | head -1")
+        if recent != "" {
+            let mtime_s = safe_exec("stat -f %m '" + recent + "' 2>/dev/null")
+            let now_s = safe_exec("date +%s")
+            try { session_age = to_int(to_float(now_s)) - to_int(to_float(mtime_s)) } catch e {}
+        }
+    }
+
+    // ── 재해석 ──
+    let mut my_status = "idle"
+    if sub >= 2 { my_status = "spawning" }
+    else if sub >= 1 || cpu >= 5.0 || session_age < 30 { my_status = "active" }
+    else if cpu < 1.0 && sub == 0 && session_age > 60 { my_status = "idle" }
+    else { my_status = "warm" }
+
+    if my_status == "active" { active = active + 1 }
+    else if my_status == "spawning" { spawning = spawning + 1 }
+    else if my_status == "idle" { idle = idle + 1 }
+
+    // cwd_dup 자체 계산 (두 번 보이면 dup)
+    let cwd_marker = ";" + cwd + ";"
+    let is_dup = cwd != "" && cwd_seen.contains(cwd_marker)
+    if cwd != "" { cwd_seen = cwd_seen + cwd_marker }
+
+    // 상태 로그 (관측성)
+    let log_entry = "{\"ts\":\"" + iso + "\",\"pid\":" + pid + ",\"cwd\":\"" + json_escape(cwd) + "\",\"my_status\":\"" + my_status + "\",\"snap_status\":\"" + snap_status + "\",\"cpu\":" + cpu_s + ",\"sub\":" + sub_s + ",\"session_age\":" + to_string(session_age) + ",\"is_dup\":" + (if is_dup { "true" } else { "false" }) + "}"
+    try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+    // ── 액션 결정 ──
+    // BG 조건: state hot/critical AND my_status==idle AND cwd_dup
+    if (state == "hot" || state == "critical") && my_status == "idle" && is_dup {
+        dup_idle = dup_idle + 1
+        // confidence 계산: session_age 가 클수록, cpu 가 낮을수록 ↑
+        let mut conf = 0.7
+        if session_age > 300 { conf = 0.9 }
+        if session_age > 900 { conf = 0.95 }
+        let conf_s = to_string(to_int(conf * 100)) + "/100"
+        let rec = "{\"app\":\"claude\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"cwd_dup_idle\",\"confidence\":\"" + conf_s + "\",\"cwd\":\"" + json_escape(cwd) + "\",\"session_age\":" + to_string(session_age) + ",\"cpu\":" + cpu_s + ",\"sub_agents\":" + sub_s + "}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+    }
+
+    i = i + 1
+}
+
+// ── 출력 ──────────────────────────────────────────────────────────────
+println("# claude_gate state=" + state + " hid_idle=" + to_string(hid_idle) + " total=" + to_string(total) + " active=" + to_string(active) + " spawning=" + to_string(spawning) + " idle=" + to_string(idle) + " dup_idle=" + to_string(dup_idle) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }

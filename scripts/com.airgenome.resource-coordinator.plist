@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  resource_coordinator — L3+L4+L5 통합 게이트 엔진 (10초 주기)
+  7개 per-app 게이트 호출 → 통합 → safety filter → dry-run/apply
+  기본 dry_run 모드 (~/.airgenome/coordinator.mode = "enabled" 로 활성화)
+  kill switch: ~/.airgenome/coordinator.disable
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.resource-coordinator</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/Dev/hexa-lang/target/release/hexa</string>
+        <string>/Users/ghost/Dev/airgenome/modules/resource_coordinator.hexa</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>10</integer>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-resource-coordinator.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-resource-coordinator.err</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>10</integer>
+</dict>
+</plist>

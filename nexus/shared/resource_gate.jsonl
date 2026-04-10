@@ -1,0 +1,14 @@
+{"_meta":"resource_coordinator 룰 — L3(mac CPU/RAM) + L5(외부 outbound) 통합. 처음 등록 2026-04-10."}
+{"layer":"L3","cat":"never","patterns":["iTerm2","WindowServer","Finder","Dock","kernel_task","loginwindow","launchd","coreservicesd","hidd","opendirectoryd"],"hot_action":"none","critical_action":"none","note":"UI/시스템 핵심 — 절대 안 건드림"}
+{"layer":"L3","cat":"airgenome","patterns":["airgenome","com.airgenome","sampler.hexa","ag3_","auto_dispatch","session_snapshot","session_resume","resource_coordinator"],"hot_action":"none","critical_action":"none","note":"자기 자신은 게이트 안 함"}
+{"layer":"L3","cat":"chat","patterns":["Telegram","Kotatogram","Discord","Slack"],"hot_action":"taskpolicy_bg","critical_action":"taskpolicy_bg","note":"E-core 로 보내도 알림은 정상"}
+{"layer":"L3","cat":"media","patterns":["Spotify","Music","Photos","Filmora"],"hot_action":"taskpolicy_bg","critical_action":"taskpolicy_bg","note":"오디오 재생 중 아니면 BG"}
+{"layer":"L3","cat":"browser","patterns":["Google Chrome","Safari","Firefox","Arc"],"hot_action":"renice","critical_action":"taskpolicy_bg","note":"foreground 탭 외 BG fetch 감속"}
+{"layer":"L3","cat":"ide","patterns":["Cursor","Code Helper","Xcode"],"hot_action":"renice","critical_action":"taskpolicy_bg","note":"백그라운드 LSP/index 감속"}
+{"layer":"L3","cat":"claude","patterns":["claude"],"hot_action":"selective_bg","critical_action":"selective_bg","rule":"idle_dup_only","note":"cwd 중복 + idle 인스턴스만"}
+{"layer":"L3","cat":"mds","patterns":["mds_stores"],"hot_action":"none","critical_action":"stop_briefly","stop_duration_sec":5,"cooldown_sec":30,"note":"임계 폭주 시 5초 정지 → 30초 후 재개"}
+{"layer":"L5","cat":"airgenome_out","patterns":["hexa","ssh.*ubu","ssh.*hetzner","scp","rsync"],"hot_action":"none","critical_action":"none","note":"L4 게이트 v2 가 관리"}
+{"layer":"L5","cat":"claude_api","patterns":["claude","Anthropic"],"hot_action":"none","critical_action":"none","note":"사용자 작업 동맥"}
+{"layer":"L5","cat":"dev_sync","patterns":["git","gh","cargo","npm","pip","brew","softwareupdated"],"hot_action":"defer","critical_action":"defer","defer_min":5,"note":"5분 지연"}
+{"layer":"L5","cat":"icloud","patterns":["bird","cloudd","iCloudHelper","Sparkle"],"hot_action":"defer","critical_action":"pause","note":"sync 일시정지"}
+{"layer":"L5","cat":"telemetry","patterns":["CrashReporter","metrics","ReportCrash","analyticsd","diagnosticd"],"hot_action":"defer","critical_action":"defer","note":"telemetry 유예"}

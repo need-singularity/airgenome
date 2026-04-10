@@ -1,0 +1,90 @@
+// memo_gate.hexa — Apple Notes (메모) 게이트
+//
+// 입력: argv[2]=state, argv[3]=hid_idle_sec
+//
+// 데이터 소스:
+//   ps              — Notes.app + Notes Helper (CloudKit sync) + AppleSpell 등
+//   osascript       — frontmost (Notes 활성인지)
+//
+// 재해석:
+//   Notes 본체   = 메인 GUI (BG 가능 — Notes 는 BG 에서도 알림 거의 없음)
+//   CloudKit sync = 백그라운드 동기화 (BG 안전, 큰 첨부파일 동기화 시 무거움)
+//   AppleSpell   = 시스템 공용 spell checker — Notes 만의 것 아님 → 건드리지 않음
+//
+// BG 후보:
+//   state >= hot  AND  Notes 가 frontmost 가 아님 → Notes 본체 + Helper BG
+//   confidence: not frontmost 면 0.95, frontmost 면 0 (BG 안 함)
+
+let HOME = env("HOME")
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_memo_state.jsonl"
+
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+let mut frontmost = env("AG_COORD_FRONTMOST")
+if frontmost == "" {
+    frontmost = safe_exec("lsappinfo info -only name \"$(lsappinfo front)\" 2>/dev/null | awk -F'\"' 'NF>=4{print $4}'")
+}
+let is_notes_front = frontmost == "Notes"
+
+// Notes 관련 ps (메인 + Helper, AppleSpell 제외)
+let ps_raw = safe_exec("ps -axo pid=,pcpu=,rss=,comm= | awk '$1+0>100 {pid=$1; cpu=$2; rss=$3; $1=$2=$3=\"\"; sub(/^  */,\"\"); printf \"%s|%s|%s|%s\\n\", pid, cpu, rss, $0}' | grep -E '/Notes\\.app|com\\.apple\\.Notes' | grep -v AppleSpell")
+let ps_lines = ps_raw.split("\n")
+
+let mut total = 0
+let mut max_cpu = 0.0
+let mut i = 0
+while i < ps_lines.len() {
+    let line = ps_lines[i].trim()
+    if line == "" { i = i + 1; continue }
+    let parts = line.split("|")
+    if parts.len() < 4 { i = i + 1; continue }
+    let cpu_s = parts[1].trim()
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+    if cpu > max_cpu { max_cpu = cpu }
+    total = total + 1
+    i = i + 1
+}
+
+// 상태 로그
+let log_entry = "{\"ts\":\"" + iso + "\",\"state\":\"" + state + "\",\"frontmost\":\"" + json_escape(frontmost) + "\",\"is_notes_front\":" + (if is_notes_front { "true" } else { "false" }) + ",\"total\":" + to_string(total) + ",\"max_cpu\":" + to_string(to_int(max_cpu * 10)) + "}"
+try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+// 액션
+let mut recommendations = ""
+let mut rec_count = 0
+
+if (state == "hot" || state == "critical") && is_notes_front == false && total > 0 {
+    let mut j = 0
+    while j < ps_lines.len() {
+        let line = ps_lines[j].trim()
+        if line == "" { j = j + 1; continue }
+        let parts = line.split("|")
+        if parts.len() < 4 { j = j + 1; continue }
+        let pid = parts[0].trim()
+        let cpu_s = parts[1].trim()
+        let comm = parts[3].trim()
+        let rec = "{\"app\":\"memo\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"notes_not_front\",\"confidence\":\"95/100\",\"cpu\":" + cpu_s + ",\"comm\":\"" + json_escape(comm) + "\"}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+        j = j + 1
+    }
+}
+
+println("# memo_gate state=" + state + " front=" + frontmost + " is_notes_front=" + (if is_notes_front { "true" } else { "false" }) + " total=" + to_string(total) + " max_cpu=" + to_string(to_int(max_cpu * 10)) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }

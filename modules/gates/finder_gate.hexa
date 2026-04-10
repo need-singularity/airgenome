@@ -1,0 +1,145 @@
+// finder_gate.hexa — Finder + 관련 helper 게이트 (매우 보수적)
+//
+// 입력: argv[2]=state, argv[3]=hid_idle_sec
+//
+// 핵심 원칙:
+//   Finder 본체는 절대 BG 안 함 — 데스크탑/메뉴바/Spotlight UI 가 다 멎음
+//   BG 가능한 건 헬퍼/확장만:
+//     QuickLookUIService     — 미리보기 (BG 시 미리보기 느려짐, 안전)
+//     Finder Sync Extension  — 3rd party (Dropbox/iCloud)
+//     QuickLookSatellite     — 썸네일 generator
+//     com.apple.fileproviderd — File Provider 동기화 (iCloud Drive 등)
+//
+// 재해석:
+//   active   = Finder 본체가 frontmost AND 큰 cpu (파일 작업 중)
+//   helper   = 위 helper 들 (BG 가능)
+//   never    = Finder 본체 + cfprefsd 같은 시스템 데몬
+//
+// BG 후보:
+//   state >= hot  AND  helper 만  → BG (Finder 본체 절대 제외)
+//   state == critical  → 더 공격적 (FileProvider sync 도 BG)
+//
+// 안전: 한 줄도 안 BG 하는 게 정상 (helper 가 활동 중일 때만 매칭)
+
+let HOME = env("HOME")
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_finder_state.jsonl"
+
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+// Finder 본체 보호 (HARD_NEVER 와 별도로 게이트 자체 가드)
+let HARD_FINDER_NEVER = "/Finder.app/Contents/MacOS/Finder|cfprefsd|distnoted|UserEventAgent|launchservicesd|coreservicesd"
+
+// Finder helper 후보 (BG 가능)
+let HELPERS = "QuickLookUIService|QuickLookSatellite|QLPreviewGenerationExtension|FinderSyncExtension|com.apple.fileproviderd|fileproviderd|QuickLookThumbnailing|biomesyncd|cloudphotod"
+
+let ps_raw = safe_exec("ps -axo pid=,pcpu=,rss=,comm= | awk '$1+0>100 && $2+0>0.1 {pid=$1; cpu=$2; rss=$3; $1=$2=$3=\"\"; sub(/^  */,\"\"); printf \"%s|%s|%s|%s\\n\", pid, cpu, rss, $0}'")
+let ps_lines = ps_raw.split("\n")
+
+let mut finder_main_cpu = 0.0
+let mut helper_count = 0
+let mut helper_cpu_sum = 0.0
+let mut total = 0
+let mut i = 0
+while i < ps_lines.len() {
+    let line = ps_lines[i].trim()
+    if line == "" { i = i + 1; continue }
+    let parts = line.split("|")
+    if parts.len() < 4 { i = i + 1; continue }
+    let cpu_s = parts[1].trim()
+    let comm = parts[3].trim()
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+
+    // Finder 본체 cpu (관측만)
+    if comm.contains("/Finder.app/Contents/MacOS/Finder") {
+        finder_main_cpu = cpu
+        total = total + 1
+    } else {
+        // helper 후보 매칭
+        let helper_pats = HELPERS.split("|")
+        let mut hi = 0
+        let mut is_helper = false
+        while hi < helper_pats.len() {
+            let hp = helper_pats[hi].trim()
+            if hp != "" && comm.contains(hp) { is_helper = true }
+            hi = hi + 1
+        }
+        if is_helper {
+            helper_count = helper_count + 1
+            helper_cpu_sum = helper_cpu_sum + cpu
+            total = total + 1
+        }
+    }
+    i = i + 1
+}
+
+// 상태 로그
+let log_entry = "{\"ts\":\"" + iso + "\",\"state\":\"" + state + "\",\"finder_main_cpu\":" + to_string(to_int(finder_main_cpu * 10)) + ",\"helper_count\":" + to_string(helper_count) + ",\"helper_cpu_sum\":" + to_string(to_int(helper_cpu_sum * 10)) + "}"
+try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+// 액션
+let mut recommendations = ""
+let mut rec_count = 0
+
+if state == "hot" || state == "critical" {
+    let mut j = 0
+    while j < ps_lines.len() {
+        let line = ps_lines[j].trim()
+        if line == "" { j = j + 1; continue }
+        let parts = line.split("|")
+        if parts.len() < 4 { j = j + 1; continue }
+        let pid = parts[0].trim()
+        let cpu_s = parts[1].trim()
+        let comm = parts[3].trim()
+
+        // HARD_FINDER_NEVER 가드
+        let never_pats = HARD_FINDER_NEVER.split("|")
+        let mut is_never = false
+        let mut ni = 0
+        while ni < never_pats.len() {
+            let np = never_pats[ni].trim()
+            if np != "" && comm.contains(np) { is_never = true }
+            ni = ni + 1
+        }
+        if is_never { j = j + 1; continue }
+
+        // helper 매칭만 BG
+        let helper_pats = HELPERS.split("|")
+        let mut is_helper = false
+        let mut hi = 0
+        while hi < helper_pats.len() {
+            let hp = helper_pats[hi].trim()
+            if hp != "" && comm.contains(hp) { is_helper = true }
+            hi = hi + 1
+        }
+        if is_helper == false { j = j + 1; continue }
+
+        // critical 가 아니면 cpu > 1 만 (휴면 helper 무시)
+        let mut cpu = 0.0
+        try { cpu = to_float(cpu_s) } catch e {}
+        if state != "critical" && cpu < 1.0 { j = j + 1; continue }
+
+        let rec = "{\"app\":\"finder\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"helper_busy\",\"confidence\":\"90/100\",\"cpu\":" + cpu_s + ",\"comm\":\"" + json_escape(comm) + "\"}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+        j = j + 1
+    }
+}
+
+println("# finder_gate state=" + state + " finder_main=" + to_string(to_int(finder_main_cpu * 10)) + " helpers=" + to_string(helper_count) + " helper_cpu_sum=" + to_string(to_int(helper_cpu_sum * 10)) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }

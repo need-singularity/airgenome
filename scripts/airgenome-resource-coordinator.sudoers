@@ -1,0 +1,22 @@
+# airgenome resource_coordinator — passwordless sudo for system process gating
+#
+# 설치 방법 (1회만, 사용자가 직접):
+#   sudo cp /Users/ghost/Dev/airgenome/scripts/airgenome-resource-coordinator.sudoers \
+#        /etc/sudoers.d/airgenome-resource-coordinator
+#   sudo chmod 0440 /etc/sudoers.d/airgenome-resource-coordinator
+#   sudo visudo -c   # 문법 검증
+#
+# 효과:
+#   coordinator 가 root 프로세스 (mds_stores, softwareupdated, bird, cloudd 등) 에
+#   대해 taskpolicy/renice 를 NOPASSWD 로 호출 가능. 사용자 프로세스는 어차피 sudo 불필요.
+#
+# 미설치 상태에서도 사용자 프로세스 게이팅은 정상 작동 (telegram/safari/notes/etc.)
+# 이 파일은 시스템 프로세스까지 게이팅 범위를 넓히고 싶을 때만 설치.
+#
+# 보안:
+#   - 이 두 명령어만 NOPASSWD, 다른 명령어는 일반 sudo 규칙 그대로
+#   - taskpolicy 는 PID 만 변경, 파일 시스템 변경 없음
+#   - renice 는 nice 값 조정만, 다른 권한 상승 없음
+
+ghost ALL=(ALL) NOPASSWD: /usr/bin/taskpolicy
+ghost ALL=(ALL) NOPASSWD: /usr/bin/renice

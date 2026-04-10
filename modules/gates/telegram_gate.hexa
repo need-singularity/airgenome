@@ -1,0 +1,114 @@
+// telegram_gate.hexa — Telegram/Kotatogram 개별 재해석 게이트
+//
+// 입력: argv[2]=state, argv[3]=hid_idle_sec
+//
+// 데이터 소스:
+//   ps               — Telegram 메인/Helper 프로세스 census
+//   osascript        — frontmost app 이름 (Telegram 이 활성인지)
+//   audio activity   — Telegram 이 오디오 device 잡고 있는지 (통화 추정)
+//
+// 재해석:
+//   in_call    = 메인 Telegram 의 cpu > 10% 지속 OR coreaudio 가 telegram 점유 (통화 휴리스틱)
+//   foreground = 시스템 frontmost app 이 Telegram (또는 Kotatogram)
+//   active     = in_call OR foreground
+//   idle       = 둘 다 아님
+//
+// BG 후보:
+//   state >= hot  AND  idle  AND  not frontmost
+//   대상: Telegram + Telegram Helper(Renderer/GPU/Plugin) 모두
+//   confidence: foreground 인지 미상이면 0.7, 명확히 background 면 0.95
+
+let HOME = env("HOME")
+let STATE_LOG = HOME + "/Dev/airgenome/nexus/shared/gate_telegram_state.jsonl"
+
+let argv = args()
+let mut state = "cool"
+if argv.len() >= 3 { state = argv[2] }
+let mut hid_idle = 9999
+if argv.len() >= 4 { try { hid_idle = to_int(to_float(argv[3])) } catch e {} }
+
+fn safe_exec(cmd: str) -> str {
+    try { return to_string(exec(cmd)).trim() } catch e { return "" }
+}
+
+fn json_escape(s: str) -> str {
+    return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+}
+
+let iso = safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+
+// ── frontmost app (env 로 받았으면 그거 우선, 없으면 osascript) ────────
+let mut frontmost = env("AG_COORD_FRONTMOST")
+if frontmost == "" {
+    frontmost = safe_exec("lsappinfo info -only name \"$(lsappinfo front)\" 2>/dev/null | awk -F'\"' 'NF>=4{print $4}'")
+}
+let is_telegram_front = frontmost.contains("Telegram") || frontmost.contains("Kotatogram")
+
+// ── ps census: Telegram* / Kotatogram* ─────────────────────────────────
+let ps_raw = safe_exec("ps -axo pid=,pcpu=,rss=,comm= | awk '$1+0>100 {pid=$1; cpu=$2; rss=$3; $1=$2=$3=\"\"; sub(/^  */,\"\"); printf \"%s|%s|%s|%s\\n\", pid, cpu, rss, $0}' | grep -iE '(Telegram|Kotatogram)'")
+let ps_lines = ps_raw.split("\n")
+
+// ── 메인 프로세스 cpu (in_call 휴리스틱) ────────────────────────────────
+let mut main_cpu = 0.0
+let mut total = 0
+let mut helpers = 0
+let mut i = 0
+while i < ps_lines.len() {
+    let line = ps_lines[i].trim()
+    if line == "" { i = i + 1; continue }
+    let parts = line.split("|")
+    if parts.len() < 4 { i = i + 1; continue }
+    let cpu_s = parts[1].trim()
+    let comm = parts[3].trim()
+    let mut cpu = 0.0
+    try { cpu = to_float(cpu_s) } catch e {}
+    total = total + 1
+    // 메인 = Helper/Renderer/GPU 가 아닌 것
+    let is_helper = comm.contains("Helper") || comm.contains("Renderer") || comm.contains("GPU") || comm.contains("Plugin")
+    if is_helper == false {
+        if cpu > main_cpu { main_cpu = cpu }
+    } else {
+        helpers = helpers + 1
+    }
+    i = i + 1
+}
+
+// ── in_call 휴리스틱 ───────────────────────────────────────────────────
+// 메인 cpu >= 8.0 → 통화/녹화 가능성 높음 (idle Telegram 은 보통 < 3%)
+// 더 정확하게는 coreaudiod open file 검사 가능하나 무겁고 권한 필요
+let in_call = main_cpu >= 8.0
+
+// ── 재해석 ──────────────────────────────────────────────────────────────
+let mut my_status = "idle"
+if in_call { my_status = "in_call" }
+else if is_telegram_front { my_status = "foreground" }
+
+// 상태 로그
+let log_entry = "{\"ts\":\"" + iso + "\",\"state\":\"" + state + "\",\"frontmost\":\"" + json_escape(frontmost) + "\",\"is_telegram_front\":" + (if is_telegram_front { "true" } else { "false" }) + ",\"main_cpu\":" + to_string(to_int(main_cpu * 10)) + ",\"in_call\":" + (if in_call { "true" } else { "false" }) + ",\"my_status\":\"" + my_status + "\",\"total\":" + to_string(total) + ",\"helpers\":" + to_string(helpers) + "}"
+try { exec("echo '" + log_entry.replace("'", "'\\''") + "' >> '" + STATE_LOG + "'") } catch e {}
+
+// ── 액션 결정 ──────────────────────────────────────────────────────────
+let mut recommendations = ""
+let mut rec_count = 0
+
+if (state == "hot" || state == "critical") && my_status == "idle" {
+    let conf = if is_telegram_front == false { "95/100" } else { "70/100" }
+    let mut j = 0
+    while j < ps_lines.len() {
+        let line = ps_lines[j].trim()
+        if line == "" { j = j + 1; continue }
+        let parts = line.split("|")
+        if parts.len() < 4 { j = j + 1; continue }
+        let pid = parts[0].trim()
+        let cpu_s = parts[1].trim()
+        let comm = parts[3].trim()
+        let rec = "{\"app\":\"telegram\",\"pid\":" + pid + ",\"action\":\"taskpolicy_bg\",\"reason\":\"idle_not_front\",\"confidence\":\"" + conf + "\",\"cpu\":" + cpu_s + ",\"comm\":\"" + json_escape(comm) + "\"}"
+        if recommendations != "" { recommendations = recommendations + "\n" }
+        recommendations = recommendations + rec
+        rec_count = rec_count + 1
+        j = j + 1
+    }
+}
+
+println("# telegram_gate state=" + state + " front=" + frontmost + " is_tg_front=" + (if is_telegram_front { "true" } else { "false" }) + " main_cpu=" + to_string(to_int(main_cpu * 10)) + " in_call=" + (if in_call { "true" } else { "false" }) + " status=" + my_status + " procs=" + to_string(total) + " recs=" + to_string(rec_count))
+if recommendations != "" { println(recommendations) }
