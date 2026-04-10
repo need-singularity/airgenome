@@ -14,7 +14,11 @@ UBU_SSH=$(_cfg ssh_alias); [ -z "$UBU_SSH" ] && UBU_SSH="ubu"
 UBU_DIR=$(_cfg remote_dir); [ -z "$UBU_DIR" ] && UBU_DIR="/home/aiden/airgenome"
 UBU_HEXA=$(_cfg ubu_hexa_bin); [ -z "$UBU_HEXA" ] && UBU_HEXA="/home/aiden/Dev/hexa-lang/target/release/hexa"
 HTZ_SSH=$(_cfg htz_ssh_alias); [ -z "$HTZ_SSH" ] && HTZ_SSH="hetzner"
-HTZ_HEXA=$(_cfg htz_hexa_bin); [ -z "$HTZ_HEXA" ] && HTZ_HEXA="~/Dev/hexa-lang/target/release/hexa"
+HTZ_HEXA=$(_cfg htz_hexa_bin); [ -z "$HTZ_HEXA" ] && HTZ_HEXA="/root/Dev/hexa-lang/target/release/hexa"
+HTZ_DIR=$(_cfg htz_nexus_dir);  [ -z "$HTZ_DIR" ]  && HTZ_DIR="/root/Dev/nexus"
+
+# 타겟 강제 — HEXA_TARGET=ubu|hetzner|auto (기본 auto)
+HEXA_TARGET="${HEXA_TARGET:-auto}"
 
 # ── Mac 전용 스크립트 (절대 원격 라우팅 금지) ──
 MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa"
@@ -37,12 +41,13 @@ fi
 
 # ── Mac 연산 금지 → 원격 라우팅 ──
 
-# 1) ubu
-if ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null; then
+# sentinel 250 = SSH 도달 불가 (remote command의 실제 rc 와 구분)
+_route_ubu() {
+    ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null || return 250
     RARGS=()
+    ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
     for a in "$@"; do
         if [ -f "$a" ]; then
-            ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
             scp -q "$a" "$UBU_SSH:$UBU_DIR/gate_files/" 2>/dev/null
             RARGS+=("$UBU_DIR/gate_files/$(basename "$a")")
         else
@@ -50,23 +55,50 @@ if ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null; then
         fi
     done
     ssh -o ConnectTimeout=30 "$UBU_SSH" "cd $UBU_DIR && $UBU_HEXA ${RARGS[*]}" 2>&1
-    exit $?
-fi
+    return $?
+}
 
-# 2) hetzner
-if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HTZ_SSH" true 2>/dev/null; then
+_route_htz() {
+    ssh -o ConnectTimeout=3 -o BatchMode=yes "$HTZ_SSH" true 2>/dev/null || return 250
     RARGS=()
+    ssh "$HTZ_SSH" "mkdir -p $HTZ_DIR/gate_files" 2>/dev/null
+    local NEXUS_LOCAL="$HOME/Dev/nexus"
     for a in "$@"; do
         if [ -f "$a" ]; then
-            scp -q "$a" "$HTZ_SSH:/tmp/" 2>/dev/null
-            RARGS+=("/tmp/$(basename "$a")")
+            # nexus-repo 파일이면 hetzner 의 nexus 사본을 그대로 사용 (scp 생략 → import 깨짐 방지)
+            local rp; rp=$(cd "$(dirname "$a")" 2>/dev/null && pwd)/$(basename "$a")
+            if [[ "$rp" == "$NEXUS_LOCAL"/* ]]; then
+                RARGS+=("$HTZ_DIR/${rp#$NEXUS_LOCAL/}")
+            else
+                scp -q "$a" "$HTZ_SSH:$HTZ_DIR/gate_files/" 2>/dev/null
+                RARGS+=("$HTZ_DIR/gate_files/$(basename "$a")")
+            fi
         else
             RARGS+=("$a")
         fi
     done
-    ssh "$HTZ_SSH" "$HTZ_HEXA ${RARGS[*]}" 2>&1
-    exit $?
-fi
+    ssh -o ConnectTimeout=30 "$HTZ_SSH" "cd $HTZ_DIR && $HTZ_HEXA ${RARGS[*]}" 2>&1
+    return $?
+}
 
-echo "[GUARD] Mac 연산 금지 + 원격 unreachable — 실행 거부" >&2
-exit 1
+# 타겟 강제
+case "$HEXA_TARGET" in
+    ubu)
+        _route_ubu "$@"; rc=$?
+        [ $rc -eq 250 ] && { echo "[GUARD] HEXA_TARGET=ubu but ubu unreachable" >&2; exit 1; }
+        exit $rc
+        ;;
+    hetzner|htz)
+        _route_htz "$@"; rc=$?
+        [ $rc -eq 250 ] && { echo "[GUARD] HEXA_TARGET=hetzner but hetzner unreachable" >&2; exit 1; }
+        exit $rc
+        ;;
+    auto|*)
+        _route_ubu "$@"; rc=$?
+        [ $rc -ne 250 ] && exit $rc   # ubu 실행됨 (성공이든 실패든 결과 그대로)
+        _route_htz "$@"; rc=$?
+        [ $rc -ne 250 ] && exit $rc   # hetzner 폴백 실행
+        echo "[GUARD] Mac 연산 금지 + ubu/hetzner 모두 unreachable — 실행 거부" >&2
+        exit 1
+        ;;
+esac
