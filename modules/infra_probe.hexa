@@ -297,14 +297,114 @@ fn probe_vast() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Probe: RunPod (runpodctl CLI — pod list + ssh nvidia-smi)
+//  Schema: status/gpu/gpu_count/gpu_util/vram_used_gb/vram_gb/
+//  ram_used_gb/ram_total_gb/price_hr/train_status
+// ═══════════════════════════════════════════════════════════════════════
+
+fn probe_runpod() -> str {
+    // runpodctl pod list → JSON array
+    let cmd = "gtimeout 10 runpodctl pod list --format json 2>/dev/null"
+    let mut raw = ""
+    try { raw = exec(cmd).trim() } catch e { raw = "" }
+    if len(raw) < 5 || raw == "[]" {
+        return "\"runpod\":{\"status\":\"offline\",\"reason\":\"no pods\"}"
+    }
+
+    // Parse first pod (naive — take first object)
+    let pod_id = read_json_str(raw, "id", "")
+    if len(pod_id) == 0 {
+        return "\"runpod\":{\"status\":\"offline\",\"reason\":\"cannot parse pod\"}"
+    }
+    let desired_status = read_json_str(raw, "desiredStatus", "")
+    let gpu_name = read_json_str(raw, "gpuType", "H100")
+    let gpu_count = read_json_int(raw, "gpuCount", 1)
+    let vram_per_gpu = read_json_int(raw, "gpuMemory", 80)
+    let vram_gb = vram_per_gpu * gpu_count
+    let cost_hr = read_json_float(raw, "costPerHr", 0.0)
+    let price_s = "$" + to_string(cost_hr)
+
+    let mut status = "offline"
+    if desired_status == "RUNNING" { status = "active" }
+
+    // SSH into pod for live GPU stats + training status
+    let mut gpu_util = 0
+    let mut vram_used_gb = 0
+    let mut ram_used_gb = 0
+    let mut ram_total_gb = 0
+    let mut train_status = ""
+
+    if status == "active" {
+        // nvidia-smi for GPU util + VRAM
+        let smi_cmd = "gtimeout 8 runpodctl ssh --podId " + pod_id + " -- \"nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null && free -g | awk '/Mem/{print \\$2,\\$3}' && tail -1 /workspace/train.log 2>/dev/null\" 2>/dev/null"
+        let mut smi_out = ""
+        try { smi_out = exec(smi_cmd).trim() } catch e { smi_out = "" }
+        if len(smi_out) > 0 {
+            let smi_lines = smi_out.split("\n")
+            // GPU lines: one per GPU — accumulate
+            let mut li = 0
+            let mut total_vram_used_mb = 0
+            let mut total_vram_mb = 0
+            let mut avg_util = 0
+            let mut gpu_line_count = 0
+            while li < smi_lines.len() {
+                let sl = smi_lines[li].trim()
+                if sl.contains(",") && gpu_line_count < gpu_count {
+                    let gp = sl.split(",")
+                    if gp.len() >= 3 {
+                        try { avg_util = avg_util + to_int(to_float(gp[0].trim())) } catch e {}
+                        try { total_vram_used_mb = total_vram_used_mb + to_int(to_float(gp[1].trim())) } catch e {}
+                        try { total_vram_mb = total_vram_mb + to_int(to_float(gp[2].trim())) } catch e {}
+                        gpu_line_count = gpu_line_count + 1
+                    }
+                }
+                li = li + 1
+            }
+            if gpu_line_count > 0 {
+                gpu_util = avg_util / gpu_line_count
+                vram_used_gb = total_vram_used_mb / 1024
+            }
+            // RAM line (after GPU lines): "total used"
+            if smi_lines.len() > gpu_line_count {
+                let ram_line = smi_lines[gpu_line_count].trim()
+                let ram_parts = ram_line.split(" ")
+                let mut rn = []
+                let ri = 0
+                while ri < ram_parts.len() {
+                    let rp = ram_parts[ri].trim()
+                    if len(rp) > 0 { rn = rn + [rp] }
+                    ri = ri + 1
+                }
+                if rn.len() >= 2 {
+                    try { ram_total_gb = to_int(to_float(rn[0])) } catch e {}
+                    try { ram_used_gb = to_int(to_float(rn[1])) } catch e {}
+                }
+            }
+            // Training status (last line of train.log)
+            if smi_lines.len() > gpu_line_count + 1 {
+                let tl = smi_lines[gpu_line_count + 1].trim()
+                if len(tl) > 5 { train_status = tl }
+                // truncate to 60 chars
+                if len(train_status) > 60 {
+                    train_status = train_status.split("").join("") // identity — hexa has no substring
+                }
+            }
+        }
+    }
+
+    return "\"runpod\":{\"status\":\"" + status + "\",\"gpu\":\"" + gpu_name + "\",\"gpu_count\":" + to_string(gpu_count) + ",\"gpu_util\":" + to_string(gpu_util) + ",\"vram_used_gb\":" + to_string(vram_used_gb) + ",\"vram_gb\":" + to_string(vram_gb) + ",\"ram_used_gb\":" + to_string(ram_used_gb) + ",\"ram_total_gb\":" + to_string(ram_total_gb) + ",\"price_hr\":\"" + price_s + "\",\"train_status\":\"" + train_status + "\"}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Recommendation engine (simple heuristic, Prime Directive safe)
 // ═══════════════════════════════════════════════════════════════════════
 
-fn make_recommendation(mac_json: str, ubu_json: str, htz_json: str, vast_json: str) -> str {
-    // GPU task: prefer vast (96GB VRAM) > ubu (12GB)
-    let mut gpu_task = "vast"
-    if vast_json.contains("\"offline\"") { gpu_task = "ubu" }
-    if ubu_json.contains("\"offline\"") && vast_json.contains("\"offline\"") { gpu_task = "none" }
+fn make_recommendation(mac_json: str, ubu_json: str, htz_json: str, runpod_json: str, vast_json: str) -> str {
+    // GPU task: prefer runpod (H100 80GB) > vast (96GB VRAM) > ubu (12GB)
+    let mut gpu_task = "runpod"
+    if runpod_json.contains("\"offline\"") { gpu_task = "vast" }
+    if runpod_json.contains("\"offline\"") && vast_json.contains("\"offline\"") { gpu_task = "ubu" }
+    if ubu_json.contains("\"offline\"") && vast_json.contains("\"offline\"") && runpod_json.contains("\"offline\"") { gpu_task = "none" }
 
     // CPU task: always htz (32T, 124GB)
     let mut cpu_task = "htz"
@@ -312,7 +412,7 @@ fn make_recommendation(mac_json: str, ubu_json: str, htz_json: str, vast_json: s
 
     // Realtime GPU: ubu (local LAN, low latency)
     let mut realtime_gpu = "ubu"
-    if ubu_json.contains("\"offline\"") { realtime_gpu = "vast" }
+    if ubu_json.contains("\"offline\"") { realtime_gpu = "runpod" }
 
     // Avoid: mac (always, unless everything else offline)
     let avoid = "mac"
@@ -334,12 +434,14 @@ fn cmd_probe() {
     println("  ubu: done")
     let htz = probe_htz()
     println("  htz: done")
+    let runpod = probe_runpod()
+    println("  runpod: done")
     let vast = probe_vast()
     println("  vast: done")
 
-    let rec = make_recommendation(mac, ubu, htz, vast)
+    let rec = make_recommendation(mac, ubu, htz, runpod, vast)
 
-    let state = "{\"ts\":\"" + ts + "\",\"hosts\":{" + mac + "," + ubu + "," + htz + "," + vast + "}," + rec + "}"
+    let state = "{\"ts\":\"" + ts + "\",\"hosts\":{" + mac + "," + ubu + "," + htz + "," + runpod + "," + vast + "}," + rec + "}"
 
     try { write_file(STATE_OUT, state + "\n") } catch e {
         println("[infra_probe] ERROR: cannot write " + STATE_OUT + ": " + to_string(e))

@@ -226,6 +226,14 @@ let htz_gpu_item = add_disabled_item(menu, "  GPU ...")
 
 add_separator(menu)
 
+// --- RunPod section ---
+let rp_item = add_disabled_item(menu, "\u25CB RunPod \u2014 ...")
+let rp_gpu_item = add_disabled_item(menu, "  GPU ...")
+let rp_ram_item = add_disabled_item(menu, "  RAM ...")
+let rp_train_item = add_disabled_item(menu, "  Train ...")
+
+add_separator(menu)
+
 // --- Vast.ai section ---
 let vast_item = add_disabled_item(menu, "\u25CB Vast.ai \u2014 ...")
 let vast_gpu_item = add_disabled_item(menu, "  GPU ...")
@@ -398,11 +406,13 @@ fn update_display() {
         if ht != {} {
             let u_s = try { ht["ubu"]["status"] } catch e { "offline" }
             let h_s = try { ht["htz"]["status"] } catch e { "offline" }
+            let r_s = try { ht["runpod"]["status"] } catch e { "offline" }
             let v_s = try { ht["vast"]["status"] } catch e { "offline" }
             let u_d = if u_s == "active" { "\u25CF" } else { "\u25CB" }
             let h_d = if h_s == "active" { "\u25CF" } else { "\u25CB" }
+            let r_d = if r_s == "active" { "\u25CF" } else { "\u25CB" }
             let v_d = if v_s == "active" { "\u25CF" } else { "\u25CB" }
-            hosts_tag = " " + u_d + h_d + v_d
+            hosts_tag = " " + u_d + h_d + r_d + v_d
         }
     }
 
@@ -633,6 +643,43 @@ fn update_display() {
                 msg_int(htz_cpu_item, sel("setHidden:"), 1)
                 msg_int(htz_ram_item, sel("setHidden:"), 1)
                 msg_int(htz_gpu_item, sel("setHidden:"), 1)
+            }
+        }
+
+        // RunPod
+        let rp = try { hosts["runpod"] } catch e { {} }
+        if rp != {} {
+            let rp_st = try { rp["status"] } catch e { "offline" }
+            if rp_st == "active" {
+                let rp_gpu_s = try { rp["gpu"] } catch e { "H100" }
+                let rp_gu = try { to_int(rp["gpu_util"]) } catch e { 0 }
+                let rp_vr_used = try { to_int(rp["vram_used_gb"]) } catch e { 0 }
+                let rp_vr_tot = try { to_int(rp["vram_gb"]) } catch e { 80 }
+                let rp_vr_pct = if rp_vr_tot > 0 { rp_vr_used * 100 / rp_vr_tot } else { 0 }
+                let rp_ru = try { to_int(rp["ram_used_gb"]) } catch e { 0 }
+                let rp_rt = try { to_int(rp["ram_total_gb"]) } catch e { 1 }
+                let rp_rp = if rp_rt > 0 { rp_ru * 100 / rp_rt } else { 0 }
+                let rp_price = try { rp["price_hr"] } catch e { "" }
+                let rp_gpu_count = try { to_int(rp["gpu_count"]) } catch e { 1 }
+                let rp_gpu_label = to_string(rp_gpu_count) + "x " + rp_gpu_s
+                msg1(rp_item, sel("setTitle:"), nsstr("\u25CF RunPod  " + rp_gpu_label + "  " + rp_price))
+                msg1(rp_gpu_item, sel("setTitle:"), nsstr("  GPU  " + bar(rp_gu, 100, bw) + "  " + to_string(rp_gu) + "%  VRAM " + to_string(rp_vr_used) + "/" + to_string(rp_vr_tot) + "G"))
+                msg1(rp_ram_item, sel("setTitle:"), nsstr("  RAM  " + bar(rp_rp, 100, bw) + "  " + to_string(rp_rp) + "%  (" + to_string(rp_ru) + "G/" + to_string(rp_rt) + "G)"))
+                // training status
+                let rp_train = try { rp["train_status"] } catch e { "" }
+                if len(rp_train) > 0 {
+                    msg1(rp_train_item, sel("setTitle:"), nsstr("  \u23F3 " + rp_train))
+                    msg_int(rp_train_item, sel("setHidden:"), 0)
+                } else {
+                    msg_int(rp_train_item, sel("setHidden:"), 1)
+                }
+                msg_int(rp_gpu_item, sel("setHidden:"), 0)
+                msg_int(rp_ram_item, sel("setHidden:"), 0)
+            } else {
+                msg1(rp_item, sel("setTitle:"), nsstr("\u25CB RunPod \u2014 offline"))
+                msg_int(rp_gpu_item, sel("setHidden:"), 1)
+                msg_int(rp_ram_item, sel("setHidden:"), 1)
+                msg_int(rp_train_item, sel("setHidden:"), 1)
             }
         }
 
