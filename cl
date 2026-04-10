@@ -20,8 +20,21 @@
 [ -f ~/.zshrc ] && source ~/.zshrc
 
 ORIG_DIR="$(pwd)"
-HEXA=~/Dev/hexa-lang/target/release/hexa-bin-actual
 AIRGENOME=~/Dev/airgenome
+# HEXA resolver — shared/bin/hexa 우선 (외부 의존 없음, R5 SSOT)
+HEXA=""
+for _p in \
+    "$AIRGENOME/nexus/shared/bin/hexa" \
+    "$HOME/Dev/nexus/shared/bin/hexa" \
+    "$HOME/Dev/hexa-lang/hexa" \
+    "$HOME/.hx/bin/hexa" \
+    "$HOME/Dev/hexa-lang/target/release/hexa" ; do
+    if [ -x "$_p" ]; then HEXA="$_p"; break; fi
+done
+if [ -z "$HEXA" ]; then
+    echo "ERROR(cl): hexa 바이너리 없음. shared/bin/hexa 또는 ~/.hx/bin/hexa 필요" >&2
+    exit 127
+fi
 ACCOUNTS_FILE=~/.airgenome/accounts.json
 STATE_FILE=~/.airgenome/cl-state.json
 USAGE_CACHE=~/.airgenome/usage-cache.json
