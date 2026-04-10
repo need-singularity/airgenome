@@ -74,9 +74,16 @@ fn current_mode() -> str {
     return load_cfg("ag3_mode", "degrade")
 }
 
+fn is_on_battery() -> bool {
+    let pwr = exec("pmset -g batt 2>/dev/null | head -1").trim()
+    return pwr.contains("Battery Power")
+}
+
 fn boost_strict_if_pressure(mac_cpu_pct: int) -> void {
-    // resource_guard 가 주기적으로 호출. 30%+ → 부스트, 복귀 시 해제.
-    if mac_cpu_pct >= 30 { BOOST_STRICT = true }
+    // 배터리 모드 → 무조건 strict (CPU 사용 자체를 차단)
+    if is_on_battery() { BOOST_STRICT = true; return }
+    // AC 전원: 15%+ → 부스트 (기존 30→15 하향)
+    if mac_cpu_pct >= 15 { BOOST_STRICT = true }
     else { BOOST_STRICT = false }
 }
 

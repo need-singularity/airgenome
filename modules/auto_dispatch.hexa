@@ -1,7 +1,7 @@
-// airgenome/modules/auto_dispatch.hexa — OFFLOAD_O1 자동 디스패치 권장기
+// airgenome/modules/auto_dispatch.hexa — OFFLOAD_O1 자동 디스패치 집행기
 //
-// Mac CPU 과부하 + Ubuntu 여유 시 오프로드 후보를 탐지하고 추천 로그를 남긴다.
-// Prime Directive 준수: 프로세스 kill/migration 없음. 탐지 + 권장만.
+// Mac CPU 과부하 + Ubuntu 여유 시 오프로드 후보를 탐지하고 강제 throttle.
+// 골화 2026-04-10: 권장→집행 승격. 오프로드 대상은 taskpolicy -b 즉시 적용.
 //
 // 설정 (nexus/shared/gate_config.jsonl):
 //   offload_cpu_threshold  — Mac CPU% 임계치 (default 80)
@@ -249,11 +249,14 @@ fn check_once(state_path: str) -> str {
                 let cpu_s = parts[1].trim()
                 let comm = parts[2].trim()
                 if matches_pattern(comm, patterns) {
+                    // ── 즉시 집행: taskpolicy -b 강제 적용 (CPU 우선도 최하위) ──
+                    try { exec("taskpolicy -b -p " + pid) } catch e {}
+
                     if rec_count > 0 { recs = recs + "," }
-                    recs = recs + "{\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"action\":\"taskpolicy -b -p " + pid + "\"}"
+                    recs = recs + "{\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"action\":\"taskpolicy -b -p " + pid + " (ENFORCED)\"}"
 
                     // ── dispatch.log JSONL append ──
-                    let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"OFFLOAD_O1\",\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"gate\":\"" + gate + "\",\"action\":\"recommend_taskpolicy_bg\"}"
+                    let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"OFFLOAD_O1\",\"pid\":" + pid + ",\"cpu\":" + cpu_s + ",\"comm\":\"" + comm + "\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"gate\":\"" + gate + "\",\"action\":\"enforced_taskpolicy_bg\"}"
                     try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
 
                     rec_count = rec_count + 1

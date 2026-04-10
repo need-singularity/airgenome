@@ -1,14 +1,14 @@
 {"type":"policy","key":"default_target","value":"ubu","desc":"기본 연산 대상: Ubuntu (Mac은 UI/모니터만)"}
 {"type":"policy","key":"gpu_target","value":"ubu","desc":"GPU 연산: Ubuntu RTX 5070 전용"}
-{"type":"policy","key":"mac_max_load","value":"20","desc":"Mac load 20 초과 시 신규 연산 Ubuntu 강제"}
-{"type":"pattern","match":"*.hexa","cpu_threshold":15,"desc":"hexa 프로세스 CPU 15%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"cargo *|rustc *|cc *|gcc *|g++ *|clang *|clang++ *|ld *|ar *","cpu_threshold":15,"desc":"Rust/C/C++ 빌드 CPU 15%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"make *|cmake *|ninja *|meson *","cpu_threshold":15,"desc":"빌드 시스템 CPU 15%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"python3 *|python *|pip *","cpu_threshold":15,"desc":"Python 프로세스 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"policy","key":"mac_max_load","value":"10","desc":"Mac load 10 초과 시 신규 연산 Ubuntu 강제 (20→10 하향: 배터리 보호)"}
+{"type":"pattern","match":"*.hexa","cpu_threshold":5,"desc":"hexa 프로세스 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"cargo *|rustc *|cc *|gcc *|g++ *|clang *|clang++ *|ld *|ar *","cpu_threshold":5,"desc":"Rust/C/C++ 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"make *|cmake *|ninja *|meson *","cpu_threshold":5,"desc":"빌드 시스템 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"python3 *|python *|pip *","cpu_threshold":5,"desc":"Python 프로세스 CPU 15%+ → Ubuntu 오프로드"}
 {"type":"pattern","match":"bash *|sh *|zsh *","cpu_threshold":20,"desc":"Shell 스크립트 CPU 20%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"node *|npm *|npx *|tsc *|esbuild *|vite *|webpack *","cpu_threshold":15,"desc":"Node/JS 빌드 CPU 15%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"swift *|swiftc *|xcodebuild *","cpu_threshold":15,"desc":"Swift 빌드 CPU 15%+ → Ubuntu 오프로드"}
-{"type":"pattern","match":"go build *|go test *|go run *","cpu_threshold":15,"desc":"Go 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"node *|npm *|npx *|tsc *|esbuild *|vite *|webpack *","cpu_threshold":5,"desc":"Node/JS 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"swift *|swiftc *|xcodebuild *","cpu_threshold":5,"desc":"Swift 빌드 CPU 15%+ → Ubuntu 오프로드"}
+{"type":"pattern","match":"go build *|go test *|go run *","cpu_threshold":5,"desc":"Go 빌드 CPU 15%+ → Ubuntu 오프로드"}
 {"type":"gpu","match":"torch *|cuda *|tensorflow *|pytorch *","target":"ubu","desc":"GPU 연산 무조건 Ubuntu RTX 5070"}
 {"type":"ram","match":"*","threshold_mb":512,"desc":"RAM 512MB+ 프로세스 → Ubuntu 오프로드 후보"}
 {"type":"exclude","match":"cl.hexa","reason":"cl 런처 Mac 전용 (Prime Directive 보호)"}
