@@ -37,12 +37,7 @@ let LAUNCHER_FILE_REGEX = "(breakthrough|blowup|auto_register|gap_finder|alien_i
 let STATIC_WHITELIST = [9085, 9252, 9253, 9767, 3396]
 
 // 동적 보호 패턴 — 재부팅으로 정적 PID 소멸 시 fallback
-let DYNAMIC_WHITELIST_PATTERNS = [
-    "tmux: server",
-    "train_decoder_cpu.py",
-    "serve_conscious_cpu.py",
-    "ouroboros"
-]
+let DYNAMIC_WHITELIST_PATTERNS = ["tmux: server", "train_decoder_cpu.py", "serve_conscious_cpu.py", "ouroboros"]
 
 // 모드 플래그 (main()에서 argv 파싱 후 설정)
 let mut DRY_RUN = false
@@ -148,10 +143,16 @@ fn collect_dynamic_whitelist() -> auto {
 fn build_whitelist() -> auto {
     let mut wl = []
     let i = 0
-    while i < len(STATIC_WHITELIST) { wl = wl + [STATIC_WHITELIST[i]]; i = i + 1 }
+    while i < len(STATIC_WHITELIST) {
+        wl = wl + [STATIC_WHITELIST[i]]
+        i = i + 1
+    }
     let dynw = collect_dynamic_whitelist()
     let j = 0
-    while j < len(dynw) { wl = wl + [dynw[j]]; j = j + 1 }
+    while j < len(dynw) {
+        wl = wl + [dynw[j]]
+        j = j + 1
+    }
     return wl
 }
 

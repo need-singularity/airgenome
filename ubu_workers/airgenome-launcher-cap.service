@@ -6,7 +6,7 @@ After=network.target
 Type=oneshot
 User=aiden
 WorkingDirectory=/home/aiden/airgenome
-ExecStart=/tmp/hexa-build/hexa-lang/hexa /home/aiden/airgenome/launcher_cap.hexa
+ExecStart=/tmp/hexa-build/hexa-lang/target/release/hexa /home/aiden/airgenome/launcher_cap.hexa
 StandardOutput=append:/var/log/airgenome-cap.log
 StandardError=append:/var/log/airgenome-cap.err
 
