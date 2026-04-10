@@ -22,6 +22,9 @@ _ttest.hexa
 target/
 Cargo.lock
 
+# hexa-lang 빌드 산출물 심볼릭 (로컬 전용, 추적 금지)
+nexus/shared/bin/hexa.real
+
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
