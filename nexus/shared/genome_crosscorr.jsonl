@@ -1,6 +1,6 @@
 {"key":"index_file","value":"forge/genomes.index.jsonl"}
 {"key":"output_report","value":"forge/crosscorr.report.md"}
-{"key":"growth_bus","value":"/Users/ghost/Dev/nexus/shared/growth_bus.jsonl"}
+{"key":"growth_bus","value":"nexus/shared/growth_bus.jsonl"}
 {"key":"nmi_bins","value":8}
 {"key":"r_breakthrough","value":70}
 {"key":"nmi_breakthrough","value":30}
