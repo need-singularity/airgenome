@@ -34,6 +34,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/airgenome/.claude/hooks/auto-ship",
+            "timeout": 120
+          }
+        ]
+      }
     ]
   }
 }
