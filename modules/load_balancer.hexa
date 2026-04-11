@@ -1,0 +1,305 @@
+// airgenome/modules/load_balancer.hexa — 실시간 자원 로드밸런서 (AG7, L0 골화)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  AG7 골화 (2026-04-12) — 사용자 직접 명시:
+//    "이제 자원들 연결해줘 로드밸런싱"
+//    "추천순서" (B → A → C)
+//
+//  Prime Directive:
+//    infra_state.json (60s fresh) 읽기 → 호스트별 score 계산
+//    → task type 별 best-fit 호스트 선택 → dispatch_state.json 쓰기
+//    Consumer: auto_dispatch / ubu_bridge (C 단계)
+//
+//  동작 (30s 주기 launchd):
+//    1. read infra_state.json
+//    2. score hosts per task type (gpu_heavy / cpu_heavy / realtime_gpu / io_heavy)
+//    3. pick best per type
+//    4. write dispatch_state.json
+//    5. log heartbeat
+//
+//  Score function:
+//    score(host, task) = cpu_free*w_cpu + ram_free*w_ram + gpu_free*w_gpu + lan_bonus
+//    (cpu/ram/gpu 전부 0..100 percent)
+//
+//  Task type weights:
+//    gpu_heavy     — w_cpu=1 w_ram=2 w_gpu=5
+//    cpu_heavy     — w_cpu=5 w_ram=2 w_gpu=0
+//    realtime_gpu  — w_cpu=1 w_ram=2 w_gpu=3 + lan_bonus=30
+//    io_heavy      — w_cpu=1 w_ram=3 w_gpu=0 + lan_bonus=20
+//
+//  AG6 (R-MAC-01) 준수: Mac 은 host pool 에서 제외 (active=false 고정)
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let AG_HOME = HOME + "/Dev/airgenome"
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let LOG = AG_HOME + "/forge/load_balancer.log"
+let LOCK = HOME + "/.airgenome/load_balancer.lock"
+
+fn ts() -> str {
+    return try { exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" }
+}
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn log(msg: str) {
+    let line = ts() + " [LB] " + msg
+    try { exec("mkdir -p \"$(dirname '" + LOG + "')\"") } catch e {}
+    try { exec("echo " + shquote(line) + " >> '" + LOG + "'") } catch e {}
+    println(line)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSON naive helpers (infra_probe.hexa 동일 패턴)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn read_json_int(raw: str, key: str, fallback: int) -> int {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fallback }
+}
+
+fn read_json_float(raw: str, key: str, fallback: float) -> float {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_float(val_s) } catch e { return fallback }
+}
+
+fn read_json_str(raw: str, key: str, fallback: str) -> str {
+    if raw.contains("\"" + key + "\"") == false { return fallback }
+    let after = raw.split("\"" + key + "\"")[1]
+    let colon_parts = after.split(":")
+    if len(colon_parts) < 2 { return fallback }
+    let val_raw = colon_parts[1].split(",")[0].split("}")[0].trim()
+    return val_raw.replace("\"", "")
+}
+
+// 호스트 블록 추출: "ubu":{ ... } 에서 { ... } 만 꺼냄
+fn extract_host_block(raw: str, host: str) -> str {
+    let tag = "\"" + host + "\""
+    if raw.contains(tag) == false { return "" }
+    let after = raw.split(tag)[1]
+    if after.contains("{") == false { return "" }
+    let inner = after.split("{")[1].split("}")[0]
+    return "{" + inner + "}"
+}
+
+fn host_is_active(block: str) -> bool {
+    if len(block) == 0 { return false }
+    let status = read_json_str(block, "status", "")
+    if status == "active" { return true }
+    return false
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  호스트별 free % 계산 (0..100)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ubu_free_cpu(block: str) -> int {
+    // ubu load vs ~12 threads typical
+    let load = read_json_float(block, "load", 0.0)
+    let used = to_int(load / 12.0 * 100.0)
+    if used > 100 { return 0 }
+    if used < 0 { return 100 }
+    return 100 - used
+}
+
+fn htz_free_cpu(block: str) -> int {
+    let load = read_json_float(block, "load", 0.0)
+    let threads = read_json_int(block, "cpu_threads", 32)
+    if threads == 0 { return 0 }
+    let used = to_int(load / to_float(threads) * 100.0)
+    if used > 100 { return 0 }
+    if used < 0 { return 100 }
+    return 100 - used
+}
+
+fn host_free_ram(block: str) -> int {
+    let used = read_json_int(block, "ram_used_mb", 0)
+    let total = read_json_int(block, "ram_total_mb", 0)
+    if total == 0 { return 0 }
+    let pct = to_int(to_float(used) / to_float(total) * 100.0)
+    if pct > 100 { return 0 }
+    return 100 - pct
+}
+
+fn ubu_free_gpu(block: str) -> int {
+    let util = read_json_int(block, "gpu_util", 0)
+    if util > 100 { return 0 }
+    return 100 - util
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Scoring — task type 별 weight
+// ═══════════════════════════════════════════════════════════════════════
+
+// task 종류 별 (w_cpu, w_ram, w_gpu, lan_bonus) 반환은 hexa 가 튜플 없음 → 4개 파라미터로 out
+// 간단하게 inline 계산
+
+fn score(task: str, cpu: int, ram: int, gpu: int, lan: bool) -> int {
+    let mut w_cpu = 1
+    let mut w_ram = 1
+    let mut w_gpu = 1
+    let mut lan_bonus = 0
+    if task == "gpu_heavy" {
+        w_cpu = 1
+        w_ram = 2
+        w_gpu = 5
+    }
+    if task == "cpu_heavy" {
+        w_cpu = 5
+        w_ram = 2
+        w_gpu = 0
+    }
+    if task == "realtime_gpu" {
+        w_cpu = 1
+        w_ram = 2
+        w_gpu = 3
+        if lan { lan_bonus = 30 }
+    }
+    if task == "io_heavy" {
+        w_cpu = 1
+        w_ram = 3
+        w_gpu = 0
+        if lan { lan_bonus = 20 }
+    }
+    return (cpu * w_cpu) + (ram * w_ram) + (gpu * w_gpu) + lan_bonus
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Best host selection
+// ═══════════════════════════════════════════════════════════════════════
+
+// 반환 포맷: "host|score" — 쉼표 없이 단일 문자열, consumer 가 split "|"
+fn pick_best(task: str,
+             ubu_active: bool, ubu_cpu: int, ubu_ram: int, ubu_gpu: int,
+             htz_active: bool, htz_cpu: int, htz_ram: int, htz_gpu: int) -> str {
+    let mut best_host = "none"
+    let mut best_score = -1
+    if ubu_active {
+        let s = score(task, ubu_cpu, ubu_ram, ubu_gpu, true)  // ubu = LAN
+        if s > best_score {
+            best_score = s
+            best_host = "ubu"
+        }
+    }
+    if htz_active {
+        let s = score(task, htz_cpu, htz_ram, htz_gpu, false)  // htz = WAN
+        if s > best_score {
+            best_score = s
+            best_host = "htz"
+        }
+    }
+    return best_host + "|" + to_string(best_score)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    // single instance lock
+    try { exec("mkdir -p " + HOME + "/.airgenome") } catch e {}
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + LOCK) } catch e {}
+
+    // read infra_state
+    if file_exists(INFRA_STATE) == false {
+        log("ERROR infra_state missing — run infra_probe first")
+        try { exec("rm -f " + LOCK) } catch e {}
+        return
+    }
+    let raw = read_file(INFRA_STATE).trim()
+    if len(raw) < 10 {
+        log("ERROR infra_state empty")
+        try { exec("rm -f " + LOCK) } catch e {}
+        return
+    }
+
+    // host 블록 추출
+    let ubu_block = extract_host_block(raw, "ubu")
+    let htz_block = extract_host_block(raw, "htz")
+    let ubu_active = host_is_active(ubu_block)
+    let htz_active = host_is_active(htz_block)
+
+    // 호스트별 free %
+    let ubu_cpu = ubu_free_cpu(ubu_block)
+    let ubu_ram = host_free_ram(ubu_block)
+    let ubu_gpu = ubu_free_gpu(ubu_block)
+    let htz_cpu = htz_free_cpu(htz_block)
+    let htz_ram = host_free_ram(htz_block)
+    let htz_gpu = 0  // htz 는 GPU 없음
+
+    // task type 별 best
+    let gpu_best = pick_best("gpu_heavy",
+        ubu_active, ubu_cpu, ubu_ram, ubu_gpu,
+        htz_active, htz_cpu, htz_ram, htz_gpu)
+    let cpu_best = pick_best("cpu_heavy",
+        ubu_active, ubu_cpu, ubu_ram, ubu_gpu,
+        htz_active, htz_cpu, htz_ram, htz_gpu)
+    let rt_best = pick_best("realtime_gpu",
+        ubu_active, ubu_cpu, ubu_ram, ubu_gpu,
+        htz_active, htz_cpu, htz_ram, htz_gpu)
+    let io_best = pick_best("io_heavy",
+        ubu_active, ubu_cpu, ubu_ram, ubu_gpu,
+        htz_active, htz_cpu, htz_ram, htz_gpu)
+
+    let gpu_parts = gpu_best.split("|")
+    let cpu_parts = cpu_best.split("|")
+    let rt_parts = rt_best.split("|")
+    let io_parts = io_best.split("|")
+
+    // bool → "true"/"false" 문자열
+    let mut ubu_active_s = "false"
+    if ubu_active { ubu_active_s = "true" }
+    let mut htz_active_s = "false"
+    if htz_active { htz_active_s = "true" }
+
+    // dispatch_state.json 작성
+    let state = "{\"ts\":\"" + ts() + "\"" +
+        ",\"source\":\"load_balancer.hexa (AG7)\"" +
+        ",\"hosts\":{" +
+        "\"ubu\":{\"active\":" + ubu_active_s +
+        ",\"free_cpu\":" + to_string(ubu_cpu) +
+        ",\"free_ram\":" + to_string(ubu_ram) +
+        ",\"free_gpu\":" + to_string(ubu_gpu) +
+        ",\"lan\":true}" +
+        ",\"htz\":{\"active\":" + htz_active_s +
+        ",\"free_cpu\":" + to_string(htz_cpu) +
+        ",\"free_ram\":" + to_string(htz_ram) +
+        ",\"free_gpu\":0" +
+        ",\"lan\":false}" +
+        ",\"mac\":{\"active\":false,\"reason\":\"AG6 R-MAC-01 compute zero\"}" +
+        "},\"best\":{" +
+        "\"gpu_heavy\":{\"host\":\"" + gpu_parts[0] + "\",\"score\":" + gpu_parts[1] + "}" +
+        ",\"cpu_heavy\":{\"host\":\"" + cpu_parts[0] + "\",\"score\":" + cpu_parts[1] + "}" +
+        ",\"realtime_gpu\":{\"host\":\"" + rt_parts[0] + "\",\"score\":" + rt_parts[1] + "}" +
+        ",\"io_heavy\":{\"host\":\"" + io_parts[0] + "\",\"score\":" + io_parts[1] + "}" +
+        "}}"
+
+    try { write_file(DISPATCH_STATE, state + "\n") } catch e {
+        log("ERROR write " + DISPATCH_STATE + ": " + to_string(e))
+    }
+
+    // heartbeat (1 line / 30s)
+    log("TICK gpu=" + gpu_parts[0] + "(" + gpu_parts[1] + ")" +
+        " cpu=" + cpu_parts[0] + "(" + cpu_parts[1] + ")" +
+        " rt=" + rt_parts[0] + "(" + rt_parts[1] + ")" +
+        " io=" + io_parts[0] + "(" + io_parts[1] + ")" +
+        " | ubu[c" + to_string(ubu_cpu) + " r" + to_string(ubu_ram) + " g" + to_string(ubu_gpu) + "]" +
+        " htz[c" + to_string(htz_cpu) + " r" + to_string(htz_ram) + "]")
+
+    try { exec("rm -f " + LOCK) } catch e {}
+}
+
+main()
