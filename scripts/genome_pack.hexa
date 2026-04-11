@@ -97,7 +97,8 @@ if file_exists(out_path) {
 // idx_path 의 grandparent (= ROOT) 를 base 로 잡는다. dirname 두 번.
 let base_dir = exec("dirname \"$(dirname '" + idx_path + "')\" 2>/dev/null").trim()
 
-let py = "python3 -c '" +
+// R17: timeout 120s — prevent hang on massive index files (perl alarm wrapper)
+let py = "perl -e \"alarm 120; exec @ARGV\" python3 -c '" +
     "import sys,os,json,struct\n" +
     "idx_path,out_path,base=sys.argv[1],sys.argv[2],sys.argv[3]\n" +
     "rows=[]; missing=0\n" +

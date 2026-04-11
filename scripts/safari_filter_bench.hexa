@@ -216,7 +216,8 @@ fn run() {
     write_file(tmp_py, PAYLOAD)
     // /usr/bin/python3 절대경로 + GATE_LOCAL=1 → gate wrapper 우회 (로컬 sqlite 파일이라 필수)
     let cmd = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp_py + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
-    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large Safari bench
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

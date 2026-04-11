@@ -111,7 +111,8 @@ fn run() {
 
     let apply_flag = if apply_mode { "1" } else { "0" }
     let cmd = "python3 '" + tmp + "' '" + target + "' " + apply_flag + " 2>&1; rm -f '" + tmp + "'"
-    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large SQLite processing
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

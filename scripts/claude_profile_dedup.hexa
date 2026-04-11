@@ -117,7 +117,8 @@ fn run() {
     let flag = if apply { "--apply" } else { "" }
     // GATE_LOCAL=1 : python3 wrapper 가 원격 라우팅하지 않도록 강제 (Mac 로컬 파일 접근 필수)
     let cmd = "GATE_LOCAL=1 python3 '" + tmp + "' " + flag + " 2>&1; rm -f '" + tmp + "'"
-    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large profile dedup
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

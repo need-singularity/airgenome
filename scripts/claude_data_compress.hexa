@@ -43,11 +43,11 @@ fn run() {
 
     // 활성 jsonl 목록 (lsof) — 한번에 수집
     let active_list = try {
-        exec("lsof 2>/dev/null | awk '/\\.jsonl$/ {print $NF}' | sort -u")
+        exec("perl -e 'alarm 30; exec @ARGV' /bin/sh -c 'lsof 2>/dev/null | awk \"/\\.jsonl$/ {print \\$NF}\" | sort -u'")
     } catch e { "" }
 
     // find 대상 파일 목록
-    let find_cmd = "find " + env("HOME") + "/.claude*/projects -name '*.jsonl' " +
+    let find_cmd = "perl -e 'alarm 60; exec @ARGV' find " + env("HOME") + "/.claude*/projects -name '*.jsonl' " +
                    "-mtime +" + str(age_days) + " -type f 2>/dev/null"
     let files_str = try { exec(find_cmd) } catch e { "" }
     let files = files_str.split("\n")

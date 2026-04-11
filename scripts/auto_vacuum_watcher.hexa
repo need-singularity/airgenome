@@ -96,7 +96,8 @@ fn check_and_vacuum(label: string, proc_name: string, db_path: string, dry: bool
 
     println("  APPLY: running sqlite_byte_reinterpret --apply …")
     let cmd = "hexa run '" + REINTERPRET + "' '" + db_path + "' --apply 2>&1"
-    let out = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on VACUUM operation
+    let out = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(out)
 
     if out.contains("APPLIED") {

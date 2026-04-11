@@ -79,7 +79,7 @@ fn read_write_idx() -> int {
 fn count_recent_anomalies() -> int {
     let py = "import struct,sys,os\np='" + RING_PATH + "'\ntry:\n  f=open(p,'rb'); f.seek(0); hdr=f.read(16)\n  wi=struct.unpack('<I',hdr[12:16])[0]\n  ENT=80\n  fsz=os.path.getsize(p)\n  cap=(fsz-16)//ENT\n  n=0\n  for k in range(10):\n    idx=(wi-1-k)%cap\n    f.seek(16+idx*ENT); e=f.read(ENT)\n    if len(e)<ENT: continue\n    flags=struct.unpack('<I',e[76:80])[0]\n    if flags & 1: n+=1\n  print(n)\nexcept Exception as ex:\n  print(0)\n"
     write_file("/tmp/_ag3_loop_scan.py", py)
-    let out = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
+    let out = exec("perl -e 'alarm 30; exec @ARGV' ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " python3 - < /tmp/_ag3_loop_scan.py 2>/dev/null").trim()
     if len(out) == 0 { return 0 }
     return to_int(out)
 }
@@ -89,13 +89,13 @@ fn trigger_blowup(domain: str) -> bool {
     // R17: fire-and-forget — nohup+disown ensures blowup detaches from ssh session
     let cmd = "nohup " + UBU_HEXA + " run " + UBU_BLOWUP + " " + domain + " 3 --no-graph >/dev/null 2>&1 & disown"
     write_file("/tmp/_ag3_loop_blowup.sh", cmd + "\n")
-    let r = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_ag3_loop_blowup.sh 2>&1").trim()
+    let r = exec("perl -e 'alarm 60; exec @ARGV' ssh -o ConnectTimeout=3 -o ServerAliveInterval=15 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_ag3_loop_blowup.sh 2>&1").trim()
     return true
 }
 
 // ── GPU UTILIZATION ─────────────────────────────────────────────────────
 fn gpu_util() -> int {
-    let raw = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
+    let raw = exec("perl -e 'alarm 20; exec @ARGV' ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 " + REMOTE + " \"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits\" 2>/dev/null").trim()
     if len(raw) == 0 { return 100 }
     return to_int(raw)
 }
@@ -152,6 +152,10 @@ fn main() {
     }
 
     while true {
+        // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+        let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+        if parent_alive == "n" { println("[AG3-LOOP] parent dead — exiting"); break }
+
         tick = tick + 1
 
         // 1) ring header check

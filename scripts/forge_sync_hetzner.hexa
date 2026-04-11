@@ -47,7 +47,7 @@ fn run() {
     }
 
     // rsync — 로컬 전용 파일 exclude, 통계 캡처
-    let cmd = "rsync -az --delete --stats " +
+    let cmd = "rsync -az --delete --stats --timeout=60 " +
               "--exclude='*.bak' " +
               "--exclude='harvest.log' " +
               "--exclude='dispatch.log*' " +
