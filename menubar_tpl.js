@@ -198,7 +198,10 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
     statusItem.button.title = $(levelIcon(lv) + ' ' + j.cpu + '% \u00B7 ' + j.ram + '%' + gateIcon);
 
     // ═══ Mac ═══
-    cpuItem.title = $('  CPU  ' + bar(j.cpu, cc, bw) + '  ' + j.cpu + '/' + cc + '%');
+    // 2026-04-11: load 표시 추가 (load 91 같은 극한 상태 가시화). load>2*ncpu 면 ⚠ 마커
+    var macLoad = j.load || 0;
+    var loadWarn = (macLoad > 16) ? ' \u26A0' : '';
+    cpuItem.title = $('  CPU  ' + bar(j.cpu, cc, bw) + '  ' + j.cpu + '/' + cc + '%  load=' + macLoad + loadWarn);
     ramItem.title = $('  RAM  ' + bar(j.ram, rc, bw) + '  ' + j.ram + '/' + rc + '%');
     var gpuLocal = j.gpu_local || 0;
     gpuItem.title = $('  GPU  ' + bar(gpuLocal, 100, bw) + '  ' + gpuLocal + '%');
