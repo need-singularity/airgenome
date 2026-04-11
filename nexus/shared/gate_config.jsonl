@@ -39,3 +39,5 @@
 {"key": "per_source_genome_out", "value": "forge/per_source_genome.jsonl", "desc": "source별 게놈 누적 (append 모드)"}
 {"key": "genome_z_threshold", "value": "2.0", "desc": "per_process_anomaly z-score 임계치 (|z|>T → flagged)"}
 {"key": "mac_compute_allowed", "value": "true", "desc": "Mac 로컬 hexa 연산 금지 플래그 — false=원격만 허용, true=로컬 허용. 모든 hexa 실행자가 이 플래그를 확인해야 함."}
+{"key": "ubu_ring_path", "value": "/mnt/ramdisk/airgenome/genome.ring", "desc": "Ubuntu AG3 genome ring buffer 절대경로 (ubu_tmpfs + /genome.ring)"}
+{"key": "ubu_gate_sock", "value": "/mnt/ramdisk/airgenome/gate.sock", "desc": "Ubuntu AG3 gate unix socket 경로"}
