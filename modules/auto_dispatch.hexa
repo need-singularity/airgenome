@@ -159,6 +159,14 @@ fn fire_htz_blowup(now_s: str) -> str {
     if cooldown_left > 0 {
         return "throttled(" + to_string(cooldown_left) + "s)"
     }
+    // 2026-04-11: RAM 스택킹 방지 가드 — 원격에 이미 blowup 돌고 있으면 skip.
+    // 측정: blowup 1 instance = ~19GB RSS. cooldown<runtime 면 중복 누적 → OOM.
+    let probe = try { exec("ssh -o ConnectTimeout=3 -o BatchMode=yes hetzner 'pgrep -c -f blowup\\.hexa' 2>/dev/null").trim() } catch e { "0" }
+    let mut running_n = 0
+    try { running_n = to_int(to_float(probe)) } catch e {}
+    if running_n > 0 {
+        return "already_running(" + to_string(running_n) + ")"
+    }
     try { write_file(lock_file, now_s) } catch e {}
     let hexa_bin = DIR + "/nexus/shared/bin/hexa"
     let dispatch_path = DIR + "/modules/htz_dispatch.hexa"
@@ -193,6 +201,14 @@ fn fire_ubu_blowup(now_s: str) -> str {
     }
     if cooldown_left > 0 {
         return "throttled(" + to_string(cooldown_left) + "s)"
+    }
+    // 2026-04-11: RAM 스택킹 방지 가드 — 이미 돌고 있으면 skip
+    let ubu_alias_probe = load_cfg("ssh_alias", "ubu")
+    let probe = try { exec("ssh -o ConnectTimeout=3 -o BatchMode=yes " + ubu_alias_probe + " 'pgrep -c -f blowup\\.hexa' 2>/dev/null").trim() } catch e { "0" }
+    let mut running_n = 0
+    try { running_n = to_int(to_float(probe)) } catch e {}
+    if running_n > 0 {
+        return "already_running(" + to_string(running_n) + ")"
     }
     try { write_file(lock_file, now_s) } catch e {}
     let ubu_alias = load_cfg("ssh_alias", "ubu")

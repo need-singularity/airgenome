@@ -47,3 +47,5 @@
 {"key": "offload_htz_idle_threshold", "value": "70", "desc": "htz_cpu_pct 이 이 값 미만이면 idle 판정 (30→70 공격적)"}
 {"key": "offload_ubu_cooldown_s", "value": "60", "desc": "ubu blowup 재발화 최소 간격 (300→60 공격적)"}
 {"key": "offload_ubu_idle_gpu_threshold", "value": "50", "desc": "ubu gpu_util 이 이 값 미만이면 idle 판정 (5→50 공격적)"}
+{"key": "offload_htz_blowup_depth", "value": "1", "desc": "htz blowup depth (3→1: 메모리 경감 — depth=3 시 blowup 1개가 83GB RSS 소모 관찰)"}
+{"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth (3→1 동일 이유)"}
