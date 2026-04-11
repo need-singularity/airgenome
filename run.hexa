@@ -49,8 +49,13 @@ let mut my_pid = "0"
 try { my_pid = exec("echo $$").trim() } catch e {}
 try { write_file(LOCKFILE, my_pid) } catch e {}
 
-// ── 1. Kill old menubar ────────────────────────────────────────────
+// ── 1. Kill old menubar + sampler + ag3_feed (stale instances) ─────
+// NOTE: 위 lock 기반 kill 은 exec("echo $$") 가 죽은 subshell PID 를 반환하므로
+// 사실상 작동하지 않는다. 고아(PPID=1)가 된 이전 기동의 자식들을 패턴으로 청소한다.
+// (D1 사고 재발 방지: sampler/ag3_feed 누적 → mac 자원 고갈)
 try { exec("pkill -f 'osascript.*airgenome-menubar' 2>/dev/null || true") } catch e { println("⬡ warn: pkill old menubar failed") }
+try { exec("pkill -f 'sampler\\.hexa' 2>/dev/null || true") } catch e { println("⬡ warn: pkill old sampler failed") }
+try { exec("pkill -f 'ag3_menubar_feed\\.hexa' 2>/dev/null || true") } catch e { println("⬡ warn: pkill old ag3_feed failed") }
 
 // ── 2. System info ─────────────────────────────────────────────────
 let mut total_ram_mb_s = ""
@@ -135,23 +140,13 @@ try {
 } catch e {}
 println("⬡ AG3 mode: " + ag3_mode + "  (strict|degrade|off)")
 
-// ── 6. Background sampler (sampler.hexa) ───────────────────────────
-let mut sampler_pid = ""
-try {
-    sampler_pid = exec(HEXA + " " + DIR + "/sampler.hexa " + STATE + " " + CONFIG + " " + to_string(total_ram_mb) + " " + to_string(ncpu) + " " + DIR + " >/dev/null 2>&1 & echo $!").trim()
-} catch e {
-    println("⬡ FATAL: sampler launch failed: " + e)
-    return
-}
-
-// ── 6b. AG3 menubar feed (Ubuntu-First 상태 폴러) ─────────────────
-let mut ag3_feed_pid = ""
-try {
-    ag3_feed_pid = exec(HEXA + " " + DIR + "/modules/ag3_menubar_feed.hexa 5 >/dev/null 2>&1 & echo $!").trim()
-} catch e {
-    println("⬡ FATAL: ag3_menubar_feed launch failed: " + e)
-    return
-}
+// ── 6. sampler & ag3_feed: launchd 위임 (D1 골화, 2026-04-10) ────
+// com.airgenome.sampler / com.airgenome.ag3-feed 가 StartInterval + ONCE 모드로 관리.
+// run.hexa 에서 직접 spawn 하면 while-true 좀비가 9~10h 누적 → 81% CPU 폭주 (D1).
+// sampler.hexa:63 / ag3_menubar_feed.hexa:64 의 AIRGENOME_*_ONCE env 가 미설정된
+// 채로 spawn되면 무한 루프로 빠지므로, run.hexa 는 이 둘을 절대 spawn 하지 않는다.
+let sampler_pid = "launchd"
+let ag3_feed_pid = "launchd"
 
 // ── 7. JXA menubar (template-based) ────────────────────────────────
 // Load menubar_tpl.js, substitute paths, write to temp, launch
