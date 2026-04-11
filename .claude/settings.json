@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa pretool /Users/ghost/Dev/nexus/shared/hooks/block-forbidden-ext.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/block-forbidden-ext.hexa"
           },
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa pretool /Users/ghost/Dev/nexus/shared/hooks/absolute-rules-loader.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/absolute-rules-loader.hexa"
           }
         ]
       },
@@ -30,7 +30,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa post /Users/ghost/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa"
+            "command": "/Users/ghost/Dev/hexa-lang/hexa /Users/ghost/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/airgenome/.claude/hooks/auto-ship",
+            "timeout": 120
           }
         ]
       }
