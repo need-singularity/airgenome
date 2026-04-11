@@ -1,0 +1,191 @@
+// resource_ceiling.hexa — 실시간 자원 활용 천장 모니터 + 자동 채움
+// AG7 dispatch_state + infra_state 기반 전 호스트 활용도 추적
+// 천장 미달 시 자동 채움 트리거 (ubu auto_fill, htz 작업 발사)
+//
+// R1 HEXA-FIRST | R2 동적 로드 | R17 timeout | R19 에러 출력
+// AG6: Mac = 오케스트레이션만 (compute 0)
+//
+// 사용: hexa resource_ceiling.hexa           (1회 체크)
+//       hexa resource_ceiling.hexa monitor   (launchd 호환 ONCE)
+
+let HOME = env("HOME")
+let STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
+let DISPATCH_PATH = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let LOG_PATH = env("HOME") + "/Dev/airgenome/forge/resource_ceiling.jsonl"
+let GATE_CFG = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+
+// ─── config ───
+fn load_cfg(key: str, fallback: str) -> str {
+    if file_exists(GATE_CFG) == false { return fallback }
+    let raw = read_file(GATE_CFG)
+    let lines = raw.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if len(l) > 2 {
+            try {
+                let p = json_parse(l)
+                if p["key"] == key { return p["value"] }
+            } catch e {}
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let SSH_TIMEOUT = load_cfg("ssh_timeout", "8")
+let UBU_ALIAS = load_cfg("ssh_alias", "ubu")
+let HTZ_ALIAS = load_cfg("htz_alias", "hetzner")
+
+// ─── host probe (infra_state.json 기반) ───
+fn read_host(raw: str, name: str) -> [str] {
+    // returns [status, cpu_pct, ram_pct, gpu_pct, load]
+    let tag = "\"" + name + "\":{"
+    if raw.contains(tag) == false { return ["offline", "0", "0", "0", "0"] }
+    let after = raw.split(tag)[1]
+    let block = after.split("}")[0] + "}"
+
+    fn extract(b: str, k: str) -> str {
+        let kt = "\"" + k + "\":"
+        if b.contains(kt) == false { return "0" }
+        let v = b.split(kt)[1]
+        let end = 0
+        if v[0..1] == "\"" {
+            return v.split("\"")[1]
+        }
+        // numeric
+        let digits = "0123456789.-"
+        let r = ""
+        let ci = 0
+        while ci < len(v) && digits.contains(v[ci..(ci+1)]) {
+            r = r + v[ci..(ci+1)]
+            ci = ci + 1
+        }
+        if r == "" { return "0" }
+        return r
+    }
+
+    let status = extract(block, "status")
+    let cpu_free = extract(block, "cpu_free")
+    let ram_free = extract(block, "ram_free")
+    let gpu_free = extract(block, "gpu_free")
+    let load_val = extract(block, "load")
+    return [status, cpu_free, ram_free, gpu_free, load_val]
+}
+
+// ─── utilization calc ───
+fn calc_util(cpu_free: str, total_cpu: int) -> int {
+    let free = to_int(cpu_free)
+    if total_cpu <= 0 { return 0 }
+    let used = total_cpu - free
+    if used < 0 { return 0 }
+    return (used * 100) / total_cpu
+}
+
+// ─── auto fill trigger ───
+fn trigger_ubu_fill() {
+    // ubu auto_fill systemd 확인 + 시작
+    try {
+        let status = exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + UBU_ALIAS + " 'systemctl is-active airgenome-fill 2>/dev/null'").trim()
+        if status != "active" {
+            println("  [CEIL] ubu auto_fill inactive → restart")
+            try {
+                exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + UBU_ALIAS + " 'sudo systemctl start airgenome-fill 2>&1'")
+                println("  [CEIL] ubu auto_fill restarted ✓")
+            } catch e2 {
+                println("  [CEIL] ubu auto_fill restart FAIL: " + to_string(e2))
+            }
+        }
+    } catch e {
+        println("  [CEIL] ubu SSH check fail: " + to_string(e))
+    }
+}
+
+fn trigger_htz_fill(load_s: str) {
+    // htz load < 50% of 32 threads = 16 → 채울 여지
+    let load = to_int(load_s)
+    if load < 16 {
+        println("  [CEIL] htz load " + load_s + " < 16 → fill 여지 있음")
+        // htz 에서 blowup/gap_finder 1개 발사
+        try {
+            exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + HTZ_ALIAS + " 'cd ~/Dev/nexus && nohup /root/Dev/nexus/shared/bin/hexa shared/blowup/core/blowup.hexa math 3 --fast > /dev/null 2>&1 &'")
+            println("  [CEIL] htz blowup dispatched ✓")
+        } catch e {
+            println("  [CEIL] htz dispatch fail: " + to_string(e))
+        }
+    }
+}
+
+// ─── main ───
+let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+let mode = "check"
+let argv = exec("echo $0").trim()
+// ONCE mode for launchd
+try {
+    let args = exec("ps -o args= -p " + exec("echo $$").trim()).trim()
+    if args.contains("monitor") { /* launchd ONCE mode — same behavior, just tagged */ }
+} catch e {}
+
+println("═══ resource_ceiling " + ts + " ═══")
+
+// read infra_state
+if file_exists(STATE_PATH) == false {
+    println("  ⚠ infra_state.json missing — skip")
+    exit(1)
+}
+let raw = read_file(STATE_PATH)
+
+// parse hosts
+let ubu = read_host(raw, "ubu")
+let htz = read_host(raw, "htz")
+let mac = read_host(raw, "mac")
+
+// utilization (ubu: 12 cores, htz: 32 threads, mac: 0 compute)
+let ubu_cpu_util = calc_util(ubu[1], 12)
+let htz_cpu_util = calc_util(htz[1], 32)
+let ubu_gpu_util = if ubu[3] != "0" { 100 - to_int(ubu[3]) } else { 0 }
+
+// total pool utilization (weighted: ubu=12, htz=32 → total 44 cores)
+let ubu_used = 12 - to_int(ubu[1])
+let htz_used = 32 - to_int(htz[1])
+if ubu_used < 0 { let ubu_used = 0 }
+if htz_used < 0 { let htz_used = 0 }
+let total_util = if 44 > 0 { ((ubu_used + htz_used) * 100) / 44 } else { 0 }
+
+// display
+println("  ┌──────────┬────────┬────────┬────────┬──────────┐")
+println("  │ 호스트   │ CPU %  │ GPU %  │ load   │ status   │")
+println("  ├──────────┼────────┼────────┼────────┼──────────┤")
+println("  │ ubu      │ " + to_string(ubu_cpu_util) + "%\t│ " + to_string(ubu_gpu_util) + "%\t│ " + ubu[4] + "\t│ " + ubu[0] + "\t│")
+println("  │ htz      │ " + to_string(htz_cpu_util) + "%\t│ —\t│ " + htz[4] + "\t│ " + htz[0] + "\t│")
+println("  │ mac      │ 0%\t│ —\t│ " + mac[4] + "\t│ orch\t│")
+println("  └──────────┴────────┴────────┴────────┴──────────┘")
+println("  총 활용: " + to_string(total_util) + "% / 100% (Egyptian 천장)")
+println("")
+
+// ceiling gap analysis
+let gap = 100 - total_util
+if gap > 50 {
+    println("  ⚠ 천장 대비 " + to_string(gap) + "% 미달 — 자동 채움 트리거")
+    if ubu[0] == "active" && ubu_cpu_util < 50 {
+        trigger_ubu_fill()
+    }
+    if htz[0] == "active" {
+        trigger_htz_fill(htz[4])
+    }
+} else if gap > 20 {
+    println("  △ 천장 대비 " + to_string(gap) + "% 미달 — 모니터 유지")
+} else {
+    println("  ✓ 천장 근접 (" + to_string(total_util) + "%) — 최적 활용")
+}
+
+// log JSONL
+let log_line = "{\"ts\":\"" + ts + "\",\"ubu_cpu\":" + to_string(ubu_cpu_util) + ",\"ubu_gpu\":" + to_string(ubu_gpu_util) + ",\"htz_cpu\":" + to_string(htz_cpu_util) + ",\"total\":" + to_string(total_util) + ",\"gap\":" + to_string(gap) + "}"
+try {
+    exec("echo '" + log_line + "' >> " + LOG_PATH)
+} catch e {
+    println("  [CEIL] log write fail: " + to_string(e))
+}
+
+println("  log → " + LOG_PATH)
+exit(0)
