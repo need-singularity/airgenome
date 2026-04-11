@@ -34,6 +34,7 @@ let LOCK    = env("HOME") + "/.airgenome/mac_compute_zero.lock"
 let SSH_OPT = "-o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 -o BatchMode=yes"
 
 // ─── Whitelist (orchestration/UI/monitor) ────────────────────────────────
+// wrapper MAC_ONLY 리스트와 1:1 대응 (drift 방지)
 let WHITELIST = [
     "launcher_cap",
     "menubar",
@@ -43,6 +44,7 @@ let WHITELIST = [
     "ag3_loop",
     "ag3_shipper",
     "ag3_status",
+    "ag3_guard",
     "infra_probe",
     "auto_dispatch",
     "resource_coordinator",
@@ -53,11 +55,15 @@ let WHITELIST = [
     "genome_pack",
     "session_snapshot",
     "session_resume",
+    "usage.hexa",
     "usage_refresh",
+    "hook.hexa",
     "ramdisk",
     "sync_remote",
     "forge_sync_hetzner",
     "cl.hexa",
+    "claude_profile_dedup",
+    "load_balancer",
     "log_rotate",
     "auto_vacuum",
     "mac_compute_zero",
@@ -159,11 +165,14 @@ fn list_violators() -> list {
         }
         // 자기 자신 제외
         if line.contains("mac_compute_zero") { i = i + 1; continue }
-        // Blacklist 우선
+        // Blacklist 우선 — 경로 무관 (nexus/shared/blowup 등도 잡음, defense-in-depth)
         if is_blacklisted(line) {
             violators.push(line)
             i = i + 1; continue
         }
+        // 경로 필터: /Dev/airgenome/ 바깥 hexa 프로세스는 airgenome 관할 외 → skip
+        // (hexa-lang self-test, void build 등 타 프로젝트 compute 는 침해 금지)
+        if line.contains("/Dev/airgenome/") == false { i = i + 1; continue }
         // Whitelist 통과
         if is_whitelisted(line) { i = i + 1; continue }
         // unknown — 보수적으로 log only (kill 안 함)
