@@ -16,6 +16,10 @@
 
 작업 시작 전 `nexus/shared/rules/common.json` + `nexus/shared/rules/airgenome.json` 을 읽고 전 규칙 준수. 위반 시 즉시 수정.
 
+## L0 Guard (공용)
+
+`hexa ~/Dev/nexus/shared/lockdown/l0_guard.hexa <verify|sync|merge|status>` — REPO 자동 감지, SSOT `~/Dev/nexus/shared/lockdown/lockdown.json` projects.airgenome.L0 배열로 파일 존재 / CODEOWNERS / GitHub branch protection 일괄 검증·복구. solo-repo PR 머지는 `merge <PR#>` (enforce_admins OFF→merge→ON 안전 패턴).
+
 ## ref
 
 ```
