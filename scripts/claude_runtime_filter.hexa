@@ -1,0 +1,323 @@
+// airgenome/scripts/claude_runtime_filter.hexa
+//   R1 HEXA-FIRST — 신규 .py/.sh 금지. 인라인 python3 payload.
+//
+//   목적: Claude CLI conversation .jsonl 런타임 hot path 가속.
+//   cold-storage 압축(quantum_filter) 과 달리 in-memory 재인코딩.
+//
+//   encode: .jsonl → entanglement-collapsed → msgpack/cbor2/struct blob (/tmp)
+//   iter:   blob 로드 + sample
+//   bench:  raw json.loads vs blob load + tool_use_id lookup 100회 wall-clock
+//
+//   사용:
+//     hexa scripts/claude_runtime_filter.hexa encode <in.jsonl> [out.bin]
+//     hexa scripts/claude_runtime_filter.hexa bench  <in.jsonl>
+//     hexa scripts/claude_runtime_filter.hexa iter   <blob.bin> [N]
+//
+//   안전: 출력은 /tmp/claude_session_*.bin 한정. 원본 .jsonl read-only.
+//   GATE_LOCAL=1 로 로컬 실행 강제.
+
+let PAYLOAD = "import sys,os,io,json,time,struct,hashlib,uuid,resource\n" +
+"from collections import defaultdict\n" +
+"CODEC='struct'\n" +
+"try:\n" +
+"    import msgpack\n" +
+"    CODEC='msgpack'\n" +
+"    def _pack(o): return msgpack.packb(o,use_bin_type=True)\n" +
+"    def _unpack(b): return msgpack.unpackb(b,raw=False)\n" +
+"except Exception:\n" +
+"    try:\n" +
+"        import cbor2\n" +
+"        CODEC='cbor2'\n" +
+"        def _pack(o): return cbor2.dumps(o)\n" +
+"        def _unpack(b): return cbor2.loads(b)\n" +
+"    except Exception:\n" +
+"        def _pack(o):\n" +
+"            j=json.dumps(o,separators=(',',':'),ensure_ascii=False).encode('utf-8')\n" +
+"            return struct.pack('<I',len(j))+j\n" +
+"        def _unpack(b):\n" +
+"            n=struct.unpack_from('<I',b,0)[0]\n" +
+"            return json.loads(b[4:4+n])\n" +
+"MAGIC=b'CRF1'\n" +
+"def _read_jsonl(path):\n" +
+"    with open(path,'rb') as f: raw=f.read()\n" +
+"    recs=[]\n" +
+"    for ln in raw.split(b'\\n'):\n" +
+"        if not ln.strip(): continue\n" +
+"        try: recs.append(json.loads(ln))\n" +
+"        except Exception: pass\n" +
+"    return raw,recs\n" +
+"def _collapse(recs):\n" +
+"    pair=defaultdict(lambda: defaultdict(set))\n" +
+"    for r in recs:\n" +
+"        its=[(k,v) for k,v in r.items() if isinstance(v,(str,int,float,bool)) and v is not None]\n" +
+"        for k1,v1 in its:\n" +
+"            for k2,v2 in its:\n" +
+"                if k1==k2: continue\n" +
+"                pair[(k1,k2)][v1].add(v2)\n" +
+"    drops={}\n" +
+"    for (k1,k2),m in pair.items():\n" +
+"        if k2 in drops: continue\n" +
+"        if len(m)<2: continue\n" +
+"        if not all(len(s)==1 for s in m.values()): continue\n" +
+"        mp={v1:next(iter(s)) for v1,s in m.items()}\n" +
+"        ok=True\n" +
+"        for r in recs:\n" +
+"            if k1 in r and isinstance(r[k1],(str,int,float,bool)):\n" +
+"                if r.get(k2)!=mp.get(r[k1]): ok=False; break\n" +
+"        if not ok: continue\n" +
+"        drops[k2]=(k1,mp)\n" +
+"    collapsed=[{k:v for k,v in r.items() if k not in drops} for r in recs]\n" +
+"    return collapsed,drops\n" +
+"def _tool_ids(r):\n" +
+"    ids=[]\n" +
+"    msg=r.get('message') if isinstance(r,dict) else None\n" +
+"    if isinstance(msg,dict):\n" +
+"        c=msg.get('content')\n" +
+"        if isinstance(c,list):\n" +
+"            for b in c:\n" +
+"                if isinstance(b,dict):\n" +
+"                    if b.get('type')=='tool_use' and b.get('id'): ids.append(b['id'])\n" +
+"                    if b.get('type')=='tool_result' and b.get('tool_use_id'): ids.append(b['tool_use_id'])\n" +
+"    return ids\n" +
+"def encode(jsonl_path,out_path=None):\n" +
+"    t0=time.perf_counter()\n" +
+"    raw,recs=_read_jsonl(jsonl_path)\n" +
+"    t1=time.perf_counter()\n" +
+"    collapsed,drops=_collapse(recs)\n" +
+"    t2=time.perf_counter()\n" +
+"    idx={}\n" +
+"    for i,r in enumerate(collapsed):\n" +
+"        for tid in _tool_ids(r):\n" +
+"            idx.setdefault(tid,i)\n" +
+"    header={'codec':CODEC,'n':len(collapsed),'drops':{k:[s,mp] for k,(s,mp) in drops.items()},'idx':idx,'src':os.path.abspath(jsonl_path),'src_size':len(raw)}\n" +
+"    hb=_pack(header)\n" +
+"    parts=[MAGIC,struct.pack('<I',len(hb)),hb]\n" +
+"    if CODEC=='struct':\n" +
+"        for r in collapsed: parts.append(_pack(r))\n" +
+"    else:\n" +
+"        body=_pack(collapsed)\n" +
+"        parts.append(struct.pack('<Q',len(body)))\n" +
+"        parts.append(body)\n" +
+"    blob=b''.join(parts)\n" +
+"    if out_path is None:\n" +
+"        out_path='/tmp/claude_session_%s.bin'%uuid.uuid4().hex[:12]\n" +
+"    with open(out_path,'wb') as f: f.write(blob)\n" +
+"    t3=time.perf_counter()\n" +
+"    return {'out':out_path,'codec':CODEC,'n':len(collapsed),'drops':list(drops),'raw_bytes':len(raw),'blob_bytes':len(blob),'read_ms':(t1-t0)*1e3,'collapse_ms':(t2-t1)*1e3,'encode_ms':(t3-t2)*1e3,'total_ms':(t3-t0)*1e3,'sha_src':hashlib.sha256(raw).hexdigest()[:16]}\n" +
+"def _load_blob(path):\n" +
+"    with open(path,'rb') as f: b=f.read()\n" +
+"    assert b[:4]==MAGIC,'bad magic'\n" +
+"    hl=struct.unpack_from('<I',b,4)[0]\n" +
+"    hdr=_unpack(b[8:8+hl])\n" +
+"    off=8+hl\n" +
+"    codec=hdr['codec']\n" +
+"    if codec=='struct':\n" +
+"        recs=[]\n" +
+"        p=off\n" +
+"        for _ in range(hdr['n']):\n" +
+"            n=struct.unpack_from('<I',b,p)[0]\n" +
+"            recs.append(json.loads(b[p+4:p+4+n]))\n" +
+"            p+=4+n\n" +
+"    else:\n" +
+"        bl=struct.unpack_from('<Q',b,off)[0]\n" +
+"        recs=_unpack(b[off+8:off+8+bl])\n" +
+"    drops=hdr.get('drops',{})\n" +
+"    if drops:\n" +
+"        for r in recs:\n" +
+"            for dst,pair in drops.items():\n" +
+"                src,mp=pair[0],pair[1]\n" +
+"                if src in r and isinstance(r[src],(str,int,float,bool)):\n" +
+"                    v=mp.get(r[src])\n" +
+"                    if v is not None: r[dst]=v\n" +
+"    return hdr,recs\n" +
+"def _rss_mb():\n" +
+"    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1048576.0\n" +
+"def encode_lazy(jsonl_path,out_path=None):\n" +
+"    # record-level framing so each record can be parsed on demand\n" +
+"    t0=time.perf_counter()\n" +
+"    raw,recs=_read_jsonl(jsonl_path)\n" +
+"    collapsed,drops=_collapse(recs)\n" +
+"    frames=[]\n" +
+"    offsets=[]\n" +
+"    cur=0\n" +
+"    for r in collapsed:\n" +
+"        p=_pack(r)\n" +
+"        offsets.append((cur,len(p)))\n" +
+"        frames.append(p)\n" +
+"        cur+=len(p)\n" +
+"    idx={}\n" +
+"    for i,r in enumerate(collapsed):\n" +
+"        for tid in _tool_ids(r):\n" +
+"            idx.setdefault(tid,i)\n" +
+"    header={'codec':CODEC,'mode':'lazy','n':len(collapsed),'drops':{k:[s,mp] for k,(s,mp) in drops.items()},'idx':idx,'offsets':offsets}\n" +
+"    hb=_pack(header)\n" +
+"    body=b''.join(frames)\n" +
+"    blob=MAGIC+b'LZ'+struct.pack('<I',len(hb))+hb+struct.pack('<Q',len(body))+body\n" +
+"    if out_path is None:\n" +
+"        out_path='/tmp/claude_session_lazy_%s.bin'%uuid.uuid4().hex[:12]\n" +
+"    with open(out_path,'wb') as f: f.write(blob)\n" +
+"    t1=time.perf_counter()\n" +
+"    return {'out':out_path,'n':len(collapsed),'blob_bytes':len(blob),'total_ms':(t1-t0)*1e3}\n" +
+"class LazyBlob:\n" +
+"    __slots__=('mv','hdr','body_off','drops','idx','offsets')\n" +
+"    def __init__(self,path):\n" +
+"        with open(path,'rb') as f: data=f.read()\n" +
+"        assert data[:4]==MAGIC and data[4:6]==b'LZ'\n" +
+"        hl=struct.unpack_from('<I',data,6)[0]\n" +
+"        self.hdr=_unpack(data[10:10+hl])\n" +
+"        p=10+hl\n" +
+"        bl=struct.unpack_from('<Q',data,p)[0]\n" +
+"        self.body_off=p+8\n" +
+"        self.mv=memoryview(data)\n" +
+"        self.drops=self.hdr.get('drops',{})\n" +
+"        self.idx=self.hdr.get('idx',{})\n" +
+"        self.offsets=self.hdr.get('offsets',[])\n" +
+"    def __len__(self): return self.hdr['n']\n" +
+"    def get(self,i):\n" +
+"        off,ln=self.offsets[i]\n" +
+"        r=_unpack(bytes(self.mv[self.body_off+off:self.body_off+off+ln]))\n" +
+"        for dst,pair in self.drops.items():\n" +
+"            src=pair[0]; mp=pair[1]\n" +
+"            if src in r:\n" +
+"                v=mp.get(r[src])\n" +
+"                if v is not None: r[dst]=v\n" +
+"        return r\n" +
+"    def lookup(self,tid):\n" +
+"        i=self.idx.get(tid)\n" +
+"        return self.get(i) if i is not None else None\n" +
+"def bench(jsonl_path):\n" +
+"    enc=encode(jsonl_path)\n" +
+"    lazy=encode_lazy(jsonl_path)\n" +
+"    blob_path=enc['out']\n" +
+"    lazy_path=lazy['out']\n" +
+"    t0=time.perf_counter()\n" +
+"    with open(jsonl_path,'rb') as f: raw=f.read()\n" +
+"    raw_recs=[]\n" +
+"    for ln in raw.split(b'\\n'):\n" +
+"        if not ln.strip(): continue\n" +
+"        try: raw_recs.append(json.loads(ln))\n" +
+"        except Exception: pass\n" +
+"    t1=time.perf_counter()\n" +
+"    raw_load_ms=(t1-t0)*1e3\n" +
+"    rss_raw=_rss_mb()\n" +
+"    t2=time.perf_counter()\n" +
+"    hdr,blob_recs=_load_blob(blob_path)\n" +
+"    t3=time.perf_counter()\n" +
+"    blob_load_ms=(t3-t2)*1e3\n" +
+"    rss_blob=_rss_mb()\n" +
+"    tL0=time.perf_counter()\n" +
+"    lz=LazyBlob(lazy_path)\n" +
+"    tL1=time.perf_counter()\n" +
+"    lazy_load_ms=(tL1-tL0)*1e3\n" +
+"    raw_idx={}\n" +
+"    for i,r in enumerate(raw_recs):\n" +
+"        for tid in _tool_ids(r):\n" +
+"            raw_idx.setdefault(tid,i)\n" +
+"    sample_ids=list(hdr.get('idx',{}).keys())[:100]\n" +
+"    if not sample_ids:\n" +
+"        sample_ids=[r.get('uuid','') for r in raw_recs[:100] if r.get('uuid')]\n" +
+"        raw_idx={r.get('uuid',''):i for i,r in enumerate(raw_recs) if r.get('uuid')}\n" +
+"        hdr['idx']={r.get('uuid',''):i for i,r in enumerate(blob_recs) if r.get('uuid')}\n" +
+"    REPEAT=100\n" +
+"    t4=time.perf_counter()\n" +
+"    for _ in range(REPEAT):\n" +
+"        for tid in sample_ids:\n" +
+"            i=raw_idx.get(tid)\n" +
+"            r=raw_recs[i] if i is not None else None\n" +
+"    t5=time.perf_counter()\n" +
+"    raw_q_us=((t5-t4)/REPEAT)*1e6\n" +
+"    bidx=hdr.get('idx',{})\n" +
+"    t6=time.perf_counter()\n" +
+"    for _ in range(REPEAT):\n" +
+"        for tid in sample_ids:\n" +
+"            i=bidx.get(tid)\n" +
+"            r=blob_recs[i] if i is not None else None\n" +
+"    t7=time.perf_counter()\n" +
+"    blob_q_us=((t7-t6)/REPEAT)*1e6\n" +
+"    # lazy-path lookup: decode-on-demand (no full load)\n" +
+"    tLq0=time.perf_counter()\n" +
+"    for _ in range(REPEAT):\n" +
+"        for tid in sample_ids:\n" +
+"            r=lz.lookup(tid)\n" +
+"    tLq1=time.perf_counter()\n" +
+"    lazy_q_us=((tLq1-tLq0)/REPEAT)*1e6\n" +
+"    t8=time.perf_counter()\n" +
+"    for _ in range(5):\n" +
+"        _r=[json.loads(ln) for ln in raw.split(b'\\n') if ln.strip()]\n" +
+"    t9=time.perf_counter()\n" +
+"    raw_reparse_ms=((t9-t8)/5)*1e3\n" +
+"    return {\n" +
+"        'file':jsonl_path,'codec':CODEC,'records':enc['n'],'drops':enc['drops'],\n" +
+"        'raw_bytes':enc['raw_bytes'],'blob_bytes':enc['blob_bytes'],\n" +
+"        'blob_ratio':round(enc['blob_bytes']/enc['raw_bytes'],4),\n" +
+"        'encode_total_ms':round(enc['total_ms'],2),\n" +
+"        'raw_load_ms':round(raw_load_ms,2),\n" +
+"        'blob_load_ms':round(blob_load_ms,2),\n" +
+"        'load_speedup_x':round(raw_load_ms/max(blob_load_ms,1e-6),2),\n" +
+"        'raw_reparse_ms_avg':round(raw_reparse_ms,3),\n" +
+"        'reparse_vs_blobload_x':round(raw_reparse_ms/max(blob_load_ms,1e-6),2),\n" +
+"        'raw_query_us_per_100':round(raw_q_us,2),\n" +
+"        'blob_query_us_per_100':round(blob_q_us,2),\n" +
+"        'query_speedup_x':round(raw_q_us/max(blob_q_us,1e-6),2),\n" +
+"        'rss_raw_mb':round(rss_raw,1),\n" +
+"        'rss_blob_mb':round(rss_blob,1),\n" +
+"        'blob_path':blob_path,\n" +
+"        'lazy_blob_path':lazy_path,\n" +
+"        'lazy_load_ms':round(lazy_load_ms,3),\n" +
+"        'lazy_vs_raw_load_x':round(raw_load_ms/max(lazy_load_ms,1e-6),2),\n" +
+"        'lazy_vs_reparse_x':round(raw_reparse_ms/max(lazy_load_ms,1e-6),2),\n" +
+"        'lazy_query_us_per_100':round(lazy_q_us,2),\n" +
+"        'lazy_query_vs_raw_x':round(raw_q_us/max(lazy_q_us,1e-6),2),\n" +
+"        'sha_src':enc['sha_src'],\n" +
+"    }\n" +
+"def iter_blob(path,limit=1):\n" +
+"    hdr,recs=_load_blob(path)\n" +
+"    return {'n':len(recs),'codec':hdr['codec'],'sample':recs[:int(limit)]}\n" +
+"cmd=sys.argv[1] if len(sys.argv)>1 else 'bench'\n" +
+"if cmd=='encode':\n" +
+"    r=encode(sys.argv[2],sys.argv[3] if len(sys.argv)>3 else None)\n" +
+"elif cmd=='bench':\n" +
+"    r=bench(sys.argv[2])\n" +
+"elif cmd=='iter':\n" +
+"    r=iter_blob(sys.argv[2],int(sys.argv[3]) if len(sys.argv)>3 else 1)\n" +
+"else:\n" +
+"    r={'error':'unknown cmd','cmd':cmd}\n" +
+"print(json.dumps(r,ensure_ascii=False,indent=2,default=str))\n"
+
+fn run() {
+    let argv = args()
+    let mut cmd = ""
+    let mut a = ""
+    let mut b = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        if v == "encode" || v == "bench" || v == "iter" { cmd = v }
+        else {
+            if len(cmd) > 0 && len(a) == 0 { a = v }
+            else {
+                if len(cmd) > 0 && len(b) == 0 { b = v }
+            }
+        }
+        i = i + 1
+    }
+
+    let sample = "/Users/ghost/.claude-claude9/projects/-Users-ghost-Dev-airgenome/d07e7302-7c0a-4f5b-803e-422a45af2e4e.jsonl"
+    if len(cmd) == 0 {
+        cmd = "bench"
+        a = sample
+    }
+
+    let tmp = "/tmp/claude_runtime_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+
+    let mut sh = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp + "' " + cmd
+    if len(a) > 0 { sh = sh + " '" + a + "'" }
+    if len(b) > 0 { sh = sh + " '" + b + "'" }
+    sh = sh + " 2>&1; rm -f '" + tmp + "'"
+
+    let result = try { exec(sh) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

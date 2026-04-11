@@ -15,20 +15,34 @@ let ROOT = env("HOME") + "/Dev/airgenome"
 
 let argv = args()
 
-// Parse argv — scan for non-flag arguments
+// args() 는 [hexa.real, script.hexa, user_args...] 반환. 둘 다 path-like 라
+// 단순 contains("/") 만으로는 사용자 인자와 구분 불가. hexa 바이너리와
+// 본 스크립트 경로를 명시적으로 제외한다.
 let mut idx_path = ROOT + "/forge/genomes.index.jsonl"
 let mut out_path = ROOT + "/forge/genomes.pack"
+// 주의: hexa 에서 `let mut arr = []` + arr.push() 가 in-place 변경되지 않는
+// 케이스가 관찰됨 (참조 의미 차이로 추정). global `let arr = []` 로 선언하면
+// push 가 작동한다 (ag3_lint.hexa 패턴). 여기선 인덱스로 직접 접근.
 let mut ai = 0
-let mut pos_args = []
+let mut p1 = ""
+let mut p2 = ""
+let mut p_count = 0
 while ai < len(argv) {
     let v = argv[ai]
-    if v != "genome_pack" && v != "genome_pack.hexa" && v.contains("genome_pack") == false {
+    let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+    let is_self     = v.contains("genome_pack")
+    if is_hexa_bin == false && is_self == false {
         if v.contains("/") || v.contains(".") {
-            pos_args.push(v)
+            if p_count == 0 { p1 = v }
+            if p_count == 1 { p2 = v }
+            p_count = p_count + 1
         }
     }
     ai = ai + 1
 }
+if p_count >= 1 { idx_path = p1 }
+if p_count >= 2 { out_path = p2 }
+let pos_args = []  // (legacy ref, not used)
 if len(pos_args) >= 1 { idx_path = pos_args[0] }
 if len(pos_args) >= 2 { out_path = pos_args[1] }
 

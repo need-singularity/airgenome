@@ -1,0 +1,124 @@
+// airgenome/scripts/claude_profile_dedup.hexa
+//   11개 Claude profile (~/.claude, ~/.claude-claude1..10) 의
+//   projects/**/*.jsonl(.gz) 중 동일 내용 파일을 hardlink 로 dedup.
+//
+// 원리:
+//   1. 모든 파일 sha256 해시
+//   2. 동일 해시 그룹 식별 (여러 profile 에 동일 파일 존재)
+//   3. source 하나 남기고 나머지 ln (hardlink) 로 교체
+//   4. 같은 filesystem (device id) 끼리만
+//   5. lsof 로 열려 있는 파일 제외 (활성 세션 보호)
+//
+// 사용:
+//   hexa scripts/claude_profile_dedup.hexa          # dry-run (기본)
+//   hexa scripts/claude_profile_dedup.hexa --apply  # 실제 hardlink
+//
+// R1: 신규 .py/.sh 금지 — python3 페이로드 인라인 string.
+
+let PAYLOAD = "import os,sys,hashlib,glob,subprocess,json\n" +
+"from collections import defaultdict\n" +
+"apply=len(sys.argv)>1 and sys.argv[1]=='--apply'\n" +
+"HOME=os.path.expanduser('~')\n" +
+"roots=sorted(glob.glob(os.path.join(HOME,'.claude/projects'))+glob.glob(os.path.join(HOME,'.claude-claude*/projects')))\n" +
+"pats=['**/*.jsonl','**/*.jsonl.gz']\n" +
+"files=[]\n" +
+"for r in roots:\n" +
+"    for p in pats:\n" +
+"        for f in glob.glob(os.path.join(r,p),recursive=True):\n" +
+"            try:\n" +
+"                st=os.stat(f)\n" +
+"                if st.st_size==0: continue\n" +
+"                files.append((f,st.st_size,st.st_dev,st.st_ino,st.st_nlink))\n" +
+"            except OSError: pass\n" +
+"print(f'scanned roots: {len(roots)}')\n" +
+"print(f'total files: {len(files)}')\n" +
+"# active files via lsof\n" +
+"active=set()\n" +
+"try:\n" +
+"    out=subprocess.run(['lsof','-Fn','+D',HOME],capture_output=True,text=True,timeout=30).stdout\n" +
+"    for ln in out.split('\\n'):\n" +
+"        if ln.startswith('n') and ('/projects/' in ln) and ('.jsonl' in ln):\n" +
+"            active.add(ln[1:])\n" +
+"except Exception as e:\n" +
+"    print(f'lsof warn: {e}')\n" +
+"print(f'active (open) files skipped: {len(active)}')\n" +
+"# group by (size,dev) first, then hash\n" +
+"groups=defaultdict(list)\n" +
+"for f,sz,dev,ino,nl in files:\n" +
+"    if f in active: continue\n" +
+"    groups[(sz,dev)].append((f,ino,nl))\n" +
+"hash_groups=defaultdict(list)\n" +
+"def sha256(p):\n" +
+"    h=hashlib.sha256()\n" +
+"    with open(p,'rb') as fp:\n" +
+"        for ch in iter(lambda:fp.read(1<<20),b''): h.update(ch)\n" +
+"    return h.hexdigest()\n" +
+"hashed=0\n" +
+"for key,lst in groups.items():\n" +
+"    if len(lst)<2: continue\n" +
+"    for f,ino,nl in lst:\n" +
+"        try:\n" +
+"            hh=sha256(f); hashed+=1\n" +
+"            hash_groups[(key[1],hh,key[0])].append((f,ino,nl))\n" +
+"        except Exception as e:\n" +
+"            print(f'hash err {f}: {e}')\n" +
+"print(f'files hashed: {hashed}')\n" +
+"dedup_groups=0; savable=0; relink=0; already=0\n" +
+"actions=[]\n" +
+"for (dev,hh,sz),lst in hash_groups.items():\n" +
+"    if len(lst)<2: continue\n" +
+"    inos={ino for _,ino,_ in lst}\n" +
+"    dedup_groups+=1\n" +
+"    # source = first (stable sorted by path)\n" +
+"    lst.sort(key=lambda x:x[0])\n" +
+"    src_f,src_ino,_=lst[0]\n" +
+"    for f,ino,nl in lst[1:]:\n" +
+"        if ino==src_ino: already+=1; continue\n" +
+"        savable+=sz\n" +
+"        relink+=1\n" +
+"        actions.append((src_f,f,sz))\n" +
+"def mb(b): return f'{b/1048576:.2f}MB'\n" +
+"print(f'dedup groups: {dedup_groups}')\n" +
+"print(f'already hardlinked: {already}')\n" +
+"print(f'relink candidates: {relink}')\n" +
+"print(f'savable: {mb(savable)} ({savable} B)')\n" +
+"if actions:\n" +
+"    print('\\ntop 10 candidates:')\n" +
+"    for s,d,sz in sorted(actions,key=lambda x:-x[2])[:10]:\n" +
+"        print(f'  {mb(sz):>10}  {os.path.relpath(d,HOME)} -> {os.path.relpath(s,HOME)}')\n" +
+"if apply:\n" +
+"    print('\\n=== APPLY ===')\n" +
+"    ok=0; fail=0\n" +
+"    for s,d,sz in actions:\n" +
+"        try:\n" +
+"            tmp=d+'.dedup.tmp'\n" +
+"            if os.path.exists(tmp): os.remove(tmp)\n" +
+"            os.link(s,tmp)\n" +
+"            os.replace(tmp,d)\n" +
+"            ok+=1\n" +
+"        except Exception as e:\n" +
+"            fail+=1; print(f'FAIL {d}: {e}')\n" +
+"    print(f'hardlinked: {ok}  failed: {fail}')\n" +
+"else:\n" +
+"    print('\\n(dry-run; pass --apply to hardlink)')\n"
+
+fn run() {
+    let argv = args()
+    let mut apply = false
+    let mut i = 0
+    while i < len(argv) {
+        if argv[i] == "--apply" { apply = true }
+        i = i + 1
+    }
+
+    let tmp = "/tmp/claude_profile_dedup_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+
+    let flag = if apply { "--apply" } else { "" }
+    // GATE_LOCAL=1 : python3 wrapper 가 원격 라우팅하지 않도록 강제 (Mac 로컬 파일 접근 필수)
+    let cmd = "GATE_LOCAL=1 python3 '" + tmp + "' " + flag + " 2>&1; rm -f '" + tmp + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

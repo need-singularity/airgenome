@@ -1,0 +1,133 @@
+// airgenome/scripts/auto_vacuum_watcher.hexa
+//   Safari / Notes 종료 시점 자동 VACUUM watcher (launchd 60s tick).
+//
+// 로직:
+//   1) pgrep -x Safari / Notes 로 running 체크
+//   2) 종료 상태 + 마지막 VACUUM > 24h → sqlite_byte_reinterpret.hexa --apply
+//   3) 마지막 VACUUM 시각은 ~/.airgenome/auto_vacuum.state (json) 에 기록
+//
+// 대상:
+//   Safari: ~/Library/Safari/History.db
+//   Notes : ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
+//
+// R1 HEXA-FIRST: .hexa + 인라인 python3 페이로드만.
+
+let STATE_PATH = "/Users/ghost/.airgenome/auto_vacuum.state"
+let REINTERPRET = "/Users/ghost/Dev/airgenome/scripts/sqlite_byte_reinterpret.hexa"
+
+let SAFARI_DB = "/Users/ghost/Library/Safari/History.db"
+let NOTES_DB  = "/Users/ghost/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite"
+
+let COOLDOWN_SEC = 86400  // 24h
+
+// ---------- state I/O (python3 인라인) ----------
+let STATE_PAYLOAD = "import sys,os,json,time\n" +
+"path=sys.argv[1]; op=sys.argv[2]; key=sys.argv[3] if len(sys.argv)>3 else ''\n" +
+"os.makedirs(os.path.dirname(path),exist_ok=True)\n" +
+"try: st=json.load(open(path))\n" +
+"except: st={}\n" +
+"if op=='get':\n" +
+"    print(st.get(key,{}).get('last',0))\n" +
+"elif op=='set':\n" +
+"    st.setdefault(key,{})['last']=int(time.time())\n" +
+"    json.dump(st,open(path,'w'),indent=2)\n" +
+"    print('OK')\n" +
+"elif op=='dump':\n" +
+"    print(json.dumps(st,indent=2))\n"
+
+fn state_op(op: string, key: string) -> string {
+    let tmp = "/tmp/av_state_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, STATE_PAYLOAD)
+    let cmd = "/usr/bin/python3 '" + tmp + "' '" + STATE_PATH + "' " + op + " '" + key + "' 2>&1; rm -f '" + tmp + "'"
+    return try { exec(cmd).trim() } catch e { "" }
+}
+
+fn now_epoch() -> int {
+    let s = try { exec("date +%s").trim() } catch e { "0" }
+    return try { s.to_int() } catch e { 0 }
+}
+
+fn is_running(proc_name: string) -> bool {
+    let out = try { exec("pgrep -x '" + proc_name + "' 2>/dev/null; true").trim() } catch e { "" }
+    return len(out) > 0
+}
+
+fn file_size(path: string) -> string {
+    return try { exec("stat -f%z '" + path + "' 2>/dev/null || echo 0").trim() } catch e { "0" }
+}
+
+fn fmt_mb(bytes_str: string) -> string {
+    let b = try { bytes_str.to_int() } catch e { 0 }
+    let mb = b / 1024 / 1024
+    return to_string(mb) + " MB"
+}
+
+fn check_and_vacuum(label: string, proc_name: string, db_path: string, dry: bool) {
+    println("-- " + label + " --")
+    if file_exists(db_path) == false {
+        println("  db missing: " + db_path)
+        return
+    }
+    let sz = file_size(db_path)
+    println("  db=" + db_path)
+    println("  size=" + fmt_mb(sz) + " (" + sz + " B)")
+
+    let running = is_running(proc_name)
+    println("  running=" + to_string(running))
+
+    let last_str = state_op("get", label)
+    let last = try { last_str.to_int() } catch e { 0 }
+    let age = now_epoch() - last
+    println("  last_vacuum_epoch=" + to_string(last) + "  age_sec=" + to_string(age))
+
+    if running {
+        println("  SKIP: app running")
+        return
+    }
+    if last > 0 && age < COOLDOWN_SEC {
+        println("  SKIP: cooldown (" + to_string(COOLDOWN_SEC - age) + "s remaining)")
+        return
+    }
+
+    if dry {
+        println("  READY: would run --apply VACUUM")
+        return
+    }
+
+    println("  APPLY: running sqlite_byte_reinterpret --apply …")
+    let cmd = "hexa run '" + REINTERPRET + "' '" + db_path + "' --apply 2>&1"
+    let out = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(out)
+
+    if out.contains("APPLIED") {
+        let _ = state_op("set", label)
+        println("  state updated for " + label)
+    } else {
+        println("  NOT applied (no savings or error) — state unchanged")
+    }
+}
+
+fn run() {
+    let argv = args()
+    let mut dry = false
+    let mut i = 0
+    while i < len(argv) {
+        if argv[i] == "--dry-run" { dry = true }
+        i = i + 1
+    }
+
+    println("== auto_vacuum_watcher ==")
+    println("mode=" + (if dry { "dry-run" } else { "apply" }))
+    println("state=" + STATE_PATH)
+    println("")
+
+    check_and_vacuum("safari", "Safari", SAFARI_DB, dry)
+    println("")
+    check_and_vacuum("notes",  "Notes",  NOTES_DB,  dry)
+
+    println("")
+    println("-- state dump --")
+    println(state_op("dump", ""))
+}
+
+run()

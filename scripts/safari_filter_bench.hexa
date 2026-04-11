@@ -1,0 +1,223 @@
+// airgenome/scripts/safari_filter_bench.hexa
+//   Safari History.db tabular data 의 다양한 byte 인코딩 실험 + 벤치마킹.
+//
+// 측정 대상 (online backup → 라이브 Safari 와 충돌 없음):
+//   1. raw sqlite                    — 베이스라인
+//   2. sqlite VACUUM                  — 표준 압축
+//   3. dump SQL                       — SQL text 형태
+//   4. JSONL row dump                 — 한 행 한 줄 JSON
+//   5. JSONL + gzip                   — 일반 압축 베이스라인
+//   6. CSV row dump                   — 더 컴팩트한 row 표현
+//   7. column store (parallel arrays) — {col1:[...],col2:[...]}
+//   8. domain dedup                   — host 분리 → id 참조
+//   9. URL prefix trie                — common prefix 압축
+//   10. timestamp delta encoding      — 인접 ts 차분
+//   11. msgpack 컬럼 스토어
+//   12. 모두 + zstd / xz / brotli (가능한 코덱)
+//
+// R1 HEXA-FIRST: 인라인 python3 페이로드 (.py 신규 없음).
+
+let PAYLOAD = "import sys,os,sqlite3,tempfile,shutil,gzip,json,csv,io,subprocess\n" +
+"src=sys.argv[1]\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found'); sys.exit(1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"\n" +
+"# JSON encoder for sqlite BLOB → base64\n" +
+"import base64\n" +
+"def jdefault(o):\n" +
+"    if isinstance(o,bytes): return base64.b64encode(o).decode('ascii')\n" +
+"    return str(o)\n" +
+"def jdumps(o):\n" +
+"    return json.dumps(o,ensure_ascii=False,separators=(',',':'),default=jdefault)\n" +
+"\n" +
+"# online backup → 안전 복사\n" +
+"tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"sc=sqlite3.connect(f'file:{src}?mode=ro',uri=True)\n" +
+"dc=sqlite3.connect(tmp.name)\n" +
+"sc.backup(dc); dc.close(); sc.close()\n" +
+"raw_size=os.path.getsize(tmp.name)\n" +
+"\n" +
+"# VACUUM 복사본\n" +
+"vac=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); vac.close()\n" +
+"shutil.copy(tmp.name,vac.name)\n" +
+"vc=sqlite3.connect(vac.name)\n" +
+"vc.execute('VACUUM'); vc.commit(); vc.close()\n" +
+"vac_size=os.path.getsize(vac.name)\n" +
+"\n" +
+"# rows 로 fetch\n" +
+"conn=sqlite3.connect(tmp.name)\n" +
+"conn.row_factory=sqlite3.Row\n" +
+"# history_visits + history_items 가 가장 큰 두 테이블\n" +
+"visits=[dict(r) for r in conn.execute('SELECT * FROM history_visits')]\n" +
+"items=[dict(r) for r in conn.execute('SELECT * FROM history_items')]\n" +
+"conn.close()\n" +
+"\n" +
+"# 1. JSONL\n" +
+"jsonl=('\\n'.join(jdumps(r) for r in items+visits)).encode('utf-8')\n" +
+"\n" +
+"# 2. CSV\n" +
+"buf=io.StringIO()\n" +
+"if items:\n" +
+"    w=csv.DictWriter(buf,fieldnames=list(items[0].keys()))\n" +
+"    w.writeheader()\n" +
+"    for r in items: w.writerow(r)\n" +
+"if visits:\n" +
+"    w=csv.DictWriter(buf,fieldnames=list(visits[0].keys()))\n" +
+"    w.writeheader()\n" +
+"    for r in visits: w.writerow(r)\n" +
+"csv_blob=buf.getvalue().encode('utf-8')\n" +
+"\n" +
+"# 3. column store (parallel arrays)\n" +
+"def to_columns(rows):\n" +
+"    if not rows: return {}\n" +
+"    keys=list(rows[0].keys())\n" +
+"    return {k:[r.get(k) for r in rows] for k in keys}\n" +
+"col_obj={'history_items':to_columns(items),'history_visits':to_columns(visits)}\n" +
+"col_blob=jdumps(col_obj).encode('utf-8')\n" +
+"\n" +
+"# 4. domain dedup — history_items.url 에서 host 분리\n" +
+"from urllib.parse import urlparse\n" +
+"hosts=[]\n" +
+"host_idx={}\n" +
+"items_dom=[]\n" +
+"for r in items:\n" +
+"    nr=dict(r)\n" +
+"    u=nr.get('url','')\n" +
+"    try:\n" +
+"        p=urlparse(u)\n" +
+"        h=(p.scheme+'://'+p.netloc) if p.netloc else ''\n" +
+"        if h:\n" +
+"            if h not in host_idx:\n" +
+"                host_idx[h]=len(hosts); hosts.append(h)\n" +
+"            nr['url']=str(host_idx[h])+u[len(h):]\n" +
+"    except: pass\n" +
+"    items_dom.append(nr)\n" +
+"dom_obj={'_hosts':hosts,'items':items_dom,'visits':visits}\n" +
+"dom_blob=jdumps(dom_obj).encode('utf-8')\n" +
+"\n" +
+"# 5. URL prefix trie — items 의 url 를 정렬 후 공통 prefix 만 저장\n" +
+"urls=sorted([r.get('url','') for r in items if r.get('url')])\n" +
+"def common_prefix(a,b):\n" +
+"    n=min(len(a),len(b))\n" +
+"    for i in range(n):\n" +
+"        if a[i]!=b[i]: return i\n" +
+"    return n\n" +
+"trie_lines=[]\n" +
+"prev=''\n" +
+"for u in urls:\n" +
+"    cp=common_prefix(prev,u)\n" +
+"    trie_lines.append(f'{cp}|{u[cp:]}')\n" +
+"    prev=u\n" +
+"trie_blob=('\\n'.join(trie_lines)).encode('utf-8')\n" +
+"\n" +
+"# 6. timestamp delta — visits.visit_time 인접 차분\n" +
+"vt=sorted([r.get('visit_time') for r in visits if r.get('visit_time') is not None])\n" +
+"deltas=[]\n" +
+"prev_t=0\n" +
+"for t in vt:\n" +
+"    deltas.append(t-prev_t); prev_t=t\n" +
+"delta_blob=jdumps(deltas).encode('utf-8')\n" +
+"\n" +
+"# 7. msgpack column store\n" +
+"try:\n" +
+"    import msgpack\n" +
+"    mp_blob=msgpack.packb(col_obj,use_bin_type=True)\n" +
+"except ImportError:\n" +
+"    mp_blob=None\n" +
+"\n" +
+"# 외부 코덱\n" +
+"def try_codec(cmd,data):\n" +
+"    try:\n" +
+"        p=subprocess.run(cmd,input=data,capture_output=True,timeout=30)\n" +
+"        return len(p.stdout) if p.returncode==0 else None\n" +
+"    except: return None\n" +
+"\n" +
+"def measure(name,blob):\n" +
+"    sz=len(blob)\n" +
+"    gz=len(gzip.compress(blob,9))\n" +
+"    pct=100*sz/raw_size; gpct=100*gz/raw_size\n" +
+"    print(f'  {name:38s} {fmt(sz):>10}  ({pct:5.1f}%)   +gz9: {fmt(gz):>10}  ({gpct:5.1f}%)')\n" +
+"\n" +
+"def measure_external(name,blob,cmd):\n" +
+"    sz=try_codec(cmd,blob)\n" +
+"    if sz: print(f'  {name:38s} {fmt(sz):>10}  ({100*sz/raw_size:5.1f}%)')\n" +
+"    else:   print(f'  {name:38s} (codec unavailable)')\n" +
+"\n" +
+"items_n=len(items); visits_n=len(visits); urls_n=len(urls)\n" +
+"print(f'== {os.path.basename(src)} ==')\n" +
+"print(f'   raw sqlite: {fmt(raw_size)}, history_items={items_n} history_visits={visits_n} urls={urls_n}')\n" +
+"print()\n" +
+"print('--- 1) sqlite native ---')\n" +
+"print(f'  raw sqlite                            {fmt(raw_size):>10}  (100.0%)')\n" +
+"print(f'  vacuumed sqlite                       {fmt(vac_size):>10}  ({100*vac_size/raw_size:5.1f}%)')\n" +
+"print()\n" +
+"print('--- 2) text encodings ---')\n" +
+"measure('jsonl rows',jsonl)\n" +
+"measure('csv rows',csv_blob)\n" +
+"measure('column store (json)',col_blob)\n" +
+"print()\n" +
+"print(f'--- 3) domain dedup: {len(hosts)} unique hosts ---')\n" +
+"measure('domain-dedup json',dom_blob)\n" +
+"print()\n" +
+"print(f'--- 4) URL prefix trie: {urls_n} urls ---')\n" +
+"measure('prefix-trie text',trie_blob)\n" +
+"print()\n" +
+"print(f'--- 5) timestamp delta: {len(deltas)} visits ---')\n" +
+"measure('delta json',delta_blob)\n" +
+"print()\n" +
+"print('--- 6) binary ---')\n" +
+"if mp_blob: measure('msgpack column store',mp_blob)\n" +
+"else: print('  (msgpack not installed)')\n" +
+"print()\n" +
+"print('--- 7) external strong codecs (jsonl source) ---')\n" +
+"measure_external('zstd-19',jsonl,['zstd','-19','-c'])\n" +
+"measure_external('zstd-22',jsonl,'zstd --ultra -22 -c'.split())\n" +
+"measure_external('xz-9e',jsonl,['xz','-9e','-c'])\n" +
+"measure_external('brotli-11',jsonl,['brotli','-q','11','-c'])\n" +
+"print()\n" +
+"print('--- 8) external strong codecs (vacuumed sqlite source) ---')\n" +
+"vac_data=open(vac.name,'rb').read()\n" +
+"measure_external('vac+zstd-19',vac_data,['zstd','-19','-c'])\n" +
+"measure_external('vac+xz-9e',vac_data,['xz','-9e','-c'])\n" +
+"\n" +
+"# cleanup\n" +
+"os.unlink(tmp.name); os.unlink(vac.name)\n"
+
+fn run() {
+    let argv = args()
+    // hexa 바이너리 + 스크립트 자체 + 인라인 페이로드 path 는 제외
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_filter_bench")
+        if is_hexa_bin == false && is_self == false {
+            // sqlite db 만 받는다
+            if v.contains(".db") || v.contains(".sqlite") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Safari/History.db"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+
+    let tmp_py = "/tmp/safari_filter_bench_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp_py, PAYLOAD)
+    // /usr/bin/python3 절대경로 + GATE_LOCAL=1 → gate wrapper 우회 (로컬 sqlite 파일이라 필수)
+    let cmd = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp_py + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

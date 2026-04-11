@@ -1,0 +1,136 @@
+// airgenome/scripts/telegram_media_cleanup.hexa
+//   Telegram media cache 안전 정리 (read-only scan + AG_CONFIRM 후 apply).
+//
+// 동작:
+//   scan  : (기본) 안전 정리 후보 식별, 회수 가능 byte 보고. 삭제 없음.
+//   apply : 실제 삭제 — 단, AG_CONFIRM=1 환경변수 + Telegram 종료 필수.
+//
+// 안전 후보:
+//   1) cache/ 하위 (Telegram 자체가 자동 재생성)
+//   2) telegram-cloud-document-* 중 mtime > 30d 이고 _partial 동반 없음
+//
+// 절대 금지:
+//   - *_partial : 진행 중 다운로드
+//   - 최근 30일 내 파일
+//   - postbox/db/* : 메인 storage
+//
+// R1 HEXA-FIRST: 모든 외부 작업은 exec() 위임. 신규 .py/.sh 없음.
+
+let MEDIA_DIR = env("HOME") + "/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/stable/account-12368049205906256211/postbox/media"
+
+fn ts() -> str {
+    return try { exec("date '+%Y-%m-%dT%H:%M:%S'").trim() } catch e { "?" }
+}
+
+fn fmt_mb(b: int) -> str {
+    return try { exec("awk 'BEGIN{printf \"%.2f MB\", " + str(b) + "/1048576}'").trim() } catch e { str(b) + " B" }
+}
+
+fn telegram_running() -> bool {
+    let out = try { exec("pgrep -x Telegram 2>/dev/null").trim() } catch e { "" }
+    return len(out) > 0
+}
+
+// cache/ 하위 byte 합산
+fn cache_bytes() -> int {
+    if file_exists(MEDIA_DIR + "/cache") == false { return 0 }
+    let s = try {
+        exec("find '" + MEDIA_DIR + "/cache' -type f 2>/dev/null | xargs -I{} stat -f %z '{}' 2>/dev/null | awk '{s+=$1}END{print s+0}'").trim()
+    } catch e { "0" }
+    return to_int(s)
+}
+
+// orphan old documents byte 합산 — mtime>30d AND no _partial sibling
+fn orphan_old_bytes() -> int {
+    let cmd = "find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
+              "-name 'telegram-cloud-document-*' -mtime +30 ! -name '*_partial' 2>/dev/null | " +
+              "while IFS= read -r f; do " +
+              "  if [ ! -e \"${f}_partial\" ]; then stat -f %z \"$f\" 2>/dev/null; fi; " +
+              "done | awk '{s+=$1}END{print s+0}'"
+    let s = try { exec(cmd).trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn orphan_old_count() -> int {
+    let cmd = "find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
+              "-name 'telegram-cloud-document-*' -mtime +30 ! -name '*_partial' 2>/dev/null | " +
+              "while IFS= read -r f; do " +
+              "  if [ ! -e \"${f}_partial\" ]; then echo 1; fi; " +
+              "done | wc -l"
+    let s = try { exec(cmd).trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn cache_count() -> int {
+    if file_exists(MEDIA_DIR + "/cache") == false { return 0 }
+    let s = try { exec("find '" + MEDIA_DIR + "/cache' -type f 2>/dev/null | wc -l").trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn partial_count() -> int {
+    let s = try { exec("find '" + MEDIA_DIR + "' -name '*_partial' 2>/dev/null | wc -l").trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn scan() {
+    println(ts() + " telegram media scan @ " + MEDIA_DIR)
+    if file_exists(MEDIA_DIR) == false {
+        println("  ERROR: media dir not found")
+        return
+    }
+    let cache_b = cache_bytes()
+    let cache_n = cache_count()
+    let orphan_b = orphan_old_bytes()
+    let orphan_n = orphan_old_count()
+    let partial_n = partial_count()
+    let total_safe = cache_b + orphan_b
+    println("  cache/         : " + str(cache_n) + " files, " + fmt_mb(cache_b) + " (safe — auto-regenerated)")
+    println("  orphan old doc : " + str(orphan_n) + " files, " + fmt_mb(orphan_b) + " (mtime>30d, no _partial)")
+    println("  _partial LOCK  : " + str(partial_n) + " files (NEVER touch — in-flight downloads)")
+    println("  total safe     : " + fmt_mb(total_safe))
+    println("")
+    println("  apply with: AG_CONFIRM=1 hexa scripts/telegram_media_cleanup.hexa apply")
+    println("  prerequisite: Telegram must be quit (pkill Telegram or Cmd+Q)")
+}
+
+fn apply_delete() {
+    if telegram_running() {
+        println(ts() + " ABORT: Telegram is running. Quit first to avoid corruption.")
+        return
+    }
+    if env("AG_CONFIRM") != "1" {
+        println(ts() + " ABORT: AG_CONFIRM=1 not set. Refusing to delete.")
+        return
+    }
+    println(ts() + " apply: deleting safe candidates")
+    // cache 전체 삭제
+    let cache_dir = MEDIA_DIR + "/cache"
+    if file_exists(cache_dir) {
+        try { exec("rm -rf '" + cache_dir + "'") } catch e { println("  cache rm err: " + str(e)) }
+        println("  cache/ removed")
+    }
+    // orphan old documents
+    let cmd = "find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
+              "-name 'telegram-cloud-document-*' -mtime +30 ! -name '*_partial' " +
+              "2>/dev/null | while IFS= read -r f; do " +
+              "  if [ ! -e \"${f}_partial\" ]; then rm -f \"$f\"; fi; " +
+              "done"
+    try { exec(cmd) } catch e { println("  orphan rm err: " + str(e)) }
+    println("  orphans removed")
+    println(ts() + " done")
+}
+
+fn run() {
+    let argv = args()
+    let mut mode = "scan"
+    let mut i = 0
+    while i < len(argv) {
+        if argv[i] == "apply" { mode = "apply" }
+        if argv[i] == "scan"  { mode = "scan" }
+        i = i + 1
+    }
+    if mode == "apply" { apply_delete() }
+    else { scan() }
+}
+
+run()

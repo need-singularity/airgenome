@@ -1,0 +1,304 @@
+// airgenome/scripts/quantum_byte_bench.hexa
+//   양자 얽힘 / 텔레포트 / 홀로그래픽 / 엔트로피 분리 등 byte 재해석 아이디어
+//   실험 + 모든 코덱 벤치마킹.
+//
+// 측정 코덱:
+//   - raw                    : 변환 없이 원본 byte 수
+//   - gzip-9                 : 일반 압축 베이스라인
+//   - zstd-19, zstd-22       : 더 강한 LZ77 변형
+//   - brotli-11              : 사전 기반 강압축
+//   - msgpack                : 바이너리 JSON 인코딩
+//   - cbor                   : 또 다른 바이너리 JSON
+//
+// 아이디어 변환:
+//   1. 얽힘(entanglement): 항상 함께 같은 값 → 1개 저장, 나머지 ref
+//      Claude jsonl 의 (timestamp ↔ epoch) 같은 entangled pair 를 찾는다.
+//      → entropy collapse: 한쪽만 보내고 reader 가 다른쪽 derive
+//   2. 텔레포트(teleport): 세션 전체가 sharing 하는 codebook
+//      cross-record string deduplication. 동일 string 은 id 로 치환.
+//   3. 홀로그래픽(holographic): column store 변환
+//      [{ts:1,val:'a'},{ts:2,val:'b'}] → {ts:[1,2],val:['a','b']}
+//   4. 엔트로피 분리: high-entropy 는 raw, low-entropy 는 codebook
+//
+// 사용:
+//   hexa scripts/quantum_byte_bench.hexa <jsonl-path>
+
+let PAYLOAD = "import sys,os,json,gzip,re,subprocess,time\n" +
+"from collections import Counter,defaultdict\n" +
+"path=sys.argv[1]\n" +
+"raw=open(path,'rb').read()\n" +
+"raw_size=len(raw)\n" +
+"recs=[]\n" +
+"for line in raw.decode('utf-8','replace').split('\\n'):\n" +
+"    line=line.strip()\n" +
+"    if not line: continue\n" +
+"    try: recs.append(json.loads(line))\n" +
+"    except: pass\n" +
+"def fmt(b):\n" +
+"    return f'{b/1048576:.2f}MB' if b>1048576 else (f'{b/1024:.1f}KB' if b>1024 else f'{b}B')\n" +
+"def pct(b): return f'{100*b/raw_size:5.1f}%'\n" +
+"def measure(name,blob,bench_decode=None):\n" +
+"    sz=len(blob); gz=len(gzip.compress(blob,9))\n" +
+"    print(f'  {name:36s} {sz:>10} B  {pct(sz)}    +gz9: {gz:>10} B  {pct(gz)}')\n" +
+"    return sz,gz\n" +
+"\n" +
+"print(f'== file: {os.path.basename(path)} / records={len(recs)} ==')\n" +
+"print()\n" +
+"print('--- raw baselines ---')\n" +
+"measure('raw jsonl',raw)\n" +
+"\n" +
+"# 1. SEMANTIC reinterpret (constants lift)\n" +
+"seen={}; black=set()\n" +
+"for r in recs:\n" +
+"    for k,v in r.items():\n" +
+"        if k in black: continue\n" +
+"        if not isinstance(v,(str,int,float,bool)) and v is not None:\n" +
+"            black.add(k); seen.pop(k,None); continue\n" +
+"        if k not in seen: seen[k]=v\n" +
+"        elif seen[k]!=v: black.add(k); seen.pop(k,None)\n" +
+"consts=seen\n" +
+"deltas=[{k:v for k,v in r.items() if not(k in consts and v==consts[k])} for r in recs]\n" +
+"sem={'_v':'sem','const':consts,'rec':deltas}\n" +
+"sem_jsonl='\\n'.join([json.dumps(sem,ensure_ascii=False,separators=(',',':'))]).encode('utf-8')\n" +
+"# 좀 더 정확히 — header + lines 로 풀어쓰기\n" +
+"sem_jsonl=(json.dumps({'_h':consts},ensure_ascii=False,separators=(',',':'))+'\\n'+\n" +
+"           '\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in deltas)).encode('utf-8')\n" +
+"\n" +
+"print()\n" +
+"print('--- 1) semantic constants lift ---')\n" +
+"measure('semantic jsonl',sem_jsonl)\n" +
+"\n" +
+"# 2. ENTANGLEMENT — 항상 함께 같은 값을 가진 키 페어\n" +
+"# 측정: timestamp 와 epoch 가 모든 record 에서 (a,b)=(?,?) 페어로 일대일 대응이면 얽힘\n" +
+"pair_consistency=defaultdict(lambda: defaultdict(set))\n" +
+"keys_seen=set()\n" +
+"for r in recs:\n" +
+"    items=[(k,v) for k,v in r.items() if isinstance(v,(str,int,float,bool)) and v is not None]\n" +
+"    keys=[k for k,_ in items]\n" +
+"    keys_seen.update(keys)\n" +
+"    for i,(k1,v1) in enumerate(items):\n" +
+"        for k2,v2 in items[i+1:]:\n" +
+"            pair_consistency[(k1,k2)][v1].add(v2)\n" +
+"# 얽힘 후보: forall v1: |{v2}|==1 (1대1 사상)\n" +
+"entangled=[]\n" +
+"for (k1,k2),m in pair_consistency.items():\n" +
+"    if len(m)<2: continue  # 1개 값은 의미 없음\n" +
+"    if all(len(s)==1 for s in m.values()):\n" +
+"        entangled.append((k1,k2,len(m)))\n" +
+"print()\n" +
+"print(f'--- 2) entanglement: {len(entangled)} pairs found ---')\n" +
+"for k1,k2,n in entangled[:5]:\n" +
+"    print(f'  {k1} ↔ {k2}  ({n} unique values, 1:1 mapping)')\n" +
+"# 얽힘 적용: k2 제거 후 측정\n" +
+"if entangled:\n" +
+"    drop_keys={k2 for _,k2,_ in entangled}\n" +
+"    ent_recs=[]\n" +
+"    for r in recs:\n" +
+"        ent_recs.append({k:v for k,v in r.items() if k not in drop_keys})\n" +
+"    ent_blob='\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in ent_recs).encode('utf-8')\n" +
+"    measure(f'entanglement-collapsed jsonl (-{len(drop_keys)} keys)',ent_blob)\n" +
+"\n" +
+"# 3. TELEPORT — cross-record string codebook\n" +
+"# 모든 string value 카운트, top N 을 codebook 으로 만들고 ref 로 치환\n" +
+"strs=Counter()\n" +
+"def walk(o):\n" +
+"    if isinstance(o,str) and len(o)>=8: strs[o]+=1\n" +
+"    elif isinstance(o,list):\n" +
+"        for x in o: walk(x)\n" +
+"    elif isinstance(o,dict):\n" +
+"        for v in o.values(): walk(v)\n" +
+"for r in recs: walk(r)\n" +
+"codebook=[s for s,c in strs.most_common(256) if c>=3]\n" +
+"cb_idx={s:i for i,s in enumerate(codebook)}\n" +
+"def teleport(o):\n" +
+"    if isinstance(o,str) and o in cb_idx: return f'\\u0000T{cb_idx[o]}\\u0000'\n" +
+"    if isinstance(o,list): return [teleport(x) for x in o]\n" +
+"    if isinstance(o,dict): return {k:teleport(v) for k,v in o.items()}\n" +
+"    return o\n" +
+"tp_recs=[teleport(r) for r in recs]\n" +
+"tp_blob=(json.dumps({'_cb':codebook},ensure_ascii=False,separators=(',',':'))+'\\n'+\n" +
+"         '\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in tp_recs)).encode('utf-8')\n" +
+"print()\n" +
+"print(f'--- 3) teleport codebook: {len(codebook)} strings (>=3 occurrences) ---')\n" +
+"measure(f'teleport jsonl',tp_blob)\n" +
+"\n" +
+"# 4. HOLOGRAPHIC — column store\n" +
+"all_keys=set()\n" +
+"for r in recs: all_keys.update(r.keys())\n" +
+"cols={k:[r.get(k) for r in recs] for k in all_keys}\n" +
+"holo_blob=json.dumps({'_cols':sorted(all_keys),'data':cols},ensure_ascii=False,separators=(',',':')).encode('utf-8')\n" +
+"print()\n" +
+"print(f'--- 4) holographic columnar: {len(all_keys)} columns ---')\n" +
+"measure('holographic jsonl',holo_blob)\n" +
+"\n" +
+"# 5. msgpack / cbor 비교 (semantic 적용 후)\n" +
+"print()\n" +
+"print('--- 5) binary encodings (semantic-lifted) ---')\n" +
+"sem_obj={'h':consts,'d':deltas}\n" +
+"try:\n" +
+"    import msgpack\n" +
+"    measure('semantic msgpack',msgpack.packb(sem_obj,use_bin_type=True))\n" +
+"except ImportError: print('  (msgpack not available)')\n" +
+"try:\n" +
+"    import cbor2\n" +
+"    measure('semantic cbor',cbor2.dumps(sem_obj))\n" +
+"except ImportError: print('  (cbor2 not available — pip install cbor2)')\n" +
+"\n" +
+"# 6. zstd / brotli (외부 명령)\n" +
+"def try_codec(cmd_compress,name):\n" +
+"    try:\n" +
+"        p=subprocess.run(cmd_compress,input=raw,capture_output=True,timeout=30)\n" +
+"        if p.returncode==0: return len(p.stdout)\n" +
+"    except Exception: pass\n" +
+"    return None\n" +
+"print()\n" +
+"print('--- 6) external strong codecs (raw input) ---')\n" +
+"for name,cmd in [('zstd-19',['zstd','-19','-c']),('zstd-22','zstd --ultra -22 -c'.split()),('brotli-11',['brotli','-q','11','-c']),('xz-9e',['xz','-9e','-c'])]:\n" +
+"    sz=try_codec(cmd,name)\n" +
+"    if sz: print(f'  {name:36s} {sz:>10} B  {pct(sz)}')\n" +
+"    else: print(f'  {name:36s} (not installed)')\n" +
+"\n" +
+"# 7. HEISENBERG UNCERTAINTY — timestamp precision trade-off (LOSSY)\n" +
+"#    ISO '2026-04-11T13:43:54.123Z' -> epoch seconds (int)\n" +
+"#    millisecond precision 버리는 대신 byte 절약\n" +
+"import datetime as _dt\n" +
+"_iso_re=re.compile(r'^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:?\\d{2})?$')\n" +
+"def _to_epoch(s):\n" +
+"    try:\n" +
+"        ss=s.replace('Z','+00:00')\n" +
+"        return int(_dt.datetime.fromisoformat(ss).timestamp())\n" +
+"    except Exception: return None\n" +
+"def heisenberg(o):\n" +
+"    if isinstance(o,str) and len(o)>=19 and _iso_re.match(o):\n" +
+"        e=_to_epoch(o)\n" +
+"        if e is not None: return e\n" +
+"        return o\n" +
+"    if isinstance(o,list): return [heisenberg(x) for x in o]\n" +
+"    if isinstance(o,dict): return {k:heisenberg(v) for k,v in o.items()}\n" +
+"    return o\n" +
+"hb_recs=[heisenberg(r) for r in recs]\n" +
+"hb_blob='\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in hb_recs).encode('utf-8')\n" +
+"# 카운트: 몇 개의 ISO ts 가 축소되었나\n" +
+"_iso_count=0\n" +
+"def _count_iso(o):\n" +
+"    global _iso_count\n" +
+"    if isinstance(o,str) and len(o)>=19 and _iso_re.match(o): _iso_count+=1\n" +
+"    elif isinstance(o,list):\n" +
+"        for x in o: _count_iso(x)\n" +
+"    elif isinstance(o,dict):\n" +
+"        for v in o.values(): _count_iso(v)\n" +
+"for r in recs: _count_iso(r)\n" +
+"print()\n" +
+"print(f'--- 7) Heisenberg uncertainty [LOSSY]: {_iso_count} ISO timestamps -> epoch int ---')\n" +
+"measure('heisenberg jsonl (ms->s precision)',hb_blob)\n" +
+"\n" +
+"# 8. PAULI EXCLUSION — 동일 record 내 공존 불가 key 쌍\n" +
+"all_keys2=set()\n" +
+"for r in recs: all_keys2.update(r.keys())\n" +
+"key_presence={k:set() for k in all_keys2}\n" +
+"for i,r in enumerate(recs):\n" +
+"    for k in r.keys(): key_presence[k].add(i)\n" +
+"kl=sorted(all_keys2)\n" +
+"excl_pairs=[]\n" +
+"for i,k1 in enumerate(kl):\n" +
+"    s1=key_presence[k1]\n" +
+"    if len(s1)==0 or len(s1)==len(recs): continue\n" +
+"    for k2 in kl[i+1:]:\n" +
+"        s2=key_presence[k2]\n" +
+"        if len(s2)==0 or len(s2)==len(recs): continue\n" +
+"        if not (s1 & s2):\n" +
+"            # 둘 다 나타나지만 동시에는 절대 안 나타남 = 파울리 배제\n" +
+"            excl_pairs.append((k1,k2,len(s1),len(s2)))\n" +
+"print()\n" +
+"print(f'--- 8) Pauli exclusion: {len(excl_pairs)} mutually exclusive key pairs ---')\n" +
+"for k1,k2,n1,n2 in excl_pairs[:8]:\n" +
+"    print(f'  {k1}({n1}) ⊕ {k2}({n2})  -> 1 bit enum')\n" +
+"# 적용: 각 exclusive 그룹을 union-find 로 merge, 하나의 enum key 로 치환\n" +
+"parent={k:k for k in all_keys2}\n" +
+"def find(x):\n" +
+"    while parent[x]!=x: parent[x]=parent[parent[x]]; x=parent[x]\n" +
+"    return x\n" +
+"def union(a,b):\n" +
+"    ra,rb=find(a),find(b)\n" +
+"    if ra!=rb: parent[ra]=rb\n" +
+"for k1,k2,_,_ in excl_pairs:\n" +
+"    # 한 그룹 안의 모든 pair 가 exclusive 일 때만 실제 merge\n" +
+"    union(k1,k2)\n" +
+"groups=defaultdict(list)\n" +
+"for k in all_keys2: groups[find(k)].append(k)\n" +
+"# 진짜 exclusive group (>=2 멤버, 모든 쌍이 exclusive) 만\n" +
+"excl_set=set()\n" +
+"for (k1,k2,_,_) in excl_pairs: excl_set.add((k1,k2)); excl_set.add((k2,k1))\n" +
+"real_groups=[]\n" +
+"for root,members in groups.items():\n" +
+"    if len(members)<2: continue\n" +
+"    ok=True\n" +
+"    for i in range(len(members)):\n" +
+"        for j in range(i+1,len(members)):\n" +
+"            if (members[i],members[j]) not in excl_set: ok=False; break\n" +
+"        if not ok: break\n" +
+"    if ok: real_groups.append(sorted(members))\n" +
+"print(f'  merged into {len(real_groups)} exclusive groups')\n" +
+"pauli_recs=[]\n" +
+"member_to_group={}\n" +
+"for gi,g in enumerate(real_groups):\n" +
+"    for m in g: member_to_group[m]=(gi,m)\n" +
+"for r in recs:\n" +
+"    nr={}\n" +
+"    for k,v in r.items():\n" +
+"        if k in member_to_group:\n" +
+"            gi,_=member_to_group[k]\n" +
+"            nr[f'_g{gi}']=[k,v]\n" +
+"        else: nr[k]=v\n" +
+"    pauli_recs.append(nr)\n" +
+"pauli_blob='\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in pauli_recs).encode('utf-8')\n" +
+"measure('pauli-merged jsonl',pauli_blob)\n" +
+"\n" +
+"# 9. SCHRÖDINGER lazy-load — 큰 tool_result 본문 >=4KB 는 별도 blob 파일\n" +
+"import hashlib\n" +
+"THRESH=4096\n" +
+"blobs={}\n" +
+"def schrod(o):\n" +
+"    if isinstance(o,str) and len(o.encode('utf-8'))>=THRESH:\n" +
+"        h=hashlib.sha256(o.encode('utf-8')).hexdigest()[:16]\n" +
+"        blobs[h]=o.encode('utf-8')\n" +
+"        return {'_blob':h,'_len':len(o)}\n" +
+"    if isinstance(o,list): return [schrod(x) for x in o]\n" +
+"    if isinstance(o,dict): return {k:schrod(v) for k,v in o.items()}\n" +
+"    return o\n" +
+"sch_recs=[schrod(r) for r in recs]\n" +
+"sch_index='\\n'.join(json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in sch_recs).encode('utf-8')\n" +
+"blob_bytes=b''.join(blobs.values())\n" +
+"sch_total=sch_index+blob_bytes\n" +
+"print()\n" +
+"print(f'--- 9) Schrödinger lazy-load: {len(blobs)} unique blobs (>={THRESH}B), dedup ---')\n" +
+"print(f'  index jsonl: {len(sch_index)} B ({pct(len(sch_index))})  blobs: {len(blob_bytes)} B ({pct(len(blob_bytes))})')\n" +
+"measure('schrödinger index+blobs (sum)',sch_total)\n" +
+"# gzip 은 index 와 blobs 를 따로 압축 (현실적 시나리오)\n" +
+"sch_idx_gz=len(gzip.compress(sch_index,9))\n" +
+"sch_blb_gz=len(gzip.compress(blob_bytes,9)) if blob_bytes else 0\n" +
+"sch_split_gz=sch_idx_gz+sch_blb_gz\n" +
+"print(f'  split-gz9: idx {sch_idx_gz} + blb {sch_blb_gz} = {sch_split_gz} B  {pct(sch_split_gz)}')\n"
+
+fn run() {
+    let argv = args()
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        if v.contains("/") || v.contains(".jsonl") { target = v }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        println("usage: hexa quantum_byte_bench.hexa <jsonl-path>")
+        return
+    }
+
+    let tmp = "/tmp/quantum_byte_bench_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+    let cmd = "python3 '" + tmp + "' '" + target + "' 2>&1; rm -f '" + tmp + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

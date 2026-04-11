@@ -1,0 +1,222 @@
+// airgenome/scripts/safari_runtime_filter.hexa
+//   Safari History.db 의 실시간 byte 재해석 필터.
+//
+//   목적: autocomplete/history search hot path 에서 sqlite open + B-tree walk
+//         + index lookup 대신, 단일 mmap binary blob 을 bisect 으로 즉답.
+//
+//   blob layout (little-endian):
+//     magic  : 4B  "SHBF"          (Safari History Blob Filter)
+//     version: 4B  u32             (1)
+//     n      : 4B  u32             URL 개수
+//     str_sz : 4B  u32             string pool 바이트 길이
+//     [n*4]  : u32 offsets         string pool 내 시작 오프셋 (정렬된 URL 순)
+//     [n*4]  : u32 lens            각 URL 길이
+//     [n*4]  : u32 visit_count     각 URL 의 방문 횟수
+//     [str_sz]: utf-8 string pool  (정렬된 URL 을 붙인 raw bytes, NUL 없음)
+//
+//   정렬된 URL + offsets 로 prefix match 는 bisect_left 두 번이면 끝나고,
+//   그 range 안에서 visit_count 로 top-K heap-sort 하면 autocomplete 완료.
+//
+// 모드:
+//   encode : History.db → /tmp/safari_history.bin
+//   bench  : encode 후 sqlite vs blob prefix-query 100회 wall-clock 비교
+//
+// R1 HEXA-FIRST: 신규 .py/.sh 금지. 인라인 python3 페이로드.
+
+let PAYLOAD = "import sys,os,sqlite3,tempfile,struct,time,bisect,heapq,resource,mmap,array\n" +
+"mode=sys.argv[1]; src=sys.argv[2]\n" +
+"BIN='/tmp/safari_history.bin'\n" +
+"if not os.path.exists(src):\n" +
+"    print('ERROR: not found: '+src); sys.exit(1)\n" +
+"\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f}MB'\n" +
+"    if b>1024: return f'{b/1024:.1f}KB'\n" +
+"    return f'{b}B'\n" +
+"def rss():\n" +
+"    r=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n" +
+"    if sys.platform=='darwin': return r  # bytes\n" +
+"    return r*1024\n" +
+"\n" +
+"def safe_copy(src):\n" +
+"    tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"    sc=sqlite3.connect(f'file:{src}?mode=ro',uri=True)\n" +
+"    dc=sqlite3.connect(tmp.name)\n" +
+"    sc.backup(dc); dc.close(); sc.close()\n" +
+"    return tmp.name\n" +
+"\n" +
+"def encode(src):\n" +
+"    t0=time.perf_counter()\n" +
+"    copy=safe_copy(src)\n" +
+"    raw_size=os.path.getsize(copy)\n" +
+"    conn=sqlite3.connect(copy)\n" +
+"    rows=list(conn.execute('SELECT url,visit_count FROM history_items WHERE url IS NOT NULL'))\n" +
+"    conn.close(); os.unlink(copy)\n" +
+"    # 정렬된 URL 로 prefix bisect 가능하게\n" +
+"    rows.sort(key=lambda r:r[0])\n" +
+"    n=len(rows)\n" +
+"    pool=bytearray()\n" +
+"    offs=array.array('I',[0]*n)\n" +
+"    lens=array.array('I',[0]*n)\n" +
+"    vcs =array.array('I',[0]*n)\n" +
+"    for i,(u,v) in enumerate(rows):\n" +
+"        ub=u.encode('utf-8','replace')\n" +
+"        offs[i]=len(pool); lens[i]=len(ub); vcs[i]=int(v or 0)\n" +
+"        pool.extend(ub)\n" +
+"    header=struct.pack('<4sIII',b'SHBF',1,n,len(pool))\n" +
+"    with open(BIN,'wb') as f:\n" +
+"        f.write(header)\n" +
+"        f.write(offs.tobytes())\n" +
+"        f.write(lens.tobytes())\n" +
+"        f.write(vcs.tobytes())\n" +
+"        f.write(pool)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_size=os.path.getsize(BIN)\n" +
+"    return {'encode_s':t1-t0,'n':n,'raw_size':raw_size,'blob_size':blob_size}\n" +
+"\n" +
+"class Blob:\n" +
+"    def __init__(self,path):\n" +
+"        self.f=open(path,'rb')\n" +
+"        self.mm=mmap.mmap(self.f.fileno(),0,prot=mmap.PROT_READ)\n" +
+"        magic,ver,n,pool_sz=struct.unpack_from('<4sIII',self.mm,0)\n" +
+"        assert magic==b'SHBF' and ver==1\n" +
+"        self.n=n; self.pool_sz=pool_sz\n" +
+"        base=16\n" +
+"        self.offs_off=base\n" +
+"        self.lens_off=base+4*n\n" +
+"        self.vcs_off =base+8*n\n" +
+"        self.pool_off=base+12*n\n" +
+"        # memoryview on raw bytes for zero-copy\n" +
+"        self.mv=memoryview(self.mm)\n" +
+"        offs=array.array('I'); offs.frombytes(bytes(self.mv[self.offs_off:self.offs_off+4*n]))\n" +
+"        lens=array.array('I'); lens.frombytes(bytes(self.mv[self.lens_off:self.lens_off+4*n]))\n" +
+"        vcs =array.array('I'); vcs.frombytes(bytes(self.mv[self.vcs_off :self.vcs_off +4*n]))\n" +
+"        pool=bytes(self.mv[self.pool_off:self.pool_off+pool_sz])\n" +
+"        # 정렬된 bytes 리스트로 materialize — Python bisect 가 C-level 로 돈다\n" +
+"        self.urls=[pool[offs[i]:offs[i]+lens[i]] for i in range(n)]\n" +
+"        self.vcs=vcs\n" +
+"    def url(self,i):\n" +
+"        return self.urls[i]\n" +
+"    def prefix_topk(self,prefix,k=10):\n" +
+"        pb=prefix.encode('utf-8') if isinstance(prefix,str) else prefix\n" +
+"        urls=self.urls\n" +
+"        start=bisect.bisect_left(urls,pb)\n" +
+"        # upper bound via pb + high sentinel\n" +
+"        end=bisect.bisect_left(urls,pb+b'\\xff\\xff\\xff\\xff')\n" +
+"        if end==start: return []\n" +
+"        # top-K by visit_count\n" +
+"        if end-start<=k:\n" +
+"            idxs=list(range(start,end))\n" +
+"        else:\n" +
+"            idxs=heapq.nlargest(k,range(start,end),key=lambda i:self.vcs[i])\n" +
+"        idxs.sort(key=lambda i:-self.vcs[i])\n" +
+"        return [(self.url(i).decode('utf-8','replace'),int(self.vcs[i])) for i in idxs]\n" +
+"    def close(self):\n" +
+"        try: self.mv.release()\n" +
+"        except Exception: pass\n" +
+"        self.mm.close(); self.f.close()\n" +
+"\n" +
+"def sqlite_topk(conn,prefix,k=10):\n" +
+"    cur=conn.execute('SELECT url,visit_count FROM history_items WHERE url>=? AND url<? ORDER BY visit_count DESC LIMIT ?',(prefix,prefix+'\\uffff',k))\n" +
+"    return cur.fetchall()\n" +
+"\n" +
+"def bench(src):\n" +
+"    info=encode(src)\n" +
+"    print(f'[encode] {info[\"encode_s\"]*1000:.1f} ms  urls={info[\"n\"]}  blob={fmt(info[\"blob_size\"])} ({100*info[\"blob_size\"]/info[\"raw_size\"]:.1f}% of {fmt(info[\"raw_size\"])})')\n" +
+"    # 질의 샘플: blob 에서 URL 일부를 랜덤 추출해 2~6자 prefix 만들어 사용\n" +
+"    b=Blob(BIN)\n" +
+"    import random\n" +
+"    random.seed(42)\n" +
+"    samples=[]\n" +
+"    for _ in range(100):\n" +
+"        i=random.randrange(b.n)\n" +
+"        u=b.url(i).decode('utf-8','replace')\n" +
+"        # scheme 건너뛰고 host 초반 prefix 만\n" +
+"        s=u.find('://')\n" +
+"        start=s+3 if s>=0 else 0\n" +
+"        plen=random.choice([4,5,6,7,8])\n" +
+"        pref=u[:start+plen] if len(u)>=start+plen else u\n" +
+"        samples.append(pref)\n" +
+"    # rss 기준선 (blob loaded)\n" +
+"    rss_blob=rss()\n" +
+"    # 웜업\n" +
+"    for p in samples[:5]: b.prefix_topk(p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    total_hits=0\n" +
+"    for p in samples:\n" +
+"        r=b.prefix_topk(p,10); total_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    blob_us=(t1-t0)*1e6/len(samples)\n" +
+"    b.close()\n" +
+"    # sqlite 경로 (매번 fresh open — Safari hot path 근사)\n" +
+"    copy=safe_copy(src)\n" +
+"    # 웜업 — 같은 파일 재사용: 첫 open 은 캐시 채우므로 persistent conn 1회 + per-query 로 둘 다 잰다\n" +
+"    # 1) persistent connection\n" +
+"    conn=sqlite3.connect(copy)\n" +
+"    for p in samples[:5]: sqlite_topk(conn,p,10)\n" +
+"    t0=time.perf_counter()\n" +
+"    sq_hits=0\n" +
+"    for p in samples:\n" +
+"        r=sqlite_topk(conn,p,10); sq_hits+=len(r)\n" +
+"    t1=time.perf_counter()\n" +
+"    sqlite_persistent_us=(t1-t0)*1e6/len(samples)\n" +
+"    conn.close()\n" +
+"    rss_sqlite=rss()\n" +
+"    # 2) Safari hot path 모사 — per-query open/close\n" +
+"    t0=time.perf_counter()\n" +
+"    for p in samples:\n" +
+"        c=sqlite3.connect(copy)\n" +
+"        sqlite_topk(c,p,10)\n" +
+"        c.close()\n" +
+"    t1=time.perf_counter()\n" +
+"    sqlite_cold_us=(t1-t0)*1e6/len(samples)\n" +
+"    os.unlink(copy)\n" +
+"    print(f'[query] 100 prefix-topK-10  (hits blob={total_hits}, sqlite={sq_hits})')\n" +
+"    print(f'  sqlite cold (per-query open/close): {sqlite_cold_us:10.1f} us')\n" +
+"    print(f'  sqlite persistent connection      : {sqlite_persistent_us:10.1f} us')\n" +
+"    print(f'  blob mmap + bisect                : {blob_us:10.1f} us')\n" +
+"    if blob_us>0:\n" +
+"        print(f'  speedup vs cold      : {sqlite_cold_us/blob_us:6.1f}x')\n" +
+"        print(f'  speedup vs persistent: {sqlite_persistent_us/blob_us:6.1f}x')\n" +
+"    print(f'[rss] after blob only      : {fmt(rss_blob)}')\n" +
+"    print(f'[rss] after sqlite as well : {fmt(rss_sqlite)}')\n" +
+"\n" +
+"if mode=='encode':\n" +
+"    info=encode(src)\n" +
+"    print(f'encoded {info[\"n\"]} urls in {info[\"encode_s\"]*1000:.1f} ms → {BIN} ({fmt(info[\"blob_size\"])}, {100*info[\"blob_size\"]/info[\"raw_size\"]:.1f}% of raw {fmt(info[\"raw_size\"])})')\n" +
+"elif mode=='bench':\n" +
+"    bench(src)\n" +
+"else:\n" +
+"    print('usage: encode|bench <History.db>'); sys.exit(2)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = "bench"
+    let mut target = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        let is_hexa_bin = v.contains("/hexa-lang/") || v == "hexa" || v == "hexa.real"
+        let is_self     = v.contains("safari_runtime_filter")
+        if is_hexa_bin == false && is_self == false {
+            if v == "encode" || v == "bench" { mode = v }
+            else if v.contains(".db") || v.contains(".sqlite") { target = v }
+        }
+        i = i + 1
+    }
+    if len(target) == 0 {
+        target = env("HOME") + "/Library/Safari/History.db"
+        println("(default target: " + target + ")")
+    }
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+    let tmp_py = "/tmp/safari_runtime_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp_py, PAYLOAD)
+    let cmd = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

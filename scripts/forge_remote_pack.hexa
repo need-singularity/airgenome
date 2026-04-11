@@ -1,0 +1,181 @@
+// scripts/forge_remote_pack.hexa — Hetzner 32T native PoC runner
+//
+// 목적: Hetzner CPU 노드에서 genome_pack.hexa 를 native 로 실제 실행해
+//       forge/genomes.pack 재생성 결과가 Mac 과 일치하는지 검증.
+//
+// 비파괴:
+//   - 원격 출력은 /tmp/genomes.pack.remote 에만 기록.
+//   - Hetzner forge/genomes.pack 원본과 Mac 원본 모두 손대지 않는다.
+//
+// 절차:
+//   1) genome_pack.hexa 를 rsync 로 hetzner:/root/Dev/airgenome/scripts/ 로 push
+//   2) ssh hetzner 에서 /root/Dev/hexa-lang/target/release/hexa 절대경로 호출
+//   3) 원격 stdout 수집 → records / size 파싱
+//   4) Mac 의 forge/genomes.pack 헤더 카운트 읽어 비교
+//   5) 원격 wall clock vs Mac wall clock 나란히 보고
+
+let HOST = "hetzner"
+let LOCAL_ROOT = env("HOME") + "/Dev/airgenome"
+let REMOTE_ROOT = "/root/Dev/airgenome"
+let HEXA_BIN = "/root/Dev/hexa-lang/target/release/hexa"
+let REMOTE_PACK = "/tmp/genomes.pack.remote"
+let LOCAL_PACK = LOCAL_ROOT + "/forge/genomes.pack"
+let LOCAL_IDX = LOCAL_ROOT + "/forge/genomes.index.jsonl"
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn now_ms() -> int {
+    let s = try { exec("python3 -c 'import time; print(int(time.time()*1000))'").trim() } catch e { "0" }
+    let mut v = 0
+    try { v = to_int(to_float(s)) } catch e {}
+    return v
+}
+
+fn header_count(path: str) -> int {
+    let cmd = "python3 -c 'import struct,sys;\n" +
+              "f=open(sys.argv[1],\"rb\");h=f.read(7);\n" +
+              "print(struct.unpack(\"<I\",h[3:])[0] if len(h)==7 and h[:2]==b\"AG\" else -1)' " + path
+    let out = try { exec(cmd + " 2>/dev/null").trim() } catch e { "-1" }
+    let mut v = -1
+    try { v = to_int(to_float(out)) } catch e {}
+    return v
+}
+
+println("== forge_remote_pack — Hetzner native PoC ==")
+
+// 1) push scripts/genome_pack.hexa (with hard-coded remote paths injected)
+// NOTE: genome_pack.hexa 의 argv 파서가 args() 첫 항목(hexa 바이너리 경로) 때문에
+//       사용자 인자를 흘려버리는 이슈가 있어, 원격 복사본 기본 경로를 sed 로
+//       REMOTE_PACK 으로 직접 치환한다. 로컬 원본은 건드리지 않는다.
+println("[1/5] pushing scripts/genome_pack.hexa → " + HOST + " (with output path injected)")
+let push_mk = "ssh -o ConnectTimeout=8 " + HOST +
+    " 'mkdir -p " + REMOTE_ROOT + "/scripts' 2>&1"
+try { exec(push_mk) } catch e {
+    println("ERROR: remote mkdir failed: " + to_string(e))
+    exit(1)
+}
+let push_cmd = "rsync -az " +
+    shquote(LOCAL_ROOT + "/scripts/genome_pack.hexa") + " " +
+    HOST + ":" + REMOTE_ROOT + "/scripts/genome_pack.hexa 2>&1"
+try { exec(push_cmd) } catch e {
+    println("ERROR: rsync push failed: " + to_string(e))
+    exit(1)
+}
+// Inject hard-coded default out_path = REMOTE_PACK on remote copy
+let sed_cmd = "ssh " + HOST + " " + shquote(
+    "sed -i 's|ROOT + \"/forge/genomes.pack\"|\"" + REMOTE_PACK + "\"|' " +
+    REMOTE_ROOT + "/scripts/genome_pack.hexa"
+) + " 2>&1"
+try { exec(sed_cmd) } catch e {
+    println("ERROR: remote sed failed: " + to_string(e))
+    exit(1)
+}
+println("  push+inject ok")
+
+// 2) remote exec
+println("[2/5] executing remote packer (non-destructive → " + REMOTE_PACK + ")")
+let remote_inner = HEXA_BIN + " " + REMOTE_ROOT + "/scripts/genome_pack.hexa " +
+    REMOTE_ROOT + "/forge/genomes.index.jsonl " + REMOTE_PACK
+let remote_cmd = "ssh " + HOST + " " + shquote("cd " + REMOTE_ROOT + " && rm -f " + REMOTE_PACK + " && " + remote_inner) + " 2>&1"
+
+let r_start = now_ms()
+let remote_out = try { exec(remote_cmd) } catch e {
+    println("ERROR: remote exec failed: " + to_string(e))
+    println("--- partial output ---")
+    exit(1)
+}
+let r_end = now_ms()
+let remote_ms = r_end - r_start
+
+println("--- remote stdout ---")
+println(remote_out)
+println("--- end remote ---")
+
+// 3) parse remote "packed: N records" and "pack file size: N bytes"
+fn grep_int(haystack: str, needle: str) -> int {
+    let ls = haystack.split("\n")
+    let mut i = 0
+    while i < len(ls) {
+        let line = ls[i]
+        if line.contains(needle) {
+            // strip digits tail
+            let parts = line.split(" ")
+            let mut j = 0
+            let mut last = -1
+            while j < len(parts) {
+                let p = parts[j]
+                let clean = p.replace(",", "")
+                let mut v = -1
+                try { v = to_int(to_float(clean)) } catch e {}
+                if v >= 0 { last = v }
+                j = j + 1
+            }
+            if last >= 0 { return last }
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+let remote_records = grep_int(remote_out, "packed:")
+let remote_size = grep_int(remote_out, "pack file size:")
+println("[3/5] remote packed=" + to_string(remote_records) + " size=" + to_string(remote_size) + "B wall=" + to_string(remote_ms) + "ms")
+
+// 4) Mac side — existing pack header (non-destructive: just read header)
+println("[4/5] reading Mac-side forge/genomes.pack header")
+let mac_records = header_count(LOCAL_PACK)
+let mac_size_s = try { exec("wc -c < " + shquote(LOCAL_PACK)).trim() } catch e { "0" }
+let mut mac_size = 0
+try { mac_size = to_int(to_float(mac_size_s)) } catch e {}
+println("  Mac pack records=" + to_string(mac_records) + " size=" + to_string(mac_size) + "B")
+
+// Mac wall-clock — run packer to /tmp target so we don't touch forge/genomes.pack
+// 동일한 argv 파서 버그 우회: /tmp 에 sed 주입 사본을 만들어 실행
+let mac_tmp = "/tmp/genomes.pack.maclocal"
+let mac_script = "/tmp/genome_pack_maclocal.hexa"
+try { exec("rm -f " + mac_tmp + " " + mac_script) } catch e {}
+try { exec("cp " + LOCAL_ROOT + "/scripts/genome_pack.hexa " + mac_script) } catch e {}
+try { exec("sed -i '' 's|ROOT + \"/forge/genomes.pack\"|\"" + mac_tmp + "\"|' " + mac_script) } catch e {
+    // linux fallback
+    try { exec("sed -i 's|ROOT + \"/forge/genomes.pack\"|\"" + mac_tmp + "\"|' " + mac_script) } catch e2 {}
+}
+let mac_cmd = "hexa " + mac_script + " 2>&1"
+let m_start = now_ms()
+let mac_out = try { exec(mac_cmd) } catch e {
+    println("WARN: mac packer run failed: " + to_string(e))
+    ""
+}
+let m_end = now_ms()
+let mac_ms = m_end - m_start
+let mac_tmp_records = header_count(mac_tmp)
+println("  Mac fresh run: records=" + to_string(mac_tmp_records) + " wall=" + to_string(mac_ms) + "ms")
+
+// 5) verdict
+println("[5/5] verdict")
+let idx_count_s = try { exec("wc -l < " + shquote(LOCAL_IDX)).trim() } catch e { "0" }
+let mut idx_count = 0
+try { idx_count = to_int(to_float(idx_count_s)) } catch e {}
+println("  index jsonl lines     = " + to_string(idx_count))
+println("  Mac forge/pack header = " + to_string(mac_records))
+println("  Mac fresh /tmp pack   = " + to_string(mac_tmp_records))
+println("  Hetzner /tmp pack     = " + to_string(remote_records))
+
+let ok = remote_records > 0 && remote_records == mac_tmp_records
+if ok {
+    println("  RESULT: PASS — remote records match mac fresh run")
+} else {
+    println("  RESULT: FAIL — mismatch")
+}
+
+println("  timing: remote=" + to_string(remote_ms) + "ms  mac=" + to_string(mac_ms) + "ms")
+if mac_ms > 0 && remote_ms > 0 {
+    let speedup_x100 = mac_ms * 100 / remote_ms
+    println("  remote/mac ratio x100 = " + to_string(speedup_x100) + " (>100 means remote faster)")
+}
+
+// cleanup local tmp (non-destructive to forge/)
+try { exec("rm -f " + mac_tmp + " " + mac_script) } catch e {}
+
+if ok == false { exit(2) }

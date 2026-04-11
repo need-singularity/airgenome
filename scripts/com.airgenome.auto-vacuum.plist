@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  auto-vacuum — Safari / Notes 종료 시점 자동 sqlite VACUUM (60초 polling)
+  대상:
+    ~/Library/Safari/History.db
+    ~/Library/Group Containers/group.com.apple.notes/NoteStore.sqlite
+  조건: 앱 종료 + 마지막 VACUUM > 24h
+  상태: ~/.airgenome/auto_vacuum.state
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.auto-vacuum</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/Dev/hexa-lang/target/release/hexa</string>
+        <string>run</string>
+        <string>/Users/ghost/Dev/airgenome/scripts/auto_vacuum_watcher.hexa</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>Nice</key>
+    <integer>15</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-auto-vacuum.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-auto-vacuum.err</string>
+</dict>
+</plist>

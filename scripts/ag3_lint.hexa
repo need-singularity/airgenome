@@ -24,13 +24,16 @@ let EXCEPT_HARDCODE_FILES = [
     "modules/ag3_guard.hexa"
 ]
 
-let violations = []
+// 주의: hexa 의 array.push() 가 실제로는 in-place mutate 안 함 (검증됨 2026-04-11).
+// `arr = arr + [val]` concat 패턴으로 우회. add_violation 은 mutable ref 에
+// 누적해야 하므로 global mut + concat 사용.
+let mut violations = []
 
 // ───────────────────────────────────────────────────────────────────────
 // Helpers
 // ───────────────────────────────────────────────────────────────────────
 fn add_violation(file: str, pattern: str, line_no: int, snippet: str) -> void {
-    violations.push(file + ":" + str(line_no) + " [" + pattern + "] " + snippet)
+    violations = violations + [file + ":" + str(line_no) + " [" + pattern + "] " + snippet]
 }
 
 fn is_excepted(rel: str) -> bool {
@@ -78,22 +81,33 @@ fn scan_py_presence(rel: str) -> void {
 // ───────────────────────────────────────────────────────────────────────
 // Main
 // ───────────────────────────────────────────────────────────────────────
+// glob() 빌트인이 hexa 에 없음 → exec("find") 위임 (2026-04-11 fix).
+fn list_files(suffix: str) -> list {
+    let cmd = "find '" + ROOT + "' -type f -name '*" + suffix + "' 2>/dev/null"
+    let out = try { exec(cmd) } catch e { "" }
+    return out.split("\n")
+}
+
 fn main() -> int {
-    let hexa_files = glob(ROOT, "**/*.hexa")
-    let i = 0
+    let hexa_files = list_files(".hexa")
+    let mut i = 0
     while i < len(hexa_files) {
-        let abs = hexa_files[i]
-        let rel = abs.replace(ROOT + "/", "")
-        scan_hexa(rel, abs)
+        let abs = hexa_files[i].trim()
+        if len(abs) > 0 {
+            let rel = abs.replace(ROOT + "/", "")
+            scan_hexa(rel, abs)
+        }
         i = i + 1
     }
 
-    let py_files = glob(ROOT, "**/*.py")
+    let py_files = list_files(".py")
     i = 0
     while i < len(py_files) {
-        let abs = py_files[i]
-        let rel = abs.replace(ROOT + "/", "")
-        scan_py_presence(rel)
+        let abs = py_files[i].trim()
+        if len(abs) > 0 {
+            let rel = abs.replace(ROOT + "/", "")
+            scan_py_presence(rel)
+        }
         i = i + 1
     }
 
@@ -109,3 +123,6 @@ fn main() -> int {
     }
     return 1
 }
+
+// 진입점 — main() 미호출 버그 fix (2026-04-11)
+main()

@@ -1,0 +1,216 @@
+// airgenome/scripts/claude_quantum_filter.hexa
+//   Production-grade Claude jsonl 양자-얽힘 압축 필터.
+//
+//   quantum_byte_bench 가 발견한 entanglement(항상 함께 같은 값으로
+//   움직이는 key pair) 를 실제로 drop 한 뒤 lossless 로 복원한다.
+//
+//   encode: jsonl → detect entanglements → 헤더(+매핑) + reduced lines
+//                 → UTF-8 bytes → gzip-9 → <out.qjsonl.gz>
+//   decode: gunzip → 헤더 파싱 → 드롭된 key 재구성 → 원본 jsonl
+//
+//   헤더 포맷 (첫 줄):
+//     {"_qfilter":"v1","entangled":[
+//        {"src":"promptId","dst":"type","map":{"v1":"a","v2":"b"}}, ...
+//     ]}
+//
+//   안전장치:
+//     - 1:1 매핑이 아닌 pair 는 자동 제외
+//     - unique value >= MIN_UNIQUE (기본 3) 만 채택
+//     - 여러 dst 가 동일 src 에 얽혀도 각자 독립 row 로 기록
+//     - dst 는 여러 src 로부터 복원될 수 있으므로 이미 drop 된 dst 는 건너뜀
+//
+// 사용:
+//   hexa scripts/claude_quantum_filter.hexa encode <in.jsonl> <out.qjsonl.gz>
+//   hexa scripts/claude_quantum_filter.hexa decode <in.qjsonl.gz> <out.jsonl>
+//   hexa scripts/claude_quantum_filter.hexa verify <in.jsonl>
+//   hexa scripts/claude_quantum_filter.hexa            # sample self-test
+
+let PAYLOAD = "import sys,os,json,gzip,hashlib\n" +
+"from collections import defaultdict\n" +
+"MIN_UNIQUE=2\n" +
+"MAX_UNIQUE=64\n" +
+"MAX_VAL_LEN=128\n" +
+"mode=sys.argv[1]\n" +
+"def sha(b): return hashlib.sha256(b).hexdigest()\n" +
+"def read_jsonl(path):\n" +
+"    raw=open(path,'rb').read()\n" +
+"    recs=[]\n" +
+"    for line in raw.split(b'\\n'):\n" +
+"        if not line.strip(): continue\n" +
+"        try: recs.append(json.loads(line))\n" +
+"        except Exception: recs.append({'__qf_raw__':line.decode('utf-8','replace')})\n" +
+"    return raw,recs\n" +
+"def detect_entanglement(recs):\n" +
+"    # pair_map[(k1,k2)][v1] = set(v2) ; 얽힘은 모든 set 크기=1\n" +
+"    pair_map=defaultdict(lambda: defaultdict(set))\n" +
+"    for r in recs:\n" +
+"        items=[(k,v) for k,v in r.items() if isinstance(v,(str,int,float,bool)) and v is not None and k!='__qf_raw__']\n" +
+"        for i,(k1,v1) in enumerate(items):\n" +
+"            for k2,v2 in items:\n" +
+"                if k1==k2: continue\n" +
+"                pair_map[(k1,k2)][v1].add(v2)\n" +
+"    cands=[]\n" +
+"    for (k1,k2),m in pair_map.items():\n" +
+"        if len(m)<MIN_UNIQUE or len(m)>MAX_UNIQUE: continue\n" +
+"        if not all(len(s)==1 for s in m.values()): continue\n" +
+"        mapping={v1:next(iter(s)) for v1,s in m.items()}\n" +
+"        # 너무 긴 값은 skip (mapping 테이블 bloat 방지)\n" +
+"        if any(isinstance(v,str) and len(v)>MAX_VAL_LEN for v in mapping.values()): continue\n" +
+"        if any(isinstance(v,str) and len(v)>MAX_VAL_LEN for v in mapping.keys()): continue\n" +
+"        # coverage: k1 이 있을 때 k2 도 있고 mapping 에 맞아야 한다. (단방향)\n" +
+"        # k2 만 있고 k1 없는 레코드는 dst 를 그대로 두어 lossless 유지.\n" +
+"        ok=True; cov=0\n" +
+"        for r in recs:\n" +
+"            if '__qf_raw__' in r: continue\n" +
+"            has1=k1 in r and isinstance(r.get(k1),(str,int,float,bool)) and r[k1] is not None\n" +
+"            if has1:\n" +
+"                if k2 not in r or r[k2]!=mapping.get(r[k1]): ok=False; break\n" +
+"                cov+=1\n" +
+"        if ok and cov>=MIN_UNIQUE:\n" +
+"            cands.append((k1,k2,mapping,cov))\n" +
+"    # 각 dst 는 최대 1번만 drop, src/dst 그래프에서 체인 방지\n" +
+"    cands.sort(key=lambda x:-x[3])\n" +
+"    used_dst=set(); used_src=set(); picked=[]\n" +
+"    for k1,k2,mapping,cov in cands:\n" +
+"        if k2 in used_dst or k2 in used_src: continue\n" +
+"        if k1 in used_dst: continue\n" +
+"        used_dst.add(k2); used_src.add(k1)\n" +
+"        # map 직렬화: key 가 전부 str 이면 바로 dict, 아니면 [[k,v],...] list\n" +
+"        if all(isinstance(v,str) for v in mapping):\n" +
+"            mp=mapping\n" +
+"        else:\n" +
+"            mp=[[v,mapping[v]] for v in mapping]\n" +
+"        picked.append({'src':k1,'dst':k2,'map':mp})\n" +
+"    return picked\n" +
+"def encode(inp,out):\n" +
+"    raw,recs=read_jsonl(inp)\n" +
+"    ent=detect_entanglement(recs)\n" +
+"    # src_key -> list of (dst_key) — per-record: drop dst only if src present\n" +
+"    src2dst=defaultdict(list)\n" +
+"    for e in ent: src2dst[e['src']].append(e['dst'])\n" +
+"    header={'_qfilter':'v1','entangled':ent}\n" +
+"    lines=[json.dumps(header,ensure_ascii=False,separators=(',',':'),sort_keys=True)]\n" +
+"    for r in recs:\n" +
+"        if '__qf_raw__' in r:\n" +
+"            lines.append('\\x00R'+r['__qf_raw__'])\n" +
+"            continue\n" +
+"        drop_here=set()\n" +
+"        for src,dsts in src2dst.items():\n" +
+"            if src in r and isinstance(r[src],(str,int,float,bool)) and r[src] is not None:\n" +
+"                for d in dsts: drop_here.add(d)\n" +
+"        red={k:v for k,v in r.items() if k not in drop_here}\n" +
+"        lines.append(json.dumps(red,ensure_ascii=False,separators=(',',':'),sort_keys=True))\n" +
+"    blob=('\\n'.join(lines)+'\\n').encode('utf-8')\n" +
+"    gz=gzip.compress(blob,9)\n" +
+"    open(out,'wb').write(gz)\n" +
+"    raw_gz=gzip.compress(raw,9)\n" +
+"    return {'raw':len(raw),'raw_gz':len(raw_gz),'q':len(blob),'q_gz':len(gz),'entangled':len(ent),'dropped':sorted({e['dst'] for e in ent})}\n" +
+"def decode(inp,out):\n" +
+"    gz=open(inp,'rb').read()\n" +
+"    blob=gzip.decompress(gz).decode('utf-8')\n" +
+"    lines=blob.split('\\n')\n" +
+"    # 마지막 trailing empty 제거\n" +
+"    if lines and lines[-1]=='': lines.pop()\n" +
+"    header=json.loads(lines[0])\n" +
+"    assert header.get('_qfilter')=='v1','bad header'\n" +
+"    ent=header['entangled']\n" +
+"    rebuild=[]\n" +
+"    for e in ent:\n" +
+"        m=e['map']\n" +
+"        if isinstance(m,dict): mp=dict(m)\n" +
+"        else: mp={kv[0]:kv[1] for kv in m}\n" +
+"        rebuild.append((e['src'],e['dst'],mp))\n" +
+"    out_lines=[]\n" +
+"    for ln in lines[1:]:\n" +
+"        if ln.startswith('\\x00R'):\n" +
+"            out_lines.append(ln[2:])\n" +
+"            continue\n" +
+"        r=json.loads(ln)\n" +
+"        for src,dst,m in rebuild:\n" +
+"            if src in r and isinstance(r[src],(str,int,float,bool)) and r[src] in m:\n" +
+"                r[dst]=m[r[src]]\n" +
+"        out_lines.append(json.dumps(r,ensure_ascii=False,separators=(',',':'),sort_keys=True))\n" +
+"    open(out,'wb').write(('\\n'.join(out_lines)+'\\n').encode('utf-8'))\n" +
+"    return len(out_lines)\n" +
+"def verify(sample):\n" +
+"    tmp_enc='/tmp/qf_enc.qjsonl.gz'\n" +
+"    tmp_dec='/tmp/qf_dec.jsonl'\n" +
+"    tmp_norm='/tmp/qf_norm.jsonl'\n" +
+"    # 원본 정규화(재직렬화) — Claude jsonl 은 이미 compact JSON 이지만 key order 가 다를 수 있으므로 동일 루트로 통과.\n" +
+"    raw,recs=read_jsonl(sample)\n" +
+"    norm_lines=[]\n" +
+"    for r in recs:\n" +
+"        if '__qf_raw__' in r: norm_lines.append(r['__qf_raw__'])\n" +
+"        else: norm_lines.append(json.dumps(r,ensure_ascii=False,separators=(',',':'),sort_keys=True))\n" +
+"    norm=('\\n'.join(norm_lines)+'\\n').encode('utf-8')\n" +
+"    open(tmp_norm,'wb').write(norm)\n" +
+"    stats=encode(tmp_norm,tmp_enc)\n" +
+"    decode(tmp_enc,tmp_dec)\n" +
+"    dec=open(tmp_dec,'rb').read()\n" +
+"    ok=sha(norm)==sha(dec)\n" +
+"    print(f'== claude_quantum_filter verify ==')\n" +
+"    print(f'sample          : {sample}')\n" +
+"    print(f'records         : {len(recs)}')\n" +
+"    print(f'entangled pairs : {stats[\"entangled\"]}')\n" +
+"    if stats['dropped']:\n" +
+"        shown=stats['dropped'][:8]\n" +
+"        print(f'dropped keys    : {shown}{\" ...\" if len(stats[\"dropped\"])>8 else \"\"}')\n" +
+"    def fmt(b): return f'{b/1048576:.2f}MB ({b} B)'\n" +
+"    rs=stats['raw']; rg=stats['raw_gz']; qs=stats['q']; qg=stats['q_gz']\n" +
+"    print(f'raw jsonl       : {fmt(rs)}  100.0%')\n" +
+"    print(f'raw + gzip-9    : {fmt(rg)}  {100*rg/rs:5.1f}%')\n" +
+"    print(f'qfilter (pre-gz): {fmt(qs)}  {100*qs/rs:5.1f}%')\n" +
+"    print(f'qfilter + gzip-9: {fmt(qg)}  {100*qg/rs:5.1f}%  (vs raw+gz: {100*qg/rg:5.1f}%)')\n" +
+"    print(f'sha256(norm)    : {sha(norm)}')\n" +
+"    print(f'sha256(decoded) : {sha(dec)}')\n" +
+"    print(f'round-trip      : {\"OK LOSSLESS\" if ok else \"FAIL\"}')\n" +
+"    sys.exit(0 if ok else 2)\n" +
+"if mode=='encode':\n" +
+"    s=encode(sys.argv[2],sys.argv[3])\n" +
+"    print(json.dumps(s,ensure_ascii=False))\n" +
+"elif mode=='decode':\n" +
+"    n=decode(sys.argv[2],sys.argv[3])\n" +
+"    print(f'decoded {n} records -> {sys.argv[3]}')\n" +
+"elif mode=='verify':\n" +
+"    verify(sys.argv[2])\n" +
+"else:\n" +
+"    print('usage: encode|decode|verify'); sys.exit(1)\n"
+
+fn run() {
+    let argv = args()
+    let mut mode = ""
+    let mut a = ""
+    let mut b = ""
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        if v == "encode" || v == "decode" || v == "verify" { mode = v }
+        else {
+            if len(mode) > 0 && len(a) == 0 { a = v }
+            else {
+                if len(mode) > 0 && len(b) == 0 { b = v }
+            }
+        }
+        i = i + 1
+    }
+
+    // default: self-test on canonical sample
+    let sample = "/Users/ghost/.claude-claude9/projects/-Users-ghost-Dev-airgenome/d07e7302-7c0a-4f5b-803e-422a45af2e4e.jsonl"
+    if len(mode) == 0 {
+        mode = "verify"
+        a = sample
+    }
+
+    let tmp = "/tmp/claude_quantum_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+
+    let mut cmd = "python3 '" + tmp + "' " + mode
+    if len(a) > 0 { cmd = cmd + " '" + a + "'" }
+    if len(b) > 0 { cmd = cmd + " '" + b + "'" }
+    cmd = cmd + " 2>&1; rm -f '" + tmp + "'"
+
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()
