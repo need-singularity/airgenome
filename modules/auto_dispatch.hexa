@@ -138,6 +138,39 @@ fn ts_iso() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  AG7 Wave 1 — dispatch_state.json 기반 best host hint (2026-04-12 골화)
+//
+//  load_balancer.hexa 가 30s 주기로 생성하는 dispatch_state.json 을 참조.
+//  Consumer (auto_dispatch) 가 "정적 하드코딩" 대신 "실시간 best-fit" 선택.
+//  naive JSON parse — ubu_bridge Wave 1 best_host_for 와 동일 패턴.
+// ═══════════════════════════════════════════════════════════════════════
+
+let DISPATCH_STATE_PATH = env("HOME") + "/Dev/nexus/shared/dispatch_state.json"
+
+fn ag7_best_host(task_type: str) -> str {
+    if file_exists(DISPATCH_STATE_PATH) == false { return "ubu" }
+    let raw = read_file(DISPATCH_STATE_PATH)
+    let tag = "\"" + task_type + "\":{\"host\":\""
+    if raw.contains(tag) == false { return "ubu" }
+    let after = raw.split(tag)[1]
+    let h = after.split("\"")[0]
+    if len(h) == 0 { return "ubu" }
+    return h
+}
+
+// fire_best_blowup — AG7 best host 선택 후 기존 fire_* 함수 위임
+// task_type: "cpu_heavy" (blowup 은 CPU 작업) | 향후 확장
+// 기존 병렬 proactive (ubu + htz) 로직은 유지 — 이 함수는 AG7 conscious consumer
+fn fire_best_blowup(now_s: str, task_type: str) -> str {
+    let host = ag7_best_host(task_type)
+    if host == "ubu" { return fire_ubu_blowup(now_s) }
+    if host == "htz" { return fire_htz_blowup(now_s) }
+    if host == "hetzner" { return fire_htz_blowup(now_s) }
+    if host == "none" { return "ag7_no_host" }
+    return "ag7_unknown_host(" + host + ")"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  htz blowup 자동 발화 (cooldown throttle — 2026-04-11)
 //
 //  기존: offload_htz 조건 충족 시 JSON status 만 반환 (실제 집행 없음)
@@ -332,6 +365,14 @@ fn check_once(state_path: str) -> str {
     let ubu_max    = load_cfg_int("offload_ubu_max_cpu", 70)
     let patterns   = load_cfg("offload_patterns", "hexa,python3,node,cargo,gcc,clang")
     let top_n      = load_cfg_int("offload_top_n", 3)
+
+    // ── AG7 Wave 1 힌트 로그 (observability, 2026-04-12) ──
+    // dispatch_state.json best 를 참조해 현재 최적 호스트를 로그에 기록.
+    // 기존 proactive 병렬 fire 로직은 보존 (discovery multiplier) — 힌트만 추가.
+    let ag7_cpu = ag7_best_host("cpu_heavy")
+    let ag7_gpu = ag7_best_host("gpu_heavy")
+    let ag7_log = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"AG7_HINT\",\"cpu_heavy\":\"" + ag7_cpu + "\",\"gpu_heavy\":\"" + ag7_gpu + "\"}"
+    try { append_file(DISPATCH_LOG, ag7_log + "\n") } catch e {}
 
     // ── B1: Proactive htz idle fire (모든 결과 로그 — return 응답 2026-04-11) ──
     let htz_proactive = proactive_htz_check(ts, epoch)

@@ -176,7 +176,9 @@ fn probe_ubu() -> str {
 
 fn probe_htz() -> str {
     // LC_ALL=C 예방: 로케일 의존 제거 (ubu 사례와 동일 방어)
-    let cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes hetzner \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nproc\" 2>/dev/null"
+    // R2: ssh alias 하드코딩 금지 — gate_config.jsonl htz_ssh_alias 참조
+    let htz_ssh = load_cfg("htz_ssh_alias", "hetzner")
+    let cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + htz_ssh + " \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nproc\" 2>/dev/null"
     let mut out = ""
     try { out = exec(cmd).trim() } catch e { out = "" }
     if len(out) == 0 {

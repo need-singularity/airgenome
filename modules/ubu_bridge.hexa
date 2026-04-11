@@ -23,13 +23,26 @@
 //    fn get_gpu_status() -> str
 //    fn fallback_local() -> void
 //
+//  인터페이스 Wave 1 (AG7 multi-host — 2026-04-12 추가):
+//    fn best_host_for(task_type: str) -> str          // "ubu"|"htz"|"none"
+//    fn host_ssh_alias(host_key: str) -> str          // → ssh config alias
+//    fn host_python(host_key: str) -> str             // → python3 binary
+//    fn host_worker_dir(host_key: str) -> str         // → remote workdir
+//    fn remote_exec_for(task_type: str, cmd: str) -> str
+//    fn exec_python_for(task_type: str, script: str) -> str
+//    fn gpu_submit_for(worker: str, args: str) -> str  // task_type="gpu_heavy" 고정
+//
+//  AG7 Consumer 의무: 기존 Wave 0 API 는 ubu 고정. 신규 코드는 Wave 1 API
+//  (dispatch_state.json 기반 자동 best-fit) 를 사용할 것.
+//
 //  Usage: import ubu_bridge; let ok = ubu_bridge::health()
 // ═══════════════════════════════════════════════════════════════════════
 
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"  // Wave 1 — AG7 multi-host API 추가 (2026-04-12)
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let LOG_FILE = env("HOME") + "/Dev/airgenome/forge/dispatch.log"
 let GROWTH_BUS = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
+let DISPATCH_STATE = env("HOME") + "/Dev/nexus/shared/dispatch_state.json"  // AG7 input
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Config loader (offload.hexa 와 동일 패턴)
@@ -202,6 +215,110 @@ fn fallback_local() -> void {
     let ev = "{\"ts\":\"" + ts + "\",\"source\":\"airgenome/ubu_bridge\",\"event\":\"fallback_ubu_offline\",\"domain\":\"airgenome\",\"type\":\"fallback\",\"phase\":\"ag3\",\"id\":\"ubu_offline\",\"value\":1,\"grade\":\"WARN\",\"resource_domain\":\"resource\",\"timestamp\":\"" + ts + "\"}"
     append_file(GROWTH_BUS, ev + "\n")
     return
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Wave 1 (AG7 multi-host) — dispatch_state.json 기반 best-fit 라우팅
+//  2026-04-12 골화. Consumer 는 기존 Wave 0 (ubu 고정) 대신 이 API 사용.
+// ═══════════════════════════════════════════════════════════════════════
+
+// best_host_for — dispatch_state.json 에서 task_type 에 맞는 best host key 반환
+// 반환값: "ubu" | "htz" | "none"  (파일/키 없으면 "ubu" fallback)
+fn best_host_for(task_type: str) -> str {
+    if file_exists(DISPATCH_STATE) == false { return "ubu" }
+    let raw = read_file(DISPATCH_STATE)
+    let tag = "\"" + task_type + "\":{\"host\":\""
+    if raw.contains(tag) == false { return "ubu" }
+    let after = raw.split(tag)[1]
+    let h = after.split("\"")[0]
+    if len(h) == 0 { return "ubu" }
+    return h
+}
+
+// host_key ("ubu"/"htz") → 실제 SSH config alias
+fn host_ssh_alias(host_key: str) -> str {
+    if host_key == "ubu" { return load_cfg("ssh_alias", "ubu") }
+    if host_key == "htz" { return load_cfg("htz_ssh_alias", "hetzner") }
+    if host_key == "hetzner" { return load_cfg("htz_ssh_alias", "hetzner") }
+    return REMOTE
+}
+
+// host_key → python3 binary 경로
+fn host_python(host_key: str) -> str {
+    if host_key == "ubu" { return UBU_PYTHON }
+    if host_key == "htz" { return load_cfg("htz_python", "python3") }
+    return UBU_PYTHON
+}
+
+// host_key → remote worker directory
+fn host_worker_dir(host_key: str) -> str {
+    if host_key == "ubu" { return UBU_WORKER }
+    if host_key == "htz" {
+        return load_cfg("htz_worker_dir", load_cfg("htz_nexus_dir", env("HOME") + "/Dev/nexus") + "/airgenome")
+    }
+    return UBU_WORKER
+}
+
+// remote_exec_for — task type 에 맞는 best host 에서 bash 실행
+fn remote_exec_for(task_type: str, cmd: str) -> str {
+    let host_key = best_host_for(task_type)
+    if host_key == "none" {
+        fallback_local()
+        return ""
+    }
+    let alias = host_ssh_alias(host_key)
+    write_file("/tmp/_ubu_bridge_for.sh", cmd)
+    try {
+        let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -o BatchMode=yes " + alias + " bash /dev/stdin < /tmp/_ubu_bridge_for.sh 2>&1")
+        let s = to_string(result)
+        if s.contains("exec error") {
+            fallback_local()
+            return ""
+        }
+        return s.trim()
+    } catch e {
+        fallback_local()
+        return ""
+    }
+}
+
+// exec_python_for — task type 에 맞는 best host 에서 python3 실행
+fn exec_python_for(task_type: str, script: str) -> str {
+    let host_key = best_host_for(task_type)
+    if host_key == "none" {
+        fallback_local()
+        return ""
+    }
+    let alias = host_ssh_alias(host_key)
+    let py = host_python(host_key)
+    write_file("/tmp/_ubu_bridge_for.py", script)
+    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " " + py + " - < /tmp/_ubu_bridge_for.py 2>&1")
+    let s = to_string(result)
+    if s.contains("exec error") {
+        fallback_local()
+        return ""
+    }
+    return s.trim()
+}
+
+// gpu_submit_for — gpu_heavy task 전용. GPU 있는 호스트만 선택됨 (load_balancer score)
+fn gpu_submit_for(worker: str, args: str) -> str {
+    let host_key = best_host_for("gpu_heavy")
+    if host_key == "none" {
+        fallback_local()
+        return ""
+    }
+    let alias = host_ssh_alias(host_key)
+    let py = host_python(host_key)
+    let wdir = host_worker_dir(host_key)
+    let cmd = "cd " + wdir + " && " + py + " " + worker + " " + args
+    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " \"" + cmd + "\" 2>&1")
+    let s = to_string(result)
+    if s.contains("exec error") {
+        fallback_local()
+        return ""
+    }
+    return s.trim()
 }
 
 // ═══════════════════════════════════════════════════════════════════════
