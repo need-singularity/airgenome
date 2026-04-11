@@ -1,0 +1,256 @@
+// airgenome/modules/mac_compute_zero.hexa — Mac Compute ZERO 가드 (AG6, L0 골화)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  AG6 골화 (2026-04-12) — 사용자 직접 명시:
+//    "자원연결된게 있으면 mac 자원은 쓰지 않는다"
+//    "1 규칙으로 등록 / 코어부터 만들고 / L0 스크립트로 고정 / 골화 진행"
+//
+//  Prime Directive:
+//    원격(ubu/htz/hetzner) 1개 이상 가용 → Mac heavy compute 절대 0
+//    Mac 은 오케스트레이션/UI/모니터링 전용 (AG3 strict)
+//
+//  동작 (30s 주기 launchd):
+//    1. check_remote(ubu) || check_remote(htz) — 하나라도 alive ?
+//    2. list_violators() — Mac hexa 프로세스 중 BLACKLIST 매칭 (compute)
+//    3. enforce() — TERM → 3s sleep → KILL 잔존
+//    4. log: forge/mac_compute_zero.log
+//
+//  Whitelist (orchestration/UI/monitor 만 허용):
+//    launcher_cap, menubar, sampler, ag3_*, infra_probe,
+//    auto_dispatch, resource_coordinator, detector,
+//    growth_bus, genome_harvest, session_*, usage_refresh,
+//    ramdisk, sync_remote, forge_sync_hetzner, cl.hexa,
+//    log_rotate, auto_vacuum, mac_compute_zero, ubu_hexa_guard
+//
+//  Blacklist (heavy compute 즉시 차단):
+//    blowup.hexa, mk2_hexa/native, shared/blowup, blowup_engine
+//
+//  Strict 모드 (R-MAC-01): remote 전부 down 시에도 compute 차단 (배터리/열 보호)
+// ═══════════════════════════════════════════════════════════════════════
+
+let SCRIPT  = "mac_compute_zero"
+let LOG     = env("HOME") + "/Dev/airgenome/forge/mac_compute_zero.log"
+let LOCK    = env("HOME") + "/.airgenome/mac_compute_zero.lock"
+let SSH_OPT = "-o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 -o BatchMode=yes"
+
+// ─── Whitelist (orchestration/UI/monitor) ────────────────────────────────
+let WHITELIST = [
+    "launcher_cap",
+    "menubar",
+    "sampler.hexa",
+    "ag3_feed",
+    "ag3_menubar_feed",
+    "ag3_loop",
+    "ag3_shipper",
+    "ag3_status",
+    "infra_probe",
+    "auto_dispatch",
+    "resource_coordinator",
+    "resource_guard",
+    "detector",
+    "growth_bus",
+    "genome_harvest",
+    "genome_pack",
+    "session_snapshot",
+    "session_resume",
+    "usage_refresh",
+    "ramdisk",
+    "sync_remote",
+    "forge_sync_hetzner",
+    "cl.hexa",
+    "log_rotate",
+    "auto_vacuum",
+    "mac_compute_zero",
+    "ubu_hexa_guard",
+    "ubu_bridge",
+    "implant.hexa",
+    "guard.hexa",
+    "gate_client",
+    "gate_handler"
+]
+
+// ─── Blacklist (heavy compute 즉시 차단) ─────────────────────────────────
+let BLACKLIST = [
+    "blowup.hexa",
+    "mk2_hexa/native",
+    "shared/blowup",
+    "blowup_engine",
+    "blowup_seed",
+    "seed_engine.hexa"
+]
+
+// ─── 유틸 ────────────────────────────────────────────────────────────────
+
+fn ts() -> str {
+    return try { exec("date '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" }
+}
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn log(msg: str) {
+    let line = ts() + " [AG6] " + msg
+    try { exec("mkdir -p \"$(dirname '" + LOG + "')\"") } catch e {}
+    try { exec("echo " + shquote(line) + " >> '" + LOG + "'") } catch e {}
+    println(line)
+}
+
+// ─── 1. Remote alive 체크 ───────────────────────────────────────────────
+
+fn check_remote(host: str) -> bool {
+    let r = try {
+        exec("ssh " + SSH_OPT + " " + host + " echo ag6_ok 2>&1").trim()
+    } catch e { "" }
+    if r.contains("ag6_ok") { return true }
+    return false
+}
+
+fn any_remote_alive() -> bool {
+    if check_remote("ubu") { return true }
+    if check_remote("htz") { return true }
+    if check_remote("hetzner") { return true }
+    return false
+}
+
+// ─── 2. Mac compute violators 탐지 ──────────────────────────────────────
+
+fn is_whitelisted(line: str) -> bool {
+    let i = 0
+    while i < len(WHITELIST) {
+        if line.contains(WHITELIST[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn is_blacklisted(line: str) -> bool {
+    let i = 0
+    while i < len(BLACKLIST) {
+        if line.contains(BLACKLIST[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+fn list_violators() -> list {
+    // macOS BSD pgrep 은 -a (cmdline 표시) 미지원 → ps 사용
+    let raw = try {
+        exec("ps -axo pid=,command= 2>/dev/null")
+    } catch e { "" }
+    let lines = raw.split("\n")
+    let mut violators = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) == 0 { i = i + 1; continue }
+        // IDE/세션 제외
+        if line.contains(".claude") { i = i + 1; continue }
+        if line.contains("Cursor") { i = i + 1; continue }
+        if line.contains("Code Helper") { i = i + 1; continue }
+        if line.contains("VSCode") { i = i + 1; continue }
+        // hexa 인터프리터 실행만 대상
+        if line.contains("hexa.real") == false {
+            if line.contains("hexa-lang/hexa") == false {
+                if line.contains("/hexa ") == false {
+                    i = i + 1; continue
+                }
+            }
+        }
+        // 자기 자신 제외
+        if line.contains("mac_compute_zero") { i = i + 1; continue }
+        // Blacklist 우선
+        if is_blacklisted(line) {
+            violators.push(line)
+            i = i + 1; continue
+        }
+        // Whitelist 통과
+        if is_whitelisted(line) { i = i + 1; continue }
+        // unknown — 보수적으로 log only (kill 안 함)
+        log("UNKNOWN " + line.substring(0, 120))
+        i = i + 1
+    }
+    return violators
+}
+
+// ─── 3. Enforce: TERM 3s → KILL ─────────────────────────────────────────
+
+fn extract_pid(line: str) -> str {
+    let parts = line.split(" ")
+    if len(parts) > 0 { return parts[0] }
+    return ""
+}
+
+fn enforce(violators: list) {
+    if len(violators) == 0 { return }
+    log("VIOLATION compute=" + to_string(len(violators)) + " — TERM")
+    let i = 0
+    while i < len(violators) {
+        let pid = extract_pid(violators[i])
+        if len(pid) > 0 {
+            try { exec("kill -TERM " + pid + " 2>/dev/null") } catch e {}
+            log("  TERM pid=" + pid + " " + violators[i].substring(0, 100))
+        }
+        i = i + 1
+    }
+    try { exec("sleep 3") } catch e {}
+    let j = 0
+    while j < len(violators) {
+        let pid = extract_pid(violators[j])
+        if len(pid) > 0 {
+            let alive = try {
+                exec("kill -0 " + pid + " 2>/dev/null && echo Y || echo N").trim()
+            } catch e { "N" }
+            if alive == "Y" {
+                try { exec("kill -KILL " + pid + " 2>/dev/null") } catch e {}
+                log("  KILL pid=" + pid + " (잔존)")
+            }
+        }
+        j = j + 1
+    }
+}
+
+// ─── Main ───────────────────────────────────────────────────────────────
+
+fn main() {
+    // 단일 인스턴스 lock
+    try { exec("mkdir -p " + env("HOME") + "/.airgenome") } catch e {}
+    let pid_str = try { exec("echo $$").trim() } catch e { "0" }
+    let prev = try {
+        exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim()
+    } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try {
+            exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim()
+        } catch e { "N" }
+        if alive == "Y" {
+            // 이전 인스턴스 살아있음 — silent skip
+            return
+        }
+    }
+    try { exec("echo " + pid_str + " > " + LOCK) } catch e {}
+
+    let alive = any_remote_alive()
+    let v = list_violators()
+
+    // heartbeat — 1 line / 30s (로그 rotate 관리 대상)
+    let alive_s = if alive { "Y" } else { "N" }
+    log("TICK remote_alive=" + alive_s + " violators=" + to_string(len(v)))
+
+    if alive {
+        if len(v) > 0 {
+            enforce(v)
+            log("DONE alive=true compute_killed=" + to_string(len(v)))
+        }
+    } else {
+        // strict 모드 (R-MAC-01): remote 전부 down 이어도 차단
+        if len(v) > 0 {
+            log("STRICT remote_all_down compute=" + to_string(len(v)) + " — terminating")
+            enforce(v)
+        }
+    }
+
+    try { exec("rm -f " + LOCK) } catch e {}
+}
+
+main()
