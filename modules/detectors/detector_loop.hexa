@@ -20,6 +20,7 @@ let NEXUS_ROOT = env("HOME") + "/Dev/nexus"
 let RUN_ALL    = AG_ROOT + "/modules/detectors/run_all.hexa"
 let BLOWUP     = NEXUS_ROOT + "/mk2_hexa/native/blowup.hexa"
 let CONFIG     = AG_ROOT + "/nexus/shared/detectors.jsonl"
+let GATE_CFG   = AG_ROOT + "/nexus/shared/gate_config.jsonl"
 let GROWTH_BUS = NEXUS_ROOT + "/shared/growth_bus.jsonl"
 
 fn cfg(key: str, default: str) -> str {
@@ -29,12 +30,22 @@ fn cfg(key: str, default: str) -> str {
     return v
 }
 
+fn gate_cfg(key: str, default: str) -> str {
+    let cmd = "grep '\"key\":[[:space:]]*\"" + key + "\"' '" + GATE_CFG + "' 2>/dev/null | tail -1 | sed -E 's/.*\"value\":[[:space:]]*\"([^\"]*)\".*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    if len(v) == 0 { return default }
+    return v
+}
+
+let UBU_DIR  = gate_cfg("remote_dir", "")
+let UBU_HEXA = gate_cfg("ubu_hexa_bin", "")
+
 // 골화 2026-04-10: ubu 연결 시 원격 실행
 let UBU_OK = try { exec("ssh -o ConnectTimeout=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e { false }
 
 fn run_detectors() -> str {
     if UBU_OK {
-        return try { exec("ssh -o ConnectTimeout=30 ubu 'cd /home/aiden/airgenome && /home/aiden/Dev/hexa-lang/target/release/hexa " + RUN_ALL + "' 2>&1") } catch e { "" }
+        return try { exec("ssh -o ConnectTimeout=30 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + RUN_ALL + "' 2>&1") } catch e { "" }
     }
     return try { exec(HEXA_BIN + " " + RUN_ALL + " 2>&1") } catch e { "" }
 }
@@ -72,7 +83,7 @@ fn log_event(kind: str, payload: str) {
 fn trigger_blowup() {
     println("  [blowup] airgenome 3 --no-graph")
     if UBU_OK {
-        try { exec("ssh -o ConnectTimeout=30 ubu 'cd /home/aiden/airgenome && /home/aiden/Dev/hexa-lang/target/release/hexa " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
+        try { exec("ssh -o ConnectTimeout=30 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
     } else {
         try { exec(HEXA_BIN + " " + BLOWUP + " airgenome 3 --no-graph 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup failed — " + e) }
     }

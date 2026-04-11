@@ -13,8 +13,16 @@ let DET_DIR  = "modules/detectors"
 let CFG_FILE = env("HOME") + "/Dev/airgenome/nexus/shared/detectors.jsonl"
 
 // 골화 2026-04-10: ubu 연결 시 원격 실행, Mac 로컬 금지
-let UBU_HEXA = "/home/aiden/Dev/hexa-lang/target/release/hexa"
-let UBU_DIR  = "/home/aiden/airgenome"
+// gate_config.jsonl 동적 로드 (R2 하드코딩 금지)
+let GATE_CFG = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
+fn gate_cfg(key: str, default: str) -> str {
+    let cmd = "grep '\"key\":[[:space:]]*\"" + key + "\"' '" + GATE_CFG + "' 2>/dev/null | tail -1 | sed -E 's/.*\"value\":[[:space:]]*\"([^\"]*)\".*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    if len(v) == 0 { return default }
+    return v
+}
+let UBU_HEXA = gate_cfg("ubu_hexa_bin", "")
+let UBU_DIR  = gate_cfg("remote_dir", "")
 let mut UBU_AVAILABLE = false
 try { UBU_AVAILABLE = exec("ssh -o ConnectTimeout=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e {}
 
