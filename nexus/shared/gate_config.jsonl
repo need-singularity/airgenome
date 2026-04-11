@@ -43,3 +43,7 @@
 {"key": "ubu_gate_sock", "value": "/mnt/ramdisk/airgenome/gate.sock", "desc": "Ubuntu AG3 gate unix socket 경로"}
 {"key": "infra_vast_enabled", "value": "false", "desc": "Vast.ai 프로브 활성화 (2026-04-11 decommissioned → false 기본). true 로 재활성 가능"}
 {"key": "infra_runpod_enabled", "value": "false", "desc": "Runpod 프로브 활성화 (기본 off — runpodctl CLI 10s 생략). true 로 재활성 가능"}
+{"key": "offload_htz_cooldown_s", "value": "60", "desc": "htz blowup 재발화 최소 간격 (2026-04-11: 300→60 공격적, 마구 발사 모드)"}
+{"key": "offload_htz_idle_threshold", "value": "70", "desc": "htz_cpu_pct 이 이 값 미만이면 idle 판정 (30→70 공격적)"}
+{"key": "offload_ubu_cooldown_s", "value": "60", "desc": "ubu blowup 재발화 최소 간격 (300→60 공격적)"}
+{"key": "offload_ubu_idle_gpu_threshold", "value": "50", "desc": "ubu gpu_util 이 이 값 미만이면 idle 판정 (5→50 공격적)"}

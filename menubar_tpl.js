@@ -91,22 +91,8 @@ var htzGpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  GPU ..
 htzGpuItem.enabled = false;
 menu.addItem(htzGpuItem);
 
-// ─── Vast.ai ───
-var vastHeader = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('\u2501\u2501\u2501 Vast.ai \u2501\u2501\u2501'), null, $(''));
-vastHeader.enabled = false;
-menu.addItem(vastHeader);
-
-var vastCpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  CPU ...'), null, $(''));
-vastCpuItem.enabled = false;
-menu.addItem(vastCpuItem);
-
-var vastRamItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  RAM ...'), null, $(''));
-vastRamItem.enabled = false;
-menu.addItem(vastRamItem);
-
-var vastGpuItem = $.NSMenuItem.alloc.initWithTitleActionKeyEquivalent($('  GPU ...'), null, $(''));
-vastGpuItem.enabled = false;
-menu.addItem(vastGpuItem);
+// ─── Vast.ai — 2026-04-11 decommissioned, UI 섹션 제거 ───
+// (infra_vast_enabled=false in gate_config.jsonl; probe_vast 는 즉시 offline 반환)
 
 menu.addItem($.NSMenuItem.separatorItem);
 
@@ -302,38 +288,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         htzGpuItem.title = $('  GPU  \u2014 CPU-only (EPYC)'); htzGpuItem.hidden = false;
     }
 
-    // ═══ Vast.ai ═══
-    if (infra && !infra._stale && infra.hosts && infra.hosts.vast) {
-        var v = infra.hosts.vast;
-        var vActive = v.status === 'active';
-        var vStatus = vActive ? '\u25CF' : '\u25CB';
-        vastHeader.title = $('\u2501\u2501\u2501 Vast.ai ' + vStatus + ' \u2501\u2501\u2501');
-        var vGpuUtil = v.gpu_util || 0;
-        var vVramUsed = v.vram_used_gb || 0;
-        var vVramTotal = v.vram_gb || 96;
-        var vVramPct = vVramTotal > 0 ? Math.round(vVramUsed * 100 / vVramTotal) : 0;
-        var vGpuName = v.gpu || '4x RTX 4090';
-        var vCpu = v.cpu_pct || 0;
-        var vCpuCores = v.cpu_cores || 0;
-        vastCpuItem.title = $('  CPU  ' + bar(vCpu, 100, bw) + '  ' + vCpu + '%' + (vCpuCores > 0 ? '  ' + vCpuCores + 'C' : ''));
-        vastCpuItem.hidden = false;
-        var vRamUsed = v.ram_used_gb || 0;
-        var vRamTotal = v.ram_total_gb || 0;
-        var vRamPct = vRamTotal > 0 ? Math.round(vRamUsed * 100 / vRamTotal) : 0;
-        vastRamItem.title = $('  RAM  ' + bar(vRamPct, 100, bw) + '  ' + vRamUsed + '/' + vRamTotal + 'GB');
-        vastRamItem.hidden = false;
-        vastGpuItem.title = $('  GPU  ' + bar(vGpuUtil, 100, bw) + '  ' + vGpuUtil + '%  VRAM ' + vVramUsed + '/' + vVramTotal + 'GB  ' + vGpuName);
-        vastGpuItem.hidden = false;
-    } else {
-        var vastTag = (infra && infra._stale) ? '\u25CB stale' : '\u25CB';
-        vastHeader.title = $('\u2501\u2501\u2501 Vast.ai ' + vastTag + ' \u2501\u2501\u2501');
-        vastCpuItem.title = $('  CPU  ' + bar(0, 100, bw) + '  0%');
-        vastCpuItem.hidden = false;
-        vastRamItem.title = $('  RAM  ' + bar(0, 100, bw) + '  0/0GB');
-        vastRamItem.hidden = false;
-        vastGpuItem.title = $('  GPU  ' + bar(0, 100, bw) + '  0%  VRAM 0/96GB  4x RTX 4090');
-        vastGpuItem.hidden = false;
-    }
+    // ═══ Vast.ai — 2026-04-11 decommissioned, UI 업데이트 스킵 ═══
 
     // ═══ Safety ═══
     var freeMB = j.free_mb || 0;
