@@ -28,6 +28,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 
 let REMOTE = load_cfg("ssh_alias", "ubu")
 let REMOTE_DIR = load_cfg("remote_dir", "/tmp/airgenome")
+let UBU_HOST = load_cfg("remote_host", "")
 
 // ═══════════════════════════════════════════════════════════════════════
 //  SSH helpers
@@ -57,7 +58,7 @@ fn remote_status() -> str {
     println("  ══════════════════════════════════════════════════════════════")
 
     // Connectivity
-    let ping = exec("ping -c 1 -W 1000 192.168.50.119 2>/dev/null | grep 'time=' | awk -F'time=' '{print $2}'").trim()
+    let ping = exec("ping -c 1 -W 1000 " + UBU_HOST + " 2>/dev/null | grep 'time=' | awk -F'time=' '{print $2}'").trim()
     if len(ping) == 0 {
         println("  [ERROR] Ubuntu unreachable")
         return "error"
@@ -152,7 +153,7 @@ fn run_bench() -> str {
 
     // Network latency
     println("")
-    let lat = exec("ping -c 5 192.168.50.119 2>/dev/null | tail -1").trim()
+    let lat = exec("ping -c 5 " + UBU_HOST + " 2>/dev/null | tail -1").trim()
     println("  network: " + lat)
 
     println("")
@@ -375,7 +376,7 @@ fn offload_help() -> str {
     println("  sync           — sync genome logs between MacBook ↔ Ubuntu")
     println("  help           — show this message")
     println("")
-    println("Remote: " + REMOTE + " (192.168.50.119)")
+    println("Remote: " + REMOTE + " (" + UBU_HOST + ")")
     println("Prime directive: observe only, never kill (both sides)")
     return "ok"
 }

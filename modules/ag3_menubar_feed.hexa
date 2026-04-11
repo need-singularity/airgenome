@@ -6,7 +6,7 @@
 //   - systemd 서비스 상태 (ag3-gate-daemon / ag3-loop / linux-harvest)
 //   - Ubuntu 시스템 부하 (load avg / CPU% / RAM used/total)
 //   - 오프로드 활성 작업 수 (pgrep airgenome 관련)
-//   - /mnt/ramdisk/airgenome/genome.ring 헤더 (write_idx / slot_count)
+//   - AG3 ring buffer 헤더 (gate_config: ubu_ring_path, write_idx / slot_count)
 //   - growth_bus.jsonl 의 최근 10분 fallback 이벤트 카운트
 //
 // 출력: ~/.airgenome/ag3_status.json
@@ -49,7 +49,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let REMOTE    = load_cfg("ssh_alias",    "ubu")
-let UBU_TMPFS = load_cfg("ubu_tmpfs",    "/mnt/ramdisk/airgenome")
+let UBU_TMPFS = load_cfg("ubu_tmpfs",    "")
 let RING_PATH = UBU_TMPFS + "/genome.ring"
 
 let mut interval = 5

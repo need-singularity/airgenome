@@ -46,7 +46,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 let REMOTE       = load_cfg("ssh_alias",       "ubu")
 let UBU_HEXA     = load_cfg("ubu_hexa_bin",    env("HOME") + "/Dev/airgenome/nexus/shared/bin/hexa")
 let UBU_BLOWUP   = load_cfg("ubu_blowup_hexa", env("HOME") + "/Dev/nexus/mk2_hexa/native/blowup.hexa")
-let RING_PATH    = load_cfg("ubu_ring_path",   "/mnt/ramdisk/airgenome/genome.ring")
+let RING_PATH    = load_cfg("ubu_ring_path",   "")
 
 // ── TIMESTAMP ───────────────────────────────────────────────────────────
 fn ts_now() -> str {

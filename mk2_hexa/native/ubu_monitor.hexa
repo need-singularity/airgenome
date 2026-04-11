@@ -35,7 +35,7 @@ fn load_cfg(key: str, fallback: str) -> str {
 }
 
 let REMOTE = load_cfg("ssh_alias", "ubu")
-let UBU_HOST = load_cfg("remote_host", "192.168.50.119")
+let UBU_HOST = load_cfg("remote_host", "")
 let UBU_PORT = load_cfg("remote_port", "9900")
 
 // ═══════════════════════════════════════════════════════════════════════
