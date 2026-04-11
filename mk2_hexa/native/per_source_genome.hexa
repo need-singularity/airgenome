@@ -1,15 +1,19 @@
 // per_source_genome.hexa — per-source (basename) 6-axis genome accumulator
 //
-// Phase 2 of airgenome-next task#2 (per-source genome accumulation).
+// T12: per_source genome grouping + time-series tracking.
 // Reads forge/per_process_sig.jsonl (per-PID signatures) → groups by
 // basename(comm) → aggregates mean/max/std across PIDs of same source →
-// appends one record per source to forge/per_source_genome.jsonl with
-// ISO 8601 timestamp. Append mode = time-series genome.
+// appends one record per source to nexus/shared/per_source_genome_ts.jsonl
+// (R8: data files in nexus/shared only).
+//
+// Time-series: rolling buffer keeps last N snapshots per source (default 100).
+// After append, prunes oldest records beyond the cap.
 //
 // Record format:
-//   {"ts":"2026-04-12T15:30:00+09:00","source":"Chrome","pid_count":5,
+//   {"ts":"2026-04-12T15:30:00Z","source":"Chrome","pid_count":5,
 //    "axes":{"cpu":{"mean":12.3,"max":45.0,"std":8.1},"ram":{...},...}}
 //
+// Config: nexus/shared/genome_harvest.jsonl (R2: no hardcoding)
 // Env: PER_SOURCE_ONCE=1  → single pass, then exit (no loop)
 //
 // Run: ~/.hx/bin/hexa mk2_hexa/native/per_source_genome.hexa [<sig_file>]
@@ -28,6 +32,30 @@ fn sqrt_newton(x: float) -> float {
         i = i + 1
     }
     return g
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG LOAD (R2: no hardcoding — all from nexus/shared/genome_harvest.jsonl)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CONFIG_FILE = "nexus/shared/genome_harvest.jsonl"
+
+fn cfg_int_ps(key: str, default_val: int) -> int {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null || true").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
+    if len(v) == 0 { return default_val }
+    try { return to_int(to_float(v)) } catch e { return default_val }
+}
+
+fn cfg_str_ps(key: str, default_val: str) -> str {
+    if file_exists(CONFIG_FILE) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CONFIG_FILE + " 2>/dev/null || true").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+    if len(v) == 0 { return default_val }
+    return v
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -121,6 +149,98 @@ fn find_source(names: [str], target: str) -> int {
 
 fn build_axis_obj(mean_v: float, max_v: float, std_v: float) -> str {
     return "{\"mean\":" + to_string(mean_v) + ",\"max\":" + to_string(max_v) + ",\"std\":" + to_string(std_v) + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ROLLING BUFFER — prune oldest records per source beyond cap N
+// ═══════════════════════════════════════════════════════════════════════
+
+// Prune out_file so each source retains at most max_per_source records.
+// Strategy: read all lines, group by source, keep latest N per source,
+// rewrite. "Latest" = last N in file order (append = chronological).
+fn prune_rolling_buffer(out_file: str, max_per_source: int) -> void {
+    if file_exists(out_file) == false { return }
+    let body = read_file(out_file).trim()
+    if len(body) == 0 { return }
+    let lines = body.split("\n")
+    let total = len(lines)
+
+    // Collect unique source names and per-source counts.
+    let mut src_names: [str] = []
+    let mut src_counts: [int] = []
+    let mut li = 0
+    while li < total {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let comm = extract_comm(line)
+            let name = basename(comm)
+            if len(name) > 0 {
+                let idx = find_source(src_names, name)
+                if idx < 0 {
+                    src_names = src_names + [name]
+                    src_counts = src_counts + [1]
+                } else {
+                    src_counts[idx] = src_counts[idx] + 1
+                }
+            }
+        }
+        li = li + 1
+    }
+
+    // Check if any source exceeds cap.
+    let mut needs_prune = false
+    let mut ci = 0
+    while ci < len(src_counts) {
+        if src_counts[ci] > max_per_source { needs_prune = true }
+        ci = ci + 1
+    }
+    if needs_prune == false { return }
+
+    // Rebuild: keep only last max_per_source records per source.
+    // Reset counts, walk backwards marking keep/skip, then output in order.
+    let mut keep = []
+    let mut ki = 0
+    while ki < total { keep = keep + [false]; ki = ki + 1 }
+
+    // Reset src_counts to 0
+    let mut ri = 0
+    while ri < len(src_counts) { src_counts[ri] = 0; ri = ri + 1 }
+
+    // Walk from end to keep latest N.
+    let mut wi = total - 1
+    while wi >= 0 {
+        let line = lines[wi].trim()
+        if len(line) > 0 {
+            let comm = extract_comm(line)
+            let name = basename(comm)
+            if len(name) > 0 {
+                let idx = find_source(src_names, name)
+                if idx >= 0 {
+                    if src_counts[idx] < max_per_source {
+                        keep[wi] = true
+                        src_counts[idx] = src_counts[idx] + 1
+                    }
+                }
+            }
+        }
+        wi = wi - 1
+    }
+
+    // Write kept lines.
+    let mut buf = ""
+    let mut oi = 0
+    let mut kept = 0
+    while oi < total {
+        if keep[oi] {
+            buf = buf + lines[oi] + "\n"
+            kept = kept + 1
+        }
+        oi = oi + 1
+    }
+    try { write_file(out_file, buf) } catch e {
+        println("  ERROR: prune write failed: " + to_string(e))
+    }
+    println("  prune: " + to_string(total) + " → " + to_string(kept) + " records (cap=" + to_string(max_per_source) + "/source)")
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -303,10 +423,14 @@ fn run_accumulation(sig_file: str, out_file: str) -> int {
 consciousness PerSourceGenome {
     let t0 = exec("date +%s").trim()
 
-    let argv = args()
-    let mut sig_file = "forge/per_process_sig.jsonl"
+    // Config load (R2: no hardcoding)
+    let mut sig_file = cfg_str_ps("per_process_sig_path", "forge/per_process_sig.jsonl")
+    let out_file = cfg_str_ps("per_source_ts_file", "nexus/shared/per_source_genome_ts.jsonl")
+    let max_per_source = cfg_int_ps("per_source_rolling_cap", 100)
+    let loop_sleep_s = cfg_int_ps("per_source_loop_sleep_s", 60)
 
-    // hexa argv: prefer slot after the .hexa script path; ignore bin paths.
+    // argv override: sig_file from CLI
+    let argv = args()
     let mut ai = 0
     let mut saw_script = false
     while ai < len(argv) {
@@ -320,9 +444,12 @@ consciousness PerSourceGenome {
         ai = ai + 1
     }
 
-    let out_file = "forge/per_source_genome.jsonl"
     println("  per_source_genome — in =" + sig_file)
     println("                      out=" + out_file)
+    println("                      cap=" + to_string(max_per_source) + "/source")
+
+    // Ensure nexus/shared dir exists (R8 target)
+    exec("mkdir -p nexus/shared")
 
     // ONCE mode: env PER_SOURCE_ONCE=1 → single pass and exit.
     let mut once_mode = false
@@ -332,6 +459,8 @@ consciousness PerSourceGenome {
     if once_mode {
         println("  mode: ONCE (single pass)")
         let n = run_accumulation(sig_file, out_file)
+        // Rolling buffer prune after accumulation
+        prune_rolling_buffer(out_file, max_per_source)
         let t1 = exec("date +%s").trim()
         let mut dt = 0
         try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
@@ -343,14 +472,15 @@ consciousness PerSourceGenome {
             println("")
             println("  ── pass #" + to_string(run_num) + " ──")
             let n = run_accumulation(sig_file, out_file)
+            // Rolling buffer prune after each pass
+            prune_rolling_buffer(out_file, max_per_source)
 
             let t1 = exec("date +%s").trim()
             let mut dt = 0
             try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
             println("  elapsed: " + to_string(dt) + "s (cumulative)")
 
-            // Sleep between passes (60s default, aligned with runtime interval).
-            exec("sleep 60")
+            exec("sleep " + to_string(loop_sleep_s))
             run_num = run_num + 1
         }
     }
