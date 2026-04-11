@@ -1,0 +1,72 @@
+#!/bin/bash
+# airgenome CLI — AI-native test & control
+# Usage:
+#   airgenome --test     AI-native component check
+#   airgenome --status   Print current state
+#   airgenome            Launch menubar app
+
+set -euo pipefail
+HOME="${HOME:-/Users/$(whoami)}"
+STATE="/tmp/airgenome-state.json"
+CONFIG="$HOME/.airgenome/config.json"
+APP="/Applications/Airgenome.app"
+
+case "${1:-}" in
+  --test)
+    echo "⬡ airgenome test mode (AI-native)"
+    echo "━━━ component check ━━━"
+    checks=0; fails=0
+    # app bundle
+    if [ -d "$APP" ]; then echo "  ✅ Airgenome.app"; ((checks++)); else echo "  ❌ Airgenome.app MISSING"; ((fails++)); fi
+    # menubar template
+    TPL="$HOME/.hx/packages/airgenome/menubar_tpl.js"
+    if [ -f "$TPL" ]; then echo "  ✅ menubar_tpl.js ($(wc -l < "$TPL") lines)"; ((checks++)); else echo "  ❌ menubar_tpl.js MISSING"; ((fails++)); fi
+    # state file
+    if [ -f "$STATE" ]; then
+      INFO=$(python3 -c "import json;j=json.load(open('$STATE'));print('cpu=%s%% ram=%s%% load=%s gate=%s'%(j.get('cpu','?'),j.get('ram','?'),j.get('load','?'),j.get('gate','?')))" 2>/dev/null || echo "parse error")
+      echo "  ✅ state: $INFO"
+      ((checks++))
+    else echo "  ❌ state file MISSING"; ((fails++)); fi
+    # config
+    if [ -f "$CONFIG" ]; then echo "  ✅ config.json"; ((checks++)); else echo "  ⚠️  config.json (optional)"; fi
+    # sampler
+    if launchctl list com.airgenome.sampler &>/dev/null; then echo "  ✅ sampler (launchd)"; ((checks++)); else echo "  ❌ sampler NOT loaded"; ((fails++)); fi
+    # menubar UI
+    if pgrep -qf 'Airgenome.app/Contents/MacOS/applet'; then echo "  ✅ menubar UI (.app)"; ((checks++));
+    elif pgrep -qf 'airgenome-menubar.js'; then echo "  ✅ menubar UI (osascript)"; ((checks++));
+    else echo "  ⚠️  menubar UI not running"; fi
+    # ramdisk
+    if mount | grep -q AIRGENOME_RAM; then
+      echo "  ✅ ramdisk $(df -h /Volumes/AIRGENOME_RAM 2>/dev/null | tail -1 | awk '{print $3"/"$2}')"
+      ((checks++))
+    else echo "  ⚠️  ramdisk not mounted"; fi
+    # hexa
+    HEXA="$(command -v hexa 2>/dev/null || echo "$HOME/.hx/bin/hexa")"
+    if [ -x "$HEXA" ]; then echo "  ✅ hexa interpreter"; ((checks++)); else echo "  ❌ hexa NOT found"; ((fails++)); fi
+    # launchd services
+    local_svcs=$(launchctl list 2>/dev/null | grep -c airgenome || true)
+    echo "  ✅ launchd services: $local_svcs loaded"
+    ((checks++))
+    echo "━━━ result: $checks passed, $fails failed ━━━"
+    [ "$fails" -gt 0 ] && exit 1
+    exit 0
+    ;;
+  --status)
+    if [ -f "$STATE" ]; then
+      python3 -c "import json;j=json.load(open('$STATE'));print('⬡ cpu=%s%% ram=%s%% load=%s gate=%s'%(j.get('cpu','?'),j.get('ram','?'),j.get('load','?'),j.get('gate','?')))"
+    else
+      echo "⬡ no state"
+    fi
+    exit 0
+    ;;
+  --help|-h)
+    echo "Usage: airgenome [--test|--status|--help]"
+    echo "  (no args)  Launch menubar app"
+    echo "  --test     AI-native component check"
+    echo "  --status   Print current system state"
+    exit 0
+    ;;
+esac
+
+# Launch app
+open "$APP"

@@ -8,7 +8,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>pgrep -f 'osascript.*airgenome-menubar' &amp;&amp; exit 0; DIR=/Users/ghost/.hx/packages/airgenome; STATE=/tmp/airgenome-state.json; CONFIG=$HOME/.airgenome/config.json; JS=/tmp/airgenome-menubar.js; sed -e "s|__STATE__|${STATE}|g" -e "s|__CONFIG__|${CONFIG}|g" -e "s|__DIR__|${DIR}|g" "$DIR/menubar_tpl.js" > "$JS" &amp;&amp; exec /usr/bin/osascript -l JavaScript "$JS"</string>
+        <string>pgrep -qf 'Airgenome.app/Contents/MacOS/applet' &amp;&amp; exit 0; exec /Applications/Airgenome.app/Contents/MacOS/applet</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

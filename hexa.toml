@@ -1,6 +1,6 @@
 [package]
 name = "airgenome"
 version = "4.0.0"
-entry = "docs/gates.hexa"
+entry = "run.hexa"
 
 [dependencies]
