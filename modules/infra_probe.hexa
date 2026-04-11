@@ -413,28 +413,49 @@ fn probe_runpod() -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  Recommendation engine (simple heuristic, Prime Directive safe)
+//  Recommendation engine — AG7 Deprecated (2026-04-12)
+//
+//  이전: 정적 하드코딩 heuristic (runpod > vast > ubu GPU, htz CPU...)
+//  현재: load_balancer.hexa (AG7) 의 dispatch_state.json best 필드를 snapshot.
+//        실시간 score 기반 → consumer 는 dispatch_state.json 직접 참조 권장.
+//        이 함수는 infra_state.recommendation 필드 backward compat 목적만 유지.
+//
+//  Consumer 0 건 확인 (grep "recommendation" 참조 없음, 2026-04-12).
+//  향후 완전 제거 가능.
 // ═══════════════════════════════════════════════════════════════════════
 
+fn extract_best_host(raw: str, task: str) -> str {
+    let tag = "\"" + task + "\":{\"host\":\""
+    if raw.contains(tag) == false { return "unknown" }
+    let after = raw.split(tag)[1]
+    let h = after.split("\"")[0]
+    if len(h) == 0 { return "unknown" }
+    return h
+}
+
 fn make_recommendation(mac_json: str, ubu_json: str, htz_json: str, runpod_json: str, vast_json: str) -> str {
-    // GPU task: prefer runpod (H100 80GB) > vast (96GB VRAM) > ubu (12GB)
-    let mut gpu_task = "runpod"
-    if runpod_json.contains("\"offline\"") { gpu_task = "vast" }
-    if runpod_json.contains("\"offline\"") && vast_json.contains("\"offline\"") { gpu_task = "ubu" }
-    if ubu_json.contains("\"offline\"") && vast_json.contains("\"offline\"") && runpod_json.contains("\"offline\"") { gpu_task = "none" }
-
-    // CPU task: always htz (32T, 124GB)
-    let mut cpu_task = "htz"
-    if htz_json.contains("\"offline\"") { cpu_task = "ubu" }
-
-    // Realtime GPU: ubu (local LAN, low latency)
-    let mut realtime_gpu = "ubu"
-    if ubu_json.contains("\"offline\"") { realtime_gpu = "runpod" }
-
-    // Avoid: mac (always, unless everything else offline)
-    let avoid = "mac"
-
-    return "\"recommendation\":{\"gpu_task\":\"" + gpu_task + "\",\"cpu_task\":\"" + cpu_task + "\",\"realtime_gpu\":\"" + realtime_gpu + "\",\"avoid\":\"" + avoid + "\"}"
+    // AG7 dispatch_state.best snapshot (실시간 score 기반)
+    let ds_path = env("HOME") + "/Dev/nexus/shared/dispatch_state.json"
+    let mut gpu_task = "none"
+    let mut cpu_task = "none"
+    let mut realtime_gpu = "none"
+    let mut source = "fallback_static"
+    if file_exists(ds_path) {
+        let ds_raw = read_file(ds_path)
+        gpu_task = extract_best_host(ds_raw, "gpu_heavy")
+        cpu_task = extract_best_host(ds_raw, "cpu_heavy")
+        realtime_gpu = extract_best_host(ds_raw, "realtime_gpu")
+        source = "dispatch_state.best"
+    } else {
+        // dispatch_state 없으면 legacy static heuristic
+        gpu_task = "ubu"
+        if runpod_json.contains("\"offline\"") == false { gpu_task = "runpod" }
+        cpu_task = "htz"
+        if htz_json.contains("\"offline\"") { cpu_task = "ubu" }
+        realtime_gpu = "ubu"
+        if ubu_json.contains("\"offline\"") { realtime_gpu = "runpod" }
+    }
+    return "\"recommendation\":{\"gpu_task\":\"" + gpu_task + "\",\"cpu_task\":\"" + cpu_task + "\",\"realtime_gpu\":\"" + realtime_gpu + "\",\"avoid\":\"mac\",\"source\":\"" + source + "\",\"deprecated_ag7\":\"see dispatch_state.json best field\"}"
 }
 
 // ═══════════════════════════════════════════════════════════════════════
