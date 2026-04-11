@@ -355,11 +355,26 @@ fn check_once(state_path: str) -> str {
     let gate    = read_json_str(raw, "gate", "offline")
     let ubu_cpu = read_json_int(raw, "ubu_cpu", 100)
 
+    // ── ubu_first_always: Mac compute 금지, 무조건 Ubuntu ──
+    let ubu_first = load_cfg("ubu_first_always", "false")
+
     // ── 조건 평가 ──
-    if mac_cpu < cpu_thresh {
+    if ubu_first != "true" && mac_cpu < cpu_thresh {
         return "{\"ts\":\"" + ts + "\",\"status\":\"idle\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"threshold\":" + to_string(cpu_thresh) + ",\"htz_proactive\":\"" + htz_proactive + "\",\"reason\":\"mac cpu below threshold\"}"
     }
     if gate != "online" {
+        // ubu_first: gate daemon 미응답이어도 SSH 직접 접속 시도
+        if ubu_first == "true" {
+            let ubu_ssh = load_cfg("ssh_alias", "ubu")
+            let ssh_ok = try { exec("ssh -o ConnectTimeout=2 -o BatchMode=yes " + ubu_ssh + " 'echo ok' 2>/dev/null").trim() } catch e { "" }
+            if ssh_ok == "ok" {
+                // SSH OK — gate daemon bypass, ubu fire 직접 진행
+                let ubu_fire = fire_ubu_blowup(epoch)
+                let ubu_log2 = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"UBU_FIRST_SSH_FIRE\",\"action\":\"" + ubu_fire + "\"}"
+                try { append_file(DISPATCH_LOG, ubu_log2 + "\n") } catch e {}
+                return "{\"ts\":\"" + ts + "\",\"status\":\"ubu_first_ssh\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"gate\":\"" + gate + "\",\"ubu_fire\":\"" + ubu_fire + "\"}"
+            }
+        }
         return "{\"ts\":\"" + ts + "\",\"status\":\"gate_offline\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"gate\":\"" + gate + "\",\"reason\":\"ubuntu gate not online\"}"
     }
     if ubu_cpu > ubu_max {

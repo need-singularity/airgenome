@@ -441,6 +441,22 @@ while true {
 
     prev_level = level
 
+    // ── v3.0 FORECAST (60 사이클마다 = ~15분 간격) ──
+    if cycle % 60 == 0 && cycle > 0 {
+        let FC_MOD = DIR + "/modules/forecast.hexa"
+        if file_exists(FC_MOD) {
+            try { exec(HEXA_BIN + " " + FC_MOD + " >> /tmp/airgenome-forecast.log 2>&1 &") } catch e {}
+        }
+    }
+
+    // ── v3.0 ANOMALY DETECTION (12 사이클마다 = ~3분 간격) ──
+    if cycle % 12 == 0 && cycle > 0 {
+        let AN_MOD = DIR + "/modules/anomaly_gate.hexa"
+        if file_exists(AN_MOD) {
+            try { exec(HEXA_BIN + " " + AN_MOD + " >> /tmp/airgenome-anomaly.log 2>&1 &") } catch e {}
+        }
+    }
+
     // ── LOG ROTATION (100 사이클마다 = ~25분 간격) ──
     if cycle % 100 == 0 {
         let log_max = read_jsonl_val(gate_cfg, "log_rotate_max_bytes", 10485760)

@@ -15,7 +15,8 @@
 {"key": "log_rotate_max_bytes", "value": "10485760", "desc": "dispatch.log 최대 바이트 (10MB)"}
 {"key": "log_rotate_max_files", "value": "5", "desc": "dispatch.log 보관 세대 수"}
 {"key": "log_rotate_path", "value": "$HOME/Dev/airgenome/forge/dispatch.log", "desc": "rotation 대상 로그 경로 (절대경로, $HOME 치환 지원)"}
-{"key": "offload_cpu_threshold", "value": "50", "desc": "Mac CPU% 이상이면 오프로드 후보 탐색 (80→50 하향: trustd/mediaanalysisd 폭주 방지)"}
+{"key": "offload_cpu_threshold", "value": "0", "desc": "Mac CPU 임계치 0 = 항상 오프로드 (2026-04-12: Mac 자원 사용 금지, 전부 Ubuntu)"}
+{"key": "ubu_first_always", "value": "true", "desc": "Ubuntu-First 절대 정책: Mac은 오케스트레이션/UI만, compute는 무조건 Ubuntu (2026-04-12)"}
 {"key": "offload_ubu_max_cpu", "value": "70", "desc": "Ubuntu CPU% 이하일 때만 오프로드 권장"}
 {"key": "offload_htz_max_cpu", "value": "70", "desc": "Hetzner CPU% 이하일 때만 오프로드 권장 (ubu busy fallback)"}
 {"key": "offload_patterns", "value": "hexa,python3,node,cargo,gcc,clang,trustd,mediaanalysisd,mds_stores", "desc": "오프로드 대상 프로세스 패턴 (comma-sep)"}

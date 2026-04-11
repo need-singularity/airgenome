@@ -1,0 +1,1 @@
+{"ts":1775919533,"version":"0.2.0","system":{"ram_z":0.004182108425403024,"cpu_z":-1.1462397540591587,"severity":"ok","baseline_ram_mean":16152.576636904761,"baseline_cpu_mean":237.86904761904762},"gates":{"n_checked":8,"n_anomalies":1,"names":"terminal"},"anomaly_score":0.15283196720788783,"z_threshold":2.5}

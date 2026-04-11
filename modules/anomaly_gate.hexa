@@ -1,0 +1,324 @@
+// modules/anomaly_gate.hexa — v3.0 gate-level anomaly detection
+// 게놈 시계열 baseline → z-score 이상탐지 → growth_bus alert
+//
+// Usage: hexa modules/anomaly_gate.hexa
+//   reads: genomes.log (baseline), /tmp/airgenome-state.json (current)
+//   writes: forge/anomaly_gate.json (latest result)
+//           nexus/shared/growth_bus.jsonl (alert, severity=high only)
+//
+// 탐지 2단계:
+//   1. system-level: 전체 RAM/CPU 총합의 baseline 대비 z-score
+//   2. per-gate: 개별 게이트의 baseline 대비 z-score (최근 entry 기반)
+//
+// 호출 주기: sampler에서 ~12 사이클(~3분)마다 1회
+// Prime Directive safe — read/write만, kill 없음
+
+let VERSION = "0.2.0"
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let GENOMES_LOG = AG_HOME + "/genomes.log"
+let STATE_PATH = try { exec("echo ${TMPDIR:-/tmp}").trim() } catch e { "/tmp" } + "/airgenome-state.json"
+let ANOMALY_OUT = AG_HOME + "/forge/anomaly_gate.json"
+let GROWTH_BUS = AG_HOME + "/nexus/shared/growth_bus.jsonl"
+let GATE_CFG = AG_HOME + "/nexus/shared/gate_config.jsonl"
+
+fn cfg_float(key: str, fallback: float) -> float {
+    if file_exists(GATE_CFG) == false { return fallback }
+    let raw = read_file(GATE_CFG)
+    let lines = raw.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 && line.contains("\"" + key + "\"") {
+            let parsed = json_parse(line)
+            if parsed["key"] == key {
+                try { return to_float(to_string(parsed["value"])) } catch e {}
+            }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let Z_THRESHOLD = cfg_float("anomaly_z_threshold", 2.5)
+let ALERT_COOLDOWN = 300
+
+// ── Newton sqrt ────────────────────────────────────────────────────
+fn nsqrt(v: float) -> float {
+    if v <= 0.0 { return 0.0 }
+    let mut g = v / 2.0
+    let mut i = 0
+    while i < 8 { g = (g + v / g) / 2.0; i = i + 1 }
+    return g
+}
+
+// ── parse genomes.log ──────────────────────────────────────────────
+// per row: total RAM (MB sum), total CPU (% sum)
+// per gate: last entry's values for per-gate check
+let mut hist_ram = []
+let mut hist_cpu = []
+
+// per-gate baselines (parallel arrays)
+let mut bl_names = []
+let mut bl_ram_sum = []
+let mut bl_cpu_sum = []
+let mut bl_ram_sq = []
+let mut bl_cpu_sq = []
+let mut bl_n = []
+
+// last entry per-gate values
+let mut last_gate_names = []
+let mut last_gate_ram = []
+let mut last_gate_cpu = []
+
+fn parse_log() -> int {
+    if file_exists(GENOMES_LOG) == false { return 0 }
+    let content = read_file(GENOMES_LOG)
+    let lines = content.split("\n")
+    let mut row = 0
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let parts = line.split("\t")
+            if len(parts) >= 2 {
+                let mut total_ram = 0.0
+                let mut total_cpu = 0.0
+                // clear last entry arrays (will be overwritten each row, last wins)
+                let is_last = (i >= len(lines) - 2)
+                if is_last {
+                    last_gate_names = []
+                    last_gate_ram = []
+                    last_gate_cpu = []
+                }
+                let mut j = 1
+                while j < len(parts) {
+                    let p = parts[j]
+                    if p.contains(":") && p.contains("/") {
+                        let gv = p.split(":")
+                        if len(gv) >= 2 {
+                            let gate = gv[0]
+                            let vals = gv[1].split("/")
+                            if len(vals) >= 2 {
+                                let mut ram = 0.0
+                                let mut cpu = 0.0
+                                try { ram = to_float(vals[0]) } catch e {}
+                                try { cpu = to_float(vals[1]) } catch e {}
+                                total_ram = total_ram + ram
+                                total_cpu = total_cpu + cpu
+                                // per-gate accumulation
+                                let mut gidx = -1
+                                let mut si = 0
+                                while si < len(bl_names) {
+                                    if bl_names[si] == gate { gidx = si }
+                                    si = si + 1
+                                }
+                                if gidx < 0 {
+                                    gidx = len(bl_names)
+                                    bl_names = bl_names + [gate]
+                                    bl_ram_sum = bl_ram_sum + [0.0]
+                                    bl_cpu_sum = bl_cpu_sum + [0.0]
+                                    bl_ram_sq = bl_ram_sq + [0.0]
+                                    bl_cpu_sq = bl_cpu_sq + [0.0]
+                                    bl_n = bl_n + [0]
+                                }
+                                bl_ram_sum[gidx] = bl_ram_sum[gidx] + ram
+                                bl_cpu_sum[gidx] = bl_cpu_sum[gidx] + cpu
+                                bl_ram_sq[gidx] = bl_ram_sq[gidx] + ram * ram
+                                bl_cpu_sq[gidx] = bl_cpu_sq[gidx] + cpu * cpu
+                                bl_n[gidx] = bl_n[gidx] + 1
+                                if is_last {
+                                    last_gate_names = last_gate_names + [gate]
+                                    last_gate_ram = last_gate_ram + [ram]
+                                    last_gate_cpu = last_gate_cpu + [cpu]
+                                }
+                            }
+                        }
+                    }
+                    j = j + 1
+                }
+                hist_ram = hist_ram + [total_ram]
+                hist_cpu = hist_cpu + [total_cpu]
+                row = row + 1
+            }
+        }
+        i = i + 1
+    }
+    return row
+}
+
+// ── read current state ─────────────────────────────────────────────
+fn read_state_val(key: str) -> float {
+    if file_exists(STATE_PATH) == false { return 0.0 }
+    let raw = read_file(STATE_PATH)
+    if raw.contains("\"" + key + "\"") == false { return 0.0 }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim()
+    try { return to_float(val_s) } catch e { return 0.0 }
+}
+
+// ── alert persistence ──────────────────────────────────────────────
+let ALERT_TS_FILE = AG_HOME + "/forge/.anomaly_alert_ts"
+fn load_alert_ts(key: str) -> int {
+    if file_exists(ALERT_TS_FILE) == false { return 0 }
+    let raw = read_file(ALERT_TS_FILE)
+    if raw.contains("\"" + key + "\"") == false { return 0 }
+    let after = raw.split("\"" + key + "\"")[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim()
+    try { return to_int(to_float(val_s)) } catch e { return 0 }
+}
+fn save_alert_ts_entry(key: str, ts: int) {
+    let mut existing = "{}"
+    if file_exists(ALERT_TS_FILE) {
+        existing = read_file(ALERT_TS_FILE).trim()
+        if len(existing) < 2 { existing = "{}" }
+    }
+    if existing.contains("\"" + key + "\"") {
+        let before = existing.split("\"" + key + "\"")[0]
+        let after_raw = existing.split("\"" + key + "\"")[1]
+        let mut rest = "}"
+        if after_raw.contains(",") { rest = "," + after_raw.split(",")[1] }
+        existing = before + "\"" + key + "\":" + to_string(ts) + rest
+    } else {
+        if existing == "{}" {
+            existing = "{\"" + key + "\":" + to_string(ts) + "}"
+        } else {
+            existing = existing.split("}")[0] + ",\"" + key + "\":" + to_string(ts) + "}"
+        }
+    }
+    let tmp = ALERT_TS_FILE + ".tmp"
+    try { write_file(tmp, existing); exec("mv -f '" + tmp + "' '" + ALERT_TS_FILE + "'") } catch e {}
+}
+
+// ── main ───────────────────────────────────────────────────────────
+let n_rows = parse_log()
+if n_rows < 5 {
+    println("[anomaly] skip: " + to_string(n_rows) + " rows < 5")
+    return
+}
+
+let now_ts = try { to_int(to_float(exec("date +%s").trim())) } catch e { 0 }
+let cur_cpu = read_state_val("cpu")
+let cur_ram = read_state_val("ram")
+let cur_swap = read_state_val("swap")
+
+// ── 1. system-level anomaly ────────────────────────────────────────
+// baseline mean/std from historical system totals
+let mut sys_ram_sum = 0.0
+let mut sys_cpu_sum = 0.0
+let mut sys_ram_sq = 0.0
+let mut sys_cpu_sq = 0.0
+let mut hi = 0
+while hi < n_rows {
+    sys_ram_sum = sys_ram_sum + hist_ram[hi]
+    sys_cpu_sum = sys_cpu_sum + hist_cpu[hi]
+    sys_ram_sq = sys_ram_sq + hist_ram[hi] * hist_ram[hi]
+    sys_cpu_sq = sys_cpu_sq + hist_cpu[hi] * hist_cpu[hi]
+    hi = hi + 1
+}
+let nf = to_float(to_string(n_rows))
+let sys_ram_mean = sys_ram_sum / nf
+let sys_cpu_mean = sys_cpu_sum / nf
+let mut sys_ram_std = nsqrt(sys_ram_sq / nf - sys_ram_mean * sys_ram_mean)
+let mut sys_cpu_std = nsqrt(sys_cpu_sq / nf - sys_cpu_mean * sys_cpu_mean)
+if sys_ram_std < 100.0 { sys_ram_std = 100.0 }
+if sys_cpu_std < 5.0 { sys_cpu_std = 5.0 }
+
+// current system total from last genomes.log entry
+let cur_sys_ram = hist_ram[n_rows - 1]
+let cur_sys_cpu = hist_cpu[n_rows - 1]
+let sys_ram_z = (cur_sys_ram - sys_ram_mean) / sys_ram_std
+let sys_cpu_z = (cur_sys_cpu - sys_cpu_mean) / sys_cpu_std
+
+let abs_sys_ram_z = if sys_ram_z < 0.0 { 0.0 - sys_ram_z } else { sys_ram_z }
+let abs_sys_cpu_z = if sys_cpu_z < 0.0 { 0.0 - sys_cpu_z } else { sys_cpu_z }
+
+let mut sys_severity = "ok"
+let mut sys_flags = ""
+if abs_sys_ram_z > Z_THRESHOLD { sys_flags = "ram"; sys_severity = "warn" }
+if abs_sys_cpu_z > Z_THRESHOLD {
+    if len(sys_flags) > 0 { sys_flags = sys_flags + ",cpu" } else { sys_flags = "cpu" }
+    sys_severity = "warn"
+}
+let sys_max_z = if abs_sys_ram_z > abs_sys_cpu_z { abs_sys_ram_z } else { abs_sys_cpu_z }
+if sys_max_z > Z_THRESHOLD * 1.5 { sys_severity = "high" }
+
+// ── 2. per-gate anomaly (last entry vs baseline) ──────────────────
+let mut n_gate_anomalies = 0
+let mut gate_anomaly_names = ""
+let mut gi = 0
+while gi < len(last_gate_names) {
+    let gate = last_gate_names[gi]
+    // find baseline index
+    let mut bidx = -1
+    let mut si = 0
+    while si < len(bl_names) {
+        if bl_names[si] == gate { bidx = si }
+        si = si + 1
+    }
+    if bidx >= 0 && bl_n[bidx] >= 3 {
+        let gn = to_float(to_string(bl_n[bidx]))
+        let g_ram_mean = bl_ram_sum[bidx] / gn
+        let g_cpu_mean = bl_cpu_sum[bidx] / gn
+        let mut g_ram_std = nsqrt(bl_ram_sq[bidx] / gn - g_ram_mean * g_ram_mean)
+        let mut g_cpu_std = nsqrt(bl_cpu_sq[bidx] / gn - g_cpu_mean * g_cpu_mean)
+        if g_ram_std < 10.0 { g_ram_std = 10.0 }
+        if g_cpu_std < 1.0 { g_cpu_std = 1.0 }
+
+        let g_ram_z = (last_gate_ram[gi] - g_ram_mean) / g_ram_std
+        let g_cpu_z = (last_gate_cpu[gi] - g_cpu_mean) / g_cpu_std
+        let abs_gr = if g_ram_z < 0.0 { 0.0 - g_ram_z } else { g_ram_z }
+        let abs_gc = if g_cpu_z < 0.0 { 0.0 - g_cpu_z } else { g_cpu_z }
+        let g_max = if abs_gr > abs_gc { abs_gr } else { abs_gc }
+
+        if g_max > Z_THRESHOLD {
+            n_gate_anomalies = n_gate_anomalies + 1
+            if len(gate_anomaly_names) > 0 { gate_anomaly_names = gate_anomaly_names + "," }
+            gate_anomaly_names = gate_anomaly_names + gate
+
+            // alert if high
+            if g_max > Z_THRESHOLD * 1.5 {
+                let alert_key = "gate_" + gate
+                let last_a = load_alert_ts(alert_key)
+                if (now_ts - last_a) > ALERT_COOLDOWN {
+                    let ts_str = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "" }
+                    let ev = "{\"ts\":\"" + ts_str + "\",\"source\":\"anomaly_gate\",\"type\":\"gate_anomaly\",\"gate\":\"" + gate + "\",\"severity\":\"high\",\"ram_z\":" + to_string(g_ram_z) + ",\"cpu_z\":" + to_string(g_cpu_z) + "}"
+                    try { exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'") } catch e {}
+                    save_alert_ts_entry(alert_key, now_ts)
+                }
+            }
+        }
+    }
+    gi = gi + 1
+}
+
+// system-level alert
+if sys_severity == "high" {
+    let sys_key = "system_level"
+    let last_sys_a = load_alert_ts(sys_key)
+    if (now_ts - last_sys_a) > ALERT_COOLDOWN {
+        let ts_str = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "" }
+        let ev = "{\"ts\":\"" + ts_str + "\",\"source\":\"anomaly_gate\",\"type\":\"system_anomaly\",\"severity\":\"high\",\"ram_z\":" + to_string(sys_ram_z) + ",\"cpu_z\":" + to_string(sys_cpu_z) + ",\"flagged\":\"" + sys_flags + "\"}"
+        try { exec("echo '" + ev + "' >> '" + GROWTH_BUS + "'") } catch e {}
+        save_alert_ts_entry(sys_key, now_ts)
+    }
+}
+
+// overall score
+let total_anomalies = n_gate_anomalies + (if len(sys_flags) > 0 { 1 } else { 0 })
+let mut score = sys_max_z / (Z_THRESHOLD * 3.0)
+if score > 1.0 { score = 1.0 }
+if score < 0.0 { score = 0.0 }
+
+// write result
+let result = "{\"ts\":" + to_string(now_ts) + ",\"version\":\"" + VERSION + "\",\"system\":{\"ram_z\":" + to_string(sys_ram_z) + ",\"cpu_z\":" + to_string(sys_cpu_z) + ",\"severity\":\"" + sys_severity + "\",\"baseline_ram_mean\":" + to_string(sys_ram_mean) + ",\"baseline_cpu_mean\":" + to_string(sys_cpu_mean) + "},\"gates\":{\"n_checked\":" + to_string(len(last_gate_names)) + ",\"n_anomalies\":" + to_string(n_gate_anomalies) + ",\"names\":\"" + gate_anomaly_names + "\"},\"anomaly_score\":" + to_string(score) + ",\"z_threshold\":" + to_string(Z_THRESHOLD) + "}"
+let tmp = ANOMALY_OUT + ".tmp"
+try {
+    write_file(tmp, result + "\n")
+    exec("mv -f '" + tmp + "' '" + ANOMALY_OUT + "'")
+} catch e {
+    println("[anomaly] write error: " + to_string(e))
+}
+
+let status = if total_anomalies == 0 { "clean" } else { to_string(total_anomalies) + " anomalies" }
+println("[anomaly] v" + VERSION + " ok: " + status + " sys_z=ram:" + to_string(sys_ram_z) + "/cpu:" + to_string(sys_cpu_z) + " gate_anomalies=" + to_string(n_gate_anomalies) + " score=" + to_string(score))

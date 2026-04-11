@@ -1,0 +1,263 @@
+// modules/forecast.hexa — v3.0 genome forecasting
+// 게놈 시계열 → EMA + 선형 추세 → 1시간 예측
+//
+// Usage: hexa modules/forecast.hexa [state_out_path]
+//   reads: genomes.log, forge/state.json (vitals ring)
+//   writes: forge/forecast.json (predictions array)
+//
+// 호출 주기: sampler에서 ~60 사이클(~15분)마다 1회
+// Prime Directive safe — read/write만, kill 없음
+
+let VERSION = "0.1.0"
+let mut AG_HOME = env("AIRGENOME_HOME")
+if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
+let GENOMES_LOG = AG_HOME + "/genomes.log"
+let FORECAST_OUT = AG_HOME + "/forge/forecast.json"
+let GATE_CFG = AG_HOME + "/nexus/shared/gate_config.jsonl"
+
+// ── config loader (gate_config.jsonl) ──────────────────────────────
+fn cfg_val(key: str, fallback: int) -> int {
+    if file_exists(GATE_CFG) == false { return fallback }
+    let raw = read_file(GATE_CFG)
+    let lines = raw.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 && line.contains("\"" + key + "\"") {
+            let parsed = json_parse(line)
+            if parsed["key"] == key {
+                try { return to_int(to_float(to_string(parsed["value"]))) } catch e {}
+            }
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+let HORIZON_SEC = cfg_val("forecast_horizon_sec", 3600)     // 1시간
+let MIN_SAMPLES = cfg_val("forecast_min_samples", 5)         // 최소 5개
+let MAX_SAMPLES = cfg_val("forecast_max_samples", 100)       // 최근 100개
+
+// ── parse genomes.log ──────────────────────────────────────────────
+// format: ts\tgate:ram/cpu\t...\tlevel\tmargin=...\t...
+// parallel arrays for parsed data
+let mut g_ts = []
+let mut g_ram = []
+let mut g_cpu = []
+let mut g_margin = []
+
+fn parse_genomes() -> int {
+    if file_exists(GENOMES_LOG) == false { return 0 }
+    let content = read_file(GENOMES_LOG)
+    let lines = content.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 10 {
+            let parts = line.split("\t")
+            if len(parts) >= 2 {
+                let mut ts = 0
+                try { ts = to_int(to_float(parts[0])) } catch e {}
+                if ts > 0 {
+                    let mut total_ram = 0.0
+                    let mut total_cpu = 0.0
+                    let mut margin = 0.0
+                    let mut j = 1
+                    while j < len(parts) {
+                        let p = parts[j]
+                        if p.contains(":") && p.contains("/") {
+                            let gv = p.split(":")
+                            if len(gv) >= 2 {
+                                let vals = gv[1].split("/")
+                                if len(vals) >= 2 {
+                                    try { total_ram = total_ram + to_float(vals[0]) } catch e {}
+                                    try { total_cpu = total_cpu + to_float(vals[1]) } catch e {}
+                                }
+                            }
+                        }
+                        if p.contains("margin=") {
+                            let ms = p.split("margin=")[1].split("\t")[0]
+                            try { margin = to_float(ms) } catch e {}
+                        }
+                        j = j + 1
+                    }
+                    g_ts = g_ts + [ts]
+                    g_ram = g_ram + [total_ram]
+                    g_cpu = g_cpu + [total_cpu]
+                    g_margin = g_margin + [margin]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return len(g_ts)
+}
+
+// ── linear regression (최소제곱법) ─────────────────────────────────
+// xs, ys = float arrays → (slope, intercept)
+// linreg results stored in module-level vars (hexa doesn't support inline object return)
+let mut lr_slope = 0.0
+let mut lr_intercept = 0.0
+
+fn linreg(xs: auto, ys: auto) {
+    lr_slope = 0.0
+    lr_intercept = 0.0
+    let n = len(xs)
+    if n < 2 { return }
+    let mut sx = 0.0
+    let mut sy = 0.0
+    let mut sxy = 0.0
+    let mut sxx = 0.0
+    let mut i = 0
+    while i < n {
+        let x = to_float(to_string(xs[i]))
+        let y = to_float(to_string(ys[i]))
+        sx = sx + x
+        sy = sy + y
+        sxy = sxy + x * y
+        sxx = sxx + x * x
+        i = i + 1
+    }
+    let nf = to_float(to_string(n))
+    let denom = nf * sxx - sx * sx
+    if denom == 0.0 { lr_intercept = sy / nf; return }
+    lr_slope = (nf * sxy - sx * sy) / denom
+    lr_intercept = (sy - lr_slope * sx) / nf
+}
+
+// ── EMA forecast helper ────────────────────────────────────────────
+fn ema_trend(values: auto, alpha: float) -> float {
+    let n = len(values)
+    if n == 0 { return 0.0 }
+    let mut e = to_float(to_string(values[0]))
+    let mut i = 1
+    while i < n {
+        e = alpha * to_float(to_string(values[i])) + (1.0 - alpha) * e
+        i = i + 1
+    }
+    return e
+}
+
+// ── main ───────────────────────────────────────────────────────────
+let n = parse_genomes()
+if n < MIN_SAMPLES {
+    println("[forecast] skip: " + to_string(n) + " samples < min " + to_string(MIN_SAMPLES))
+    return
+}
+
+// take last MAX_SAMPLES (slice parallel arrays)
+let start = if n > MAX_SAMPLES { n - MAX_SAMPLES } else { 0 }
+let ts_list = []
+let ram_list = []
+let cpu_list = []
+let margin_list = []
+let mut idx = start
+while idx < n {
+    ts_list = ts_list + [g_ts[idx]]
+    ram_list = ram_list + [g_ram[idx]]
+    cpu_list = cpu_list + [g_cpu[idx]]
+    margin_list = margin_list + [g_margin[idx]]
+    idx = idx + 1
+}
+
+// normalize timestamps (seconds from first sample)
+let t0 = to_float(to_string(ts_list[0]))
+let xs_norm = []
+let mut k = 0
+while k < len(ts_list) {
+    xs_norm = xs_norm + [to_float(to_string(ts_list[k])) - t0]
+    k = k + 1
+}
+
+// linear regression per metric → store slope/intercept
+linreg(xs_norm, ram_list)
+let ram_slope = lr_slope
+let ram_inter = lr_intercept
+
+linreg(xs_norm, cpu_list)
+let cpu_slope = lr_slope
+let cpu_inter = lr_intercept
+
+linreg(xs_norm, margin_list)
+let margin_slope = lr_slope
+let margin_inter = lr_intercept
+
+// EMA current values (α=0.3)
+let ema_ram = ema_trend(ram_list, 0.3)
+let ema_cpu = ema_trend(cpu_list, 0.3)
+let ema_margin = ema_trend(margin_list, 0.3)
+
+// predict at horizon
+let last_x = xs_norm[len(xs_norm) - 1]
+let pred_x = last_x + to_float(to_string(HORIZON_SEC))
+
+let pred_ram_lr = ram_slope * pred_x + ram_inter
+let pred_cpu_lr = cpu_slope * pred_x + cpu_inter
+let pred_margin_lr = margin_slope * pred_x + margin_inter
+
+// blend: 60% linear + 40% EMA (EMA anchors against noise)
+let pred_ram = pred_ram_lr * 0.6 + ema_ram * 0.4
+let pred_cpu = pred_cpu_lr * 0.6 + ema_cpu * 0.4
+let pred_margin = pred_margin_lr * 0.6 + ema_margin * 0.4
+
+// confidence = 1 - (RMSE / |mean|), clamped 0..1
+fn confidence(values: auto, slope: float, intercept: float, xs: auto) -> float {
+    let n2 = len(values)
+    if n2 < 3 { return 0.5 }
+    let mut sse = 0.0
+    let mut mean_y = 0.0
+    let mut j = 0
+    while j < n2 {
+        let y = to_float(to_string(values[j]))
+        mean_y = mean_y + y
+        let fitted = slope * to_float(to_string(xs[j])) + intercept
+        let err = y - fitted
+        sse = sse + err * err
+        j = j + 1
+    }
+    mean_y = mean_y / to_float(to_string(n2))
+    if mean_y == 0.0 { return 0.5 }
+    let rmse = sse / to_float(to_string(n2))
+    let mut sq = rmse
+    if sq > 0.0 {
+        let mut g = sq / 2.0
+        let mut iter = 0
+        while iter < 5 { g = (g + sq / g) / 2.0; iter = iter + 1 }
+        sq = g
+    }
+    let abs_mean = if mean_y > 0.0 { mean_y } else { 0.0 - mean_y }
+    let rel = sq / abs_mean
+    let c = 1.0 - rel
+    if c < 0.0 { return 0.0 }
+    if c > 1.0 { return 1.0 }
+    return c
+}
+
+let conf_ram = confidence(ram_list, ram_slope, ram_inter, xs_norm)
+let conf_cpu = confidence(cpu_list, cpu_slope, cpu_inter, xs_norm)
+
+// trend direction
+fn trend_dir(slope: float) -> str {
+    if slope > 0.001 { return "rising" }
+    if slope < 0.0 - 0.001 { return "falling" }
+    return "stable"
+}
+
+let now_ts = to_int(to_float(to_string(ts_list[len(ts_list) - 1])))
+let t_ram = trend_dir(ram_slope)
+let t_cpu = trend_dir(cpu_slope)
+let t_margin = trend_dir(margin_slope)
+
+// build predictions JSON
+let pred_json = "{\"ts\":" + to_string(now_ts) + ",\"horizon_sec\":" + to_string(HORIZON_SEC) + ",\"n_samples\":" + to_string(len(ts_list)) + ",\"predictions\":[{\"metric\":\"ram_total\",\"current\":" + to_string(ema_ram) + ",\"predicted\":" + to_string(pred_ram) + ",\"trend\":\"" + t_ram + "\",\"slope\":" + to_string(ram_slope) + ",\"confidence\":" + to_string(conf_ram) + "},{\"metric\":\"cpu_total\",\"current\":" + to_string(ema_cpu) + ",\"predicted\":" + to_string(pred_cpu) + ",\"trend\":\"" + t_cpu + "\",\"slope\":" + to_string(cpu_slope) + ",\"confidence\":" + to_string(conf_cpu) + "},{\"metric\":\"margin\",\"current\":" + to_string(ema_margin) + ",\"predicted\":" + to_string(pred_margin) + ",\"trend\":\"" + t_margin + "\",\"slope\":" + to_string(margin_slope) + "}]}"
+
+// atomic write
+let tmp = FORECAST_OUT + ".tmp"
+try {
+    write_file(tmp, pred_json + "\n")
+    exec("mv -f '" + tmp + "' '" + FORECAST_OUT + "'")
+} catch e {
+    println("[forecast] write error: " + to_string(e))
+}
+
+println("[forecast] v" + VERSION + " ok: ram=" + to_string(pred_ram) + " cpu=" + to_string(pred_cpu) + " margin=" + to_string(pred_margin) + " trend_ram=" + t_ram + " trend_cpu=" + t_cpu + " conf=" + to_string(conf_ram) + "/" + to_string(conf_cpu))
