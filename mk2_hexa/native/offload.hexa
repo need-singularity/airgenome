@@ -273,12 +273,12 @@ fn sync_results() -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn remote_hexa(script_args: str) -> str {
-    // Ensure hexa binary exists on Ubuntu
-    let check = ssh_quiet("test -f /tmp/hexa-build/hexa-lang/target/release/hexa && echo ok")
+    // Ensure native hexa binary exists on Ubuntu (/usr/local/bin/hexa)
+    let check = ssh_quiet("test -x /usr/local/bin/hexa && echo ok")
     if check != "ok" {
-        println("  [offload] hexa not built on Ubuntu. Building...")
-        let build = ssh_cmd("source ~/.cargo/env && mkdir -p /tmp/hexa-build && cd /tmp/hexa-build && git clone https://github.com/need-singularity/hexa-lang.git 2>/dev/null; cd hexa-lang && git pull && cargo build --release")
-        println(build)
+        println("  [offload] native hexa not installed on Ubuntu.")
+        println("  [offload] install native hexa binary to /usr/local/bin/hexa first.")
+        return "error: native hexa missing on remote"
     }
 
     // Sync the script to Ubuntu

@@ -133,22 +133,21 @@ fn setup() -> str {
     println("  [Ubuntu 준비]")
     println("  다음 명령을 Ubuntu에서 실행하세요:")
     println("")
-    println("    sudo apt install -y openssh-server socat build-essential git curl")
-    println("    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")
+    println("    sudo apt install -y openssh-server socat git curl")
     println("")
 
-    // hexa 빌드 안내
-    println("  [hexa 빌드] Ubuntu에서:")
+    // native hexa 설치 안내 (AI-NATIVE, no cargo/rust)
+    println("  [native hexa 설치] Ubuntu에서:")
     println("")
-    println("    source ~/.cargo/env")
-    println("    git clone https://github.com/need-singularity/hexa-lang.git /tmp/hexa-build/hexa-lang")
-    println("    cd /tmp/hexa-build/hexa-lang && cargo build --release")
+    println("    # native hexa 바이너리를 /usr/local/bin/hexa 로 배치")
+    println("    sudo install -m 755 hexa /usr/local/bin/hexa")
+    println("    hexa --version")
     println("")
 
     // 데몬 시작 안내
     println("  [gate 데몬 시작] Ubuntu에서:")
     println("")
-    println("    /tmp/hexa-build/hexa-lang/target/release/hexa run gate_daemon.hexa start " + new_port)
+    println("    /usr/local/bin/hexa run gate_daemon.hexa start " + new_port)
     println("")
 
     // zshrc 안내

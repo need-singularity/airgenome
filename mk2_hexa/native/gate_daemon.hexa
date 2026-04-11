@@ -16,11 +16,12 @@ let DIR = "/tmp/airgenome"
 let PID_FILE = "/tmp/airgenome/gate.pid"
 let HANDLER = "/tmp/airgenome/gate_handler.sh"
 let LOG_FILE = "/tmp/airgenome/gate.log"
-let CARGO_BIN = env("HOME") + "/.cargo/bin"
+// AI-NATIVE HEXA-ONLY: /usr/local/bin is on default PATH
+let HEXA_BIN_DIR = "/usr/local/bin"
 
 fn write_handler() -> str {
     let script = "#!/bin/bash\n"
-    script = script + "export PATH=" + CARGO_BIN + ":$PATH\n"
+    script = script + "export PATH=" + HEXA_BIN_DIR + ":$PATH\n"
     script = script + "read -r CMD\n"
     script = script + "case \"$CMD\" in\n"
     script = script + "  PING) echo PONG ;;\n"
@@ -42,36 +43,20 @@ fn write_handler() -> str {
 }
 
 fn check_hexa_version() -> str {
-    let hexa_bin = "/tmp/hexa-build/hexa-lang/target/release/hexa"
-    let hexa_repo = "/tmp/hexa-build/hexa-lang"
+    // AI-NATIVE HEXA-ONLY: no cargo/rust. Native hexa binary at /usr/local/bin/hexa
+    let hexa_bin = "/usr/local/bin/hexa"
 
     // hexa 바이너리 존재 확인
-    let exists = exec("test -f " + hexa_bin + " && echo yes || echo no").trim()
+    let exists = exec("test -x " + hexa_bin + " && echo yes || echo no").trim()
     if exists == "no" {
-        println("  [hexa] not found — building from scratch...")
-        exec("mkdir -p /tmp/hexa-build")
-        exec("source " + CARGO_BIN + "/../env && git clone https://github.com/need-singularity/hexa-lang.git " + hexa_repo + " 2>/dev/null")
-        exec("nohup bash -c 'source " + CARGO_BIN + "/../env && cd " + hexa_repo + " && cargo build --release' >> " + LOG_FILE + " 2>&1 &")
-        println("  [hexa] build started in background")
-        return "building"
+        println("  [hexa] native binary missing at " + hexa_bin)
+        println("  [hexa] install native hexa binary to /usr/local/bin/hexa first")
+        return "missing"
     }
 
-    // 로컬 커밋 vs 리모트 커밋 비교
-    let local_commit = exec("cd " + hexa_repo + " && git rev-parse HEAD 2>/dev/null").trim()
-    let remote_commit = exec("cd " + hexa_repo + " && git fetch origin main 2>/dev/null && git rev-parse origin/main 2>/dev/null").trim()
-
-    if len(local_commit) > 6 {
-        if len(remote_commit) > 6 {
-            if local_commit != remote_commit {
-                println("  [hexa] ⚠ outdated: " + local_commit.split("")[0] + "..." + " → " + remote_commit.split("")[0] + "...")
-                println("  [hexa] auto-updating in background...")
-                exec("nohup bash -c 'source " + CARGO_BIN + "/../env && cd " + hexa_repo + " && git pull && cargo build --release' >> " + LOG_FILE + " 2>&1 &")
-                return "updating"
-            }
-        }
-    }
-
-    println("  [hexa] up to date (" + local_commit + ")")
+    // 버전 확인
+    let version = exec(hexa_bin + " --version 2>/dev/null").trim()
+    println("  [hexa] up to date (" + version + ")")
     return "ok"
 }
 
