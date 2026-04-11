@@ -1,22 +1,55 @@
 // airgenome/mk2_hexa/native/anomaly.hexa — signature anomaly detection
 //
-// Builds a "normal" baseline from historical genomes.log, then
-// flags current samples that deviate beyond z-score threshold.
+// Two modes:
+//   (a) Gate-level: builds baseline from genomes.log, flags gates with z > threshold
+//   (b) Per-process: reads per_process_diff.jsonl, computes z-scores across all
+//       PID diffs, flags PIDs with |z| > genome_z_threshold
 //
 // "새벽 3시에 Chrome이 2GB 먹고 있다" → anomaly alert
 //
 // Usage: ~/Dev/hexa-lang/hexa run mk2_hexa/native/anomaly.hexa [command]
-// Commands: check, baseline, history, help
+// Commands: check, baseline, history, per_process, pp_show, help
 //
 // Prime directive: observe only, never kill.
 
-let VERSION = "1.0.0"
+let VERSION = "2.0.0"
 let LOG_FILE = "genomes.log"
 let ANOMALY_LOG = "forge/anomaly.jsonl"
 let GATE_COUNT = 8
-let Z_THRESHOLD = 2.0  // z-score > 2.0 = anomaly
+let Z_THRESHOLD = 2.0  // z-score > 2.0 = anomaly (gate-level default)
+
+// Per-process paths (from gate_config.jsonl)
+let PP_DIFF_PATH    = "forge/per_process_diff.jsonl"
+let PP_ANOMALY_OUT  = "forge/per_process_anomaly.jsonl"
+let PP_Z_THRESHOLD  = 2.0  // genome_z_threshold default; overridden by gate_config
 
 let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/airgenome_gates.jsonl"
+let GATE_CONFIG_PATH = env("HOME") + "/Dev/nexus/shared/gate_config.jsonl"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATH — Newton sqrt + abs
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_newton(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+fn fabs(x: float) -> float {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  GATE CONFIG
+// ═══════════════════════════════════════════════════════════════════════
 
 fn load_gate_names() -> auto {
     let names = ["unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown", "unknown"]
@@ -42,6 +75,32 @@ fn gate_name(g: int) -> str {
     return "unknown"
 }
 
+// Load genome_z_threshold from gate_config.jsonl (default 2.0)
+fn load_z_threshold() -> float {
+    if file_exists(GATE_CONFIG_PATH) == false { return 2.0 }
+    let content = read_file(GATE_CONFIG_PATH)
+    let lines = content.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line.contains("genome_z_threshold") {
+            // Parse {"key":"genome_z_threshold","value":"2.0",...}
+            let parts = line.split("\"value\":")
+            if len(parts) >= 2 {
+                let val_part = parts[1].split(",")
+                if len(val_part) >= 1 {
+                    let raw = val_part[0].trim().replace("\"", "").replace("}", "")
+                    try { return to_float(raw) } catch e { return 2.0 }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return 2.0
+}
+
+let GENOME_Z_THRESHOLD = load_z_threshold()
+
 fn hour_to_bucket(h: int) -> int {
     if h >= 5  { if h < 8  { return 0 } }
     if h >= 8  { if h < 12 { return 1 } }
@@ -59,7 +118,7 @@ fn bucket_name(b: int) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  BASELINE: per-gate per-bucket mean + stddev
+//  GATE-LEVEL BASELINE: per-gate per-bucket mean + stddev
 // ═══════════════════════════════════════════════════════════════════════
 
 // Returns: [ram_mean[5][8], ram_std[5][8], cpu_mean[5][8], cpu_std[5][8], counts[5][8]]
@@ -188,8 +247,8 @@ fn build_baseline() -> auto {
                 let cv = cpu_sq[b][g] / n - cpu_mean[b][g] * cpu_mean[b][g]
                 if rv < 0.0 { rv = 0.0 }
                 if cv < 0.0 { cv = 0.0 }
-                ram_std[b][g] = to_float(exec("python3 -c \"import math;print(math.sqrt(" + to_string(rv) + "))\" 2>/dev/null").trim())
-                cpu_std[b][g] = to_float(exec("python3 -c \"import math;print(math.sqrt(" + to_string(cv) + "))\" 2>/dev/null").trim())
+                ram_std[b][g] = sqrt_newton(rv)
+                cpu_std[b][g] = sqrt_newton(cv)
             }
             g = g + 1
         }
@@ -200,7 +259,7 @@ fn build_baseline() -> auto {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CHECK: compare current snapshot vs baseline
+//  GATE-LEVEL CHECK: compare current snapshot vs baseline
 // ═══════════════════════════════════════════════════════════════════════
 
 fn check_anomalies() -> str {
@@ -357,18 +416,308 @@ fn print_history() -> str {
     return "ok"
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  PER-PROCESS ANOMALY DETECTION
+//
+//  Reads per_process_diff.jsonl → computes z-scores against mean/stddev
+//  of all euclidean distances → flags PIDs with |z| > genome_z_threshold.
+//  Writes to forge/per_process_anomaly.jsonl
+// ═══════════════════════════════════════════════════════════════════════
+
+// Extract euclidean distance from diff record
+fn extract_euclidean(line: str) -> float {
+    let parts = line.split("\"euclidean\":")
+    if len(parts) < 2 { return 0.0 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return 0.0 }
+    try { return to_float(tail[0].trim()) } catch e { return 0.0 }
+}
+
+fn extract_pp_pid(line: str) -> int {
+    let parts = line.split("\"pid\":")
+    if len(parts) < 2 { return -1 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return -1 }
+    try { return to_int(to_float(tail[0].trim())) } catch e { return -1 }
+}
+
+fn extract_pp_comm(line: str) -> str {
+    let parts = line.split("\"comm\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn extract_pp_status(line: str) -> str {
+    let parts = line.split("\"status\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn extract_pp_top_axis(line: str) -> str {
+    let parts = line.split("\"top_axis\":\"")
+    if len(parts) < 2 { return "-" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "-" }
+    return tail[0]
+}
+
+fn extract_pp_top_delta(line: str) -> float {
+    let parts = line.split("\"top_delta\":")
+    if len(parts) < 2 { return 0.0 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return 0.0 }
+    try { return to_float(tail[0].trim()) } catch e { return 0.0 }
+}
+
+// Extract delta array [6 floats] from diff record
+fn extract_pp_delta_csv(line: str) -> str {
+    // Try "delta":[...] first, fall back to "delta_mean":[...]
+    let mut parts = line.split("\"delta\":[")
+    if len(parts) < 2 {
+        parts = line.split("\"delta_mean\":[")
+    }
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("]")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn cmd_per_process() -> str {
+    let t0 = exec("date +%s").trim()
+    let ts = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+    let z_thresh = GENOME_Z_THRESHOLD
+
+    println("")
+    println("  per-process anomaly detection v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  z-threshold: " + to_string(z_thresh) + " (from gate_config genome_z_threshold)")
+    println("  input:  " + PP_DIFF_PATH)
+    println("  output: " + PP_ANOMALY_OUT)
+    println("")
+
+    if file_exists(PP_DIFF_PATH) == false {
+        println("  no diff data — run per_process_diff first")
+        return "empty"
+    }
+
+    let content = read_file(PP_DIFF_PATH)
+    let lines = content.split("\n")
+
+    // Pass 1: collect all euclidean distances for "changed" PIDs
+    let mut euclids: [float] = []
+    let mut valid_lines: [str] = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let status = extract_pp_status(line)
+            if status == "changed" {
+                let euc = extract_euclidean(line)
+                euclids = euclids + [euc]
+            }
+            valid_lines = valid_lines + [line]
+        }
+        i = i + 1
+    }
+
+    let n_changed = len(euclids)
+    println("  total diff records: " + to_string(len(valid_lines)))
+    println("  changed PIDs:      " + to_string(n_changed))
+
+    if n_changed < 2 {
+        println("  not enough changed PIDs for z-score analysis (need >= 2)")
+        // Write empty output
+        write_file(PP_ANOMALY_OUT, "")
+        return "insufficient"
+    }
+
+    // Compute mean and stddev of euclidean distances
+    let mut euc_sum = 0.0
+    let mut euc_sq  = 0.0
+    let mut ei = 0
+    while ei < n_changed {
+        euc_sum = euc_sum + euclids[ei]
+        euc_sq  = euc_sq + euclids[ei] * euclids[ei]
+        ei = ei + 1
+    }
+    let nf = to_float(to_string(n_changed))
+    let euc_mean = euc_sum / nf
+    let mut euc_var = euc_sq / nf - euc_mean * euc_mean
+    if euc_var < 0.0 { euc_var = 0.0 }
+    let euc_std = sqrt_newton(euc_var)
+
+    println("  euclidean mean: " + to_string(euc_mean))
+    println("  euclidean std:  " + to_string(euc_std))
+    println("")
+
+    if euc_std < 0.0001 {
+        println("  stddev too small — all PIDs have near-identical drift")
+        write_file(PP_ANOMALY_OUT, "")
+        return "flat"
+    }
+
+    // Pass 2: compute z-score for each PID, flag anomalies
+    let mut anomaly_count = 0
+    let mut output = ""
+
+    let mut vi = 0
+    while vi < len(valid_lines) {
+        let line = valid_lines[vi]
+        let status = extract_pp_status(line)
+        let pid = extract_pp_pid(line)
+        let comm = extract_pp_comm(line)
+
+        let mut z_score = 0.0
+        let mut flagged = false
+        let mut reason = ""
+
+        if status == "changed" {
+            let euc = extract_euclidean(line)
+            z_score = (euc - euc_mean) / euc_std
+            if fabs(z_score) > z_thresh {
+                flagged = true
+                reason = "euclidean_z=" + to_string(z_score)
+                anomaly_count = anomaly_count + 1
+            }
+        }
+        if status == "appeared" {
+            // New PID — always flagged as informational
+            flagged = true
+            reason = "new_process"
+            anomaly_count = anomaly_count + 1
+        }
+        if status == "vanished" {
+            // Vanished PID — always flagged as informational
+            flagged = true
+            reason = "process_exited"
+            anomaly_count = anomaly_count + 1
+        }
+
+        if flagged {
+            let euc = extract_euclidean(line)
+            let top_axis = extract_pp_top_axis(line)
+            let top_delta = extract_pp_top_delta(line)
+            let delta_csv = extract_pp_delta_csv(line)
+
+            let mut rec = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
+            rec = rec + ",\"comm\":\"" + comm + "\""
+            rec = rec + ",\"status\":\"" + status + "\""
+            rec = rec + ",\"euclidean\":" + to_string(euc)
+            rec = rec + ",\"z_score\":" + to_string(z_score)
+            rec = rec + ",\"z_threshold\":" + to_string(z_thresh)
+            rec = rec + ",\"flagged\":true"
+            rec = rec + ",\"reason\":\"" + reason + "\""
+            rec = rec + ",\"top_axis\":\"" + top_axis + "\""
+            rec = rec + ",\"top_delta\":" + to_string(top_delta)
+            if len(delta_csv) > 0 {
+                rec = rec + ",\"delta\":[" + delta_csv + "]"
+            }
+            rec = rec + ",\"population_mean\":" + to_string(euc_mean)
+            rec = rec + ",\"population_std\":" + to_string(euc_std)
+            rec = rec + "}"
+            output = output + rec + "\n"
+
+            // Print to console
+            let z_fmt = to_string(z_score)
+            if status == "changed" {
+                println("  ANOMALY  PID=" + to_string(pid) + " (" + comm + ")  euc=" + to_string(euc) + "  z=" + z_fmt + "  top=" + top_axis)
+            }
+            if status == "appeared" {
+                println("  NEW      PID=" + to_string(pid) + " (" + comm + ")")
+            }
+            if status == "vanished" {
+                println("  EXIT     PID=" + to_string(pid) + " (" + comm + ")")
+            }
+        }
+        vi = vi + 1
+    }
+
+    write_file(PP_ANOMALY_OUT, output)
+
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    println("")
+    println("  summary:")
+    println("    flagged:  " + to_string(anomaly_count) + " / " + to_string(len(valid_lines)))
+    println("    output:   " + PP_ANOMALY_OUT)
+    println("    elapsed:  " + to_string(dt) + "s")
+    println("")
+    return "ok"
+}
+
+// Show last per-process anomaly results
+fn cmd_pp_show() -> str {
+    if file_exists(PP_ANOMALY_OUT) == false {
+        println("  no per-process anomaly data — run 'per_process' first")
+        return "empty"
+    }
+    let content = read_file(PP_ANOMALY_OUT)
+    let lines = content.split("\n")
+
+    println("")
+    println("  per-process anomaly report")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  PID     COMM            STATUS     Z-SCORE  REASON")
+    println("  ──────  ──────────────  ─────────  ───────  ──────────────")
+
+    let mut shown = 0
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                let pid_str = to_string(parsed["pid"])
+                let comm = parsed["comm"]
+                let status = parsed["status"]
+                let z = to_string(parsed["z_score"])
+                let reason = parsed["reason"]
+
+                println("  " + pid_str + "\t" + comm + "\t" + status + "\t" + z + "\t" + reason)
+                shown = shown + 1
+            } catch pe {}
+        }
+        i = i + 1
+    }
+    println("")
+    println("  " + to_string(shown) + " anomaly records")
+    println("  z-threshold: " + to_string(GENOME_Z_THRESHOLD))
+    println("")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HELP
+// ═══════════════════════════════════════════════════════════════════════
+
 fn anomaly_help() -> str {
     println("anomaly v" + VERSION + " — signature anomaly detection")
     println("")
-    println("Commands:")
-    println("  check    — compare current snapshot vs baseline (z-score)")
-    println("  baseline — show normal signatures per time bucket")
-    println("  history  — recent anomaly alerts")
-    println("  help     — this message")
+    println("Gate-level commands:")
+    println("  check       — compare current snapshot vs baseline (z-score)")
+    println("  baseline    — show normal signatures per time bucket")
+    println("  history     — recent anomaly alerts")
     println("")
-    println("Threshold: z-score > " + to_string(Z_THRESHOLD) + " = anomaly")
+    println("Per-process commands:")
+    println("  per_process — z-score analysis on per-PID diff euclidean distances")
+    println("  pp_show     — display last per-process anomaly report")
+    println("")
+    println("  help        — this message")
+    println("")
+    println("Gate threshold:    z-score > " + to_string(Z_THRESHOLD))
+    println("Process threshold: z-score > " + to_string(GENOME_Z_THRESHOLD) + " (genome_z_threshold from gate_config)")
     return "ok"
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
 
 fn main() {
     assert GATE_COUNT == 8
@@ -376,10 +725,27 @@ fn main() {
     let cmd = "check"
     if len(argv) > 3 { cmd = argv[3] }
 
-    if cmd == "help"     { anomaly_help() }
-    if cmd == "check"    { check_anomalies() }
-    if cmd == "baseline" { print_baseline() }
-    if cmd == "history"  { print_history() }
+    if cmd == "help"        { anomaly_help() }
+    if cmd == "check"       { check_anomalies() }
+    if cmd == "baseline"    { print_baseline() }
+    if cmd == "history"     { print_history() }
+    if cmd == "per_process" { cmd_per_process() }
+    if cmd == "pp_show"     { cmd_pp_show() }
+
+    if cmd != "help" {
+        if cmd != "check" {
+            if cmd != "baseline" {
+                if cmd != "history" {
+                    if cmd != "per_process" {
+                        if cmd != "pp_show" {
+                            println("unknown command: " + cmd)
+                            anomaly_help()
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 main()
