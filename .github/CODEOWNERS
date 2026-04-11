@@ -14,4 +14,7 @@ modules/gate_client.hexa @need-singularity
 modules/cl.hexa @need-singularity
 modules/mac_compute_zero.hexa @need-singularity
 scripts/com.airgenome.mac-compute-zero.plist @need-singularity
+modules/load_balancer.hexa @need-singularity
+scripts/com.airgenome.load-balancer.plist @need-singularity
+cl @need-singularity
 CLAUDE.md @need-singularity
