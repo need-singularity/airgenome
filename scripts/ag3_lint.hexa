@@ -50,16 +50,23 @@ fn is_excepted(rel: str) -> bool {
 // ───────────────────────────────────────────────────────────────────────
 fn scan_hexa(rel: str, abs: str) -> void {
     if file_exists(abs) == false { return }
+    // 자기 자신(lint 스펙 파일) 스캔 제외 — 패턴 정의가 false positive 를 만듦
+    if rel == "scripts/ag3_lint.hexa" { return }
     let lines = read_file(abs).split("\n")
     let i = 0
     while i < len(lines) {
         let l = lines[i]
+        // SSH cross-host bridge 는 P1/P2 면제 (ubu GPU 를 쓰기 위한 의도된 원격 호출)
+        // 패턴: 같은 라인에 ssh(또는 ssh_quiet) + 'import torch' 가 쿼트 안에 있으면 원격 실행으로 간주
+        let is_ssh_bridge = (l.contains("ssh ") || l.contains("ssh_quiet") || l.contains("ssh_exec") || l.contains("remote_exec")) && l.contains("import torch")
         // P1
-        if l.contains("import torch") { add_violation(rel, "P1", i+1, l.trim()) }
-        if l.contains("import cupy")  { add_violation(rel, "P1", i+1, l.trim()) }
-        if l.contains("cudnn")        { add_violation(rel, "P1", i+1, l.trim()) }
+        if is_ssh_bridge == false {
+            if l.contains("import torch") { add_violation(rel, "P1", i+1, l.trim()) }
+            if l.contains("import cupy")  { add_violation(rel, "P1", i+1, l.trim()) }
+            if l.contains("cudnn")        { add_violation(rel, "P1", i+1, l.trim()) }
+        }
         // P2
-        if l.contains("popen(") && l.contains("torch") {
+        if is_ssh_bridge == false && l.contains("popen(") && l.contains("torch") {
             add_violation(rel, "P2", i+1, l.trim())
         }
         // P4 (예외 파일 제외)
@@ -67,6 +74,16 @@ fn scan_hexa(rel: str, abs: str) -> void {
             if l.contains("192.168.")      { add_violation(rel, "P4", i+1, l.trim()) }
             if l.contains("/home/aiden/")  { add_violation(rel, "P4", i+1, l.trim()) }
             if l.contains("/mnt/ramdisk/") { add_violation(rel, "P4", i+1, l.trim()) }
+        }
+        // P6 (신규 2026-04-11): hexa array.push() in-place mutate 안 됨.
+        // `arr = arr + [v]` concat 패턴 강제. comment 라인은 제외.
+        let trimmed = l.trim()
+        let mut is_comment = false
+        if len(trimmed) >= 2 {
+            if trimmed.substring(0, 2) == "//" { is_comment = true }
+        }
+        if is_comment == false && l.contains(".push(") {
+            add_violation(rel, "P6", i+1, trimmed)
         }
         i = i + 1
     }
