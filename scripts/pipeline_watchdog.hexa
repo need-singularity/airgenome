@@ -1,0 +1,88 @@
+// airgenome/scripts/pipeline_watchdog.hexa — LaunchAgent stale 감지 + kickstart
+//
+// macOS launchd 가 idle/sleep 상태에서 StartInterval 잡을 누락하는 사례가 있어
+// genome-harvest, genome-pack, forge-sync-hetzner 의 마지막 진행 시각을 점검하고
+// 임계 초과 시 launchctl kickstart 로 강제 재실행한다.
+//
+// 검사:
+//   - genome-harvest: forge/harvest.log mtime > 75 분 → kickstart
+//   - genome-pack:    pack header count < index 행 수 → kickstart
+//   - forge-sync:     forge/forge_sync.log mtime > 15 분 → kickstart
+
+let AG_HOME = env("HOME") + "/Dev/airgenome"
+
+fn ts() -> str {
+    return try { exec("date '+%Y-%m-%dT%H:%M:%S'").trim() } catch e { "?" }
+}
+
+fn now_epoch() -> int {
+    return to_int(try { exec("date +%s").trim() } catch e { "0" })
+}
+
+fn mtime_age(path: str) -> int {
+    if file_exists(path) == false { return 999999 }
+    let m = to_int(try { exec("stat -f %m '" + path + "' 2>/dev/null").trim() } catch e { "0" })
+    return now_epoch() - m
+}
+
+fn file_lines(path: str) -> int {
+    if file_exists(path) == false { return 0 }
+    let s = try { exec("wc -l < '" + path + "' 2>/dev/null").trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn ls_count(dir: str) -> int {
+    let s = try { exec("ls '" + dir + "' 2>/dev/null | wc -l").trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn pack_header_count(path: str) -> int {
+    if file_exists(path) == false { return 0 }
+    let py = "python3 -c 'import struct,sys\n" +
+             "try:\n" +
+             "  f=open(sys.argv[1],\"rb\"); h=f.read(7)\n" +
+             "  print(struct.unpack(\"<I\",h[3:])[0] if len(h)==7 and h[:2]==b\"AG\" else 0)\n" +
+             "except: print(0)' '" + path + "' 2>/dev/null"
+    let s = try { exec(py).trim() } catch e { "0" }
+    return to_int(s)
+}
+
+fn kickstart(label: str) {
+    let uid = try { exec("id -u").trim() } catch e { "501" }
+    try { exec("launchctl kickstart -k gui/" + uid + "/" + label + " 2>/dev/null") } catch e {}
+}
+
+fn run() {
+    let mut actions = []
+
+    let harvest_age = mtime_age(AG_HOME + "/forge/harvest.log")
+    if harvest_age > 4500 {
+        actions = actions + ["harvester(age=" + str(harvest_age) + "s)"]
+        kickstart("com.airgenome.genome-harvest")
+    }
+
+    let loose = ls_count(AG_HOME + "/forge/genomes")
+    let idx_lines = file_lines(AG_HOME + "/forge/genomes.index.jsonl")
+    let pack_hdr = pack_header_count(AG_HOME + "/forge/genomes.pack")
+    if pack_hdr != idx_lines && idx_lines > 0 {
+        actions = actions + ["pack(hdr=" + str(pack_hdr) + " idx=" + str(idx_lines) + ")"]
+        kickstart("com.airgenome.genome-pack")
+    }
+
+    let sync_age = mtime_age(AG_HOME + "/forge/forge_sync.log")
+    if sync_age > 900 {
+        actions = actions + ["forge-sync(age=" + str(sync_age) + "s)"]
+        kickstart("com.airgenome.forge-sync-hetzner")
+    }
+
+    if len(actions) == 0 {
+        println(ts() + " OK loose=" + str(loose) + " idx=" + str(idx_lines) +
+                " pack=" + str(pack_hdr) + " harvest_age=" + str(harvest_age) +
+                "s sync_age=" + str(sync_age) + "s")
+        return
+    }
+
+    println(ts() + " KICK " + str(actions))
+}
+
+run()

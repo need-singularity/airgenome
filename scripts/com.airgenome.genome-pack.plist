@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome genome_pack — periodic batch rebuilder
+  300초마다 forge/genomes.index.jsonl + forge/genomes/*.genome → forge/genomes.pack 재생성.
+  inline pack_append 가 modules/genome_harvest.hexa 에서 제거된 후의 권위 있는 sync 경로.
+  Template: __HOME__ → $HOME (수동 치환 후 ~/Library/LaunchAgents/ 에 복사)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.genome-pack</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
+        <string>__HOME__/Dev/airgenome/scripts/genome_pack.hexa</string>
+        <string>__HOME__/Dev/airgenome/forge/genomes.index.jsonl</string>
+        <string>__HOME__/Dev/airgenome/forge/genomes.pack</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Dev/airgenome/logs/genome-pack.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Dev/airgenome/logs/genome-pack.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,118 @@
+// airgenome/scripts/sqlite_byte_reinterpret.hexa
+//   sqlite DB의 byte 재해석 분석 (online backup → VACUUM 시뮬레이션).
+//
+// 라이브 앱의 DB를 직접 수정하면 corruption 위험. 안전 절차:
+//   1) sqlite3 backup API 로 임시 파일 복사 (라이브 앱과 충돌 X)
+//   2) 복사본 VACUUM (page 재배치, free list 회수)
+//   3) byte 절감량 측정 + 원본 size 와 비교
+//   4) --apply: 원본 교체 (앱이 종료된 경우만 안전)
+//
+// 사용:
+//   hexa scripts/sqlite_byte_reinterpret.hexa <PATH>           # 분석만
+//   hexa scripts/sqlite_byte_reinterpret.hexa <PATH> --apply   # 원본 교체
+//
+// 패턴: claude_byte_reinterpret.hexa 와 동일 — Python 단일 호출 위임.
+
+let PAYLOAD = "import sys,os,sqlite3,shutil,tempfile\n" +
+"path,apply_mode=sys.argv[1],len(sys.argv)>2 and sys.argv[2]=='1'\n" +
+"if not os.path.exists(path):\n" +
+"    print('ERROR: not found'); sys.exit(1)\n" +
+"def fmt(b):\n" +
+"    if b>1048576: return f'{b/1048576:.2f} MB'\n" +
+"    if b>1024: return f'{b/1024:.1f} KB'\n" +
+"    return f'{b} B'\n" +
+"print(f'file: {path}')\n" +
+"try:\n" +
+"    c=sqlite3.connect(f'file:{path}?mode=ro',uri=True)\n" +
+"    pc=c.execute('PRAGMA page_count').fetchone()[0]\n" +
+"    ps=c.execute('PRAGMA page_size').fetchone()[0]\n" +
+"    fl=c.execute('PRAGMA freelist_count').fetchone()[0]\n" +
+"    print(f'  pages={pc}  page_size={ps} B  freelist={fl}  ({fmt(pc*ps)} total)')\n" +
+"    tables=[r[0] for r in c.execute(\"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name\")]\n" +
+"    rows=[]\n" +
+"    for t in tables:\n" +
+"        try: cnt=c.execute(f'SELECT COUNT(*) FROM \"{t}\"').fetchone()[0]\n" +
+"        except: cnt=-1\n" +
+"        rows.append((t,cnt))\n" +
+"    try:\n" +
+"        stat={r[0]:r[1] for r in c.execute('SELECT name, SUM(pgsize) FROM dbstat GROUP BY name')}\n" +
+"    except: stat={}\n" +
+"    c.close()\n" +
+"    print(f'  tables: {len(tables)}')\n" +
+"    for t,cnt in sorted(rows,key=lambda x:-x[1])[:5]:\n" +
+"        sz=stat.get(t)\n" +
+"        szs=f'  {fmt(sz)}' if sz else ''\n" +
+"        print(f'    {t:30s}  rows={cnt}{szs}')\n" +
+"except Exception as e:\n" +
+"    print(f'  read error: {e}'); sys.exit(2)\n" +
+"raw_size=os.path.getsize(path)\n" +
+"tmp=tempfile.NamedTemporaryFile(suffix='.sqlite',delete=False); tmp.close()\n" +
+"try:\n" +
+"    src=sqlite3.connect(f'file:{path}?mode=ro',uri=True)\n" +
+"    dst=sqlite3.connect(tmp.name)\n" +
+"    src.backup(dst)\n" +
+"    dst.close(); src.close()\n" +
+"    before=os.path.getsize(tmp.name)\n" +
+"    conn=sqlite3.connect(tmp.name)\n" +
+"    conn.execute('VACUUM'); conn.commit(); conn.close()\n" +
+"    after=os.path.getsize(tmp.name)\n" +
+"except Exception as e:\n" +
+"    print(f'VACUUM error: {e}')\n" +
+"    try: os.unlink(tmp.name)\n" +
+"    except: pass\n" +
+"    sys.exit(3)\n" +
+"saved=before-after\n" +
+"pct=100*after/before if before else 0\n" +
+"print()\n" +
+"print('== VACUUM impact (online copy) ==')\n" +
+"print(f'  raw size       : {fmt(raw_size)}')\n" +
+"print(f'  copy before    : {fmt(before)}')\n" +
+"print(f'  copy after VAC : {fmt(after)}  ({pct:.1f}%)')\n" +
+"print(f'  saved          : {fmt(saved)}  ({100-pct:.1f}%)')\n" +
+"if apply_mode and saved>0:\n" +
+"    bak=path+'.prevac.bak'\n" +
+"    try:\n" +
+"        shutil.move(path,bak)\n" +
+"        shutil.move(tmp.name,path)\n" +
+"        print(f'  APPLIED: original moved to {bak}')\n" +
+"    except Exception as e:\n" +
+"        print(f'  apply failed: {e}')\n" +
+"else:\n" +
+"    try: os.unlink(tmp.name)\n" +
+"    except: pass\n"
+
+fn run() {
+    let argv = args()
+    let mut apply_mode = false
+    let mut target = ""
+
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        if v == "--apply" { apply_mode = true }
+        else {
+            if v.contains("/") || v.contains(".sqlite") || v.contains(".db") { target = v }
+        }
+        i = i + 1
+    }
+
+    if len(target) == 0 {
+        println("usage: hexa sqlite_byte_reinterpret.hexa <db-path> [--apply]")
+        return
+    }
+
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+
+    let tmp = "/tmp/sqlite_byte_reinterpret_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+
+    let apply_flag = if apply_mode { "1" } else { "0" }
+    let cmd = "python3 '" + tmp + "' '" + target + "' " + apply_flag + " 2>&1; rm -f '" + tmp + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

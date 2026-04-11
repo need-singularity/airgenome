@@ -1,41 +1,41 @@
-{"key":"remote_host","value":"192.168.50.119","desc":"Ubuntu IP (Wi-Fi)"}
-{"key":"remote_port","value":"9900","desc":"gate daemon TCP port"}
-{"key":"remote_user","value":"aiden","desc":"Ubuntu SSH user"}
-{"key":"ssh_alias","value":"ubu","desc":"SSH config alias"}
-{"key":"remote_dir","value":"/home/aiden/airgenome","desc":"Ubuntu working directory (영구)"}
-{"key":"tailscale_host","value":"100.96.193.56","desc":"Tailscale IP (외부 접속 시)"}
-{"key":"ubu_tmpfs","value":"/mnt/ramdisk/airgenome","desc":"Ubuntu tmpfs 경로 (AG3)"}
-{"key":"ubu_python","value":"/usr/bin/python3","desc":"Ubuntu python3 절대경로 (python 심볼릭 없음)"}
-{"key":"ubu_gpu_worker_dir","value":"/home/aiden/airgenome","desc":"Ubuntu gpu_*.py 워커 디렉토리"}
-{"key":"ubu_hexa_bin","value":"/home/aiden/Dev/hexa-lang/target/release/hexa","desc":"Ubuntu hexa 바이너리 실경로 (AG3)"}
-{"key":"ubu_ramdisk_cache","value":"/mnt/ramdisk/blowup_cache","desc":"blowup 캐시 디렉토리"}
-{"key":"ubu_ramdisk_root","value":"/mnt/ramdisk","desc":"Ubuntu ramdisk 루트"}
-{"key":"ubu_blowup_hexa","value":"/home/aiden/Dev/nexus/mk2_hexa/native/blowup.hexa","desc":"blowup.hexa 경로"}
-{"key":"ag3_mode","value":"strict","desc":"AG3 집행 모드 (strict|degrade|off) — degrade→strict 골화: 원격 없으면 heavy 작업 차단 (배터리 보호)"}
-{"key":"log_rotate_max_bytes","value":"10485760","desc":"dispatch.log 최대 바이트 (10MB)"}
-{"key":"log_rotate_max_files","value":"5","desc":"dispatch.log 보관 세대 수"}
-{"key":"log_rotate_path","value":"dispatch.log","desc":"rotation 대상 로그 경로 (AG_HOME 상대경로)"}
-{"key":"offload_cpu_threshold","value":"50","desc":"Mac CPU% 이상이면 오프로드 후보 탐색 (80→50 하향: trustd/mediaanalysisd 폭주 방지)"}
-{"key":"offload_ubu_max_cpu","value":"70","desc":"Ubuntu CPU% 이하일 때만 오프로드 권장"}
-{"key":"offload_htz_max_cpu","value":"70","desc":"Hetzner CPU% 이하일 때만 오프로드 권장 (ubu busy fallback)"}
-{"key":"offload_patterns","value":"hexa,python3,node,cargo,gcc,clang,trustd,mediaanalysisd,mds_stores","desc":"오프로드 대상 프로세스 패턴 (comma-sep)"}
-{"key":"offload_scan_interval","value":"10","desc":"watch 모드 폴링 간격 (초)"}
-{"key":"offload_top_n","value":"3","desc":"CPU hog 상위 N개 검사"}
-{"key":"scan_ok_sec","value":"15","desc":"ok 레벨 스캔 간격 (초)"}
-{"key":"scan_warn_sec","value":"5","desc":"warn 레벨 스캔 간격 (초)"}
-{"key":"scan_critical_sec","value":"3","desc":"critical/danger 레벨 스캔 간격 (초)"}
-{"key":"resource_priority_p0","value":"anima","desc":"P0 최우선 자원 할당 프로젝트"}
-{"key":"resource_priority_p1","value":"nexus,airgenome","desc":"P1 자원 할당 프로젝트"}
-{"key":"resource_priority_p2","value":"hexa-lang","desc":"P2 자원 할당 프로젝트"}
-{"key":"htz_ssh_alias","value":"hetzner","desc":"Hetzner SSH config alias"}
-{"key":"htz_hexa_bin","value":"~/Dev/hexa-lang/target/release/hexa","desc":"Hetzner hexa 바이너리 경로"}
-{"key":"htz_nexus_dir","value":"~/Dev/nexus","desc":"Hetzner nexus 작업 디렉토리"}
-{"key":"htz_hexa_lang_dir","value":"~/Dev/hexa-lang","desc":"Hetzner hexa-lang 소스 디렉토리"}
-{"key":"per_process_by_pid_dir","value":"forge/by_pid","desc":"per-PID 샘플러 출력 디렉토리 (genome 체인 입력)"}
-{"key":"per_process_sig_path","value":"forge/per_process_sig.jsonl","desc":"per-PID 6축 시그니처 출력"}
-{"key":"per_process_baseline_path","value":"forge/per_process_sig.baseline.jsonl","desc":"이전 사이클 시그니처 (diff baseline)"}
-{"key":"per_process_diff_out","value":"forge/per_process_diff.jsonl","desc":"per-PID baseline↔current diff 출력"}
-{"key":"per_process_anomaly_out","value":"forge/per_process_anomaly.jsonl","desc":"per-PID z-score 이상치 출력"}
-{"key":"per_source_genome_out","value":"forge/per_source_genome.jsonl","desc":"source별 게놈 누적 (append 모드)"}
-{"key":"genome_z_threshold","value":"2.0","desc":"per_process_anomaly z-score 임계치 (|z|>T → flagged)"}
-{"key":"mac_compute_allowed","value":"false","desc":"Mac 로컬 hexa 연산 금지 플래그 — false=원격만 허용, true=로컬 허용. 모든 hexa 실행자가 이 플래그를 확인해야 함."}
+{"key": "remote_host", "value": "192.168.50.119", "desc": "Ubuntu IP (Wi-Fi)"}
+{"key": "remote_port", "value": "9900", "desc": "gate daemon TCP port"}
+{"key": "remote_user", "value": "aiden", "desc": "Ubuntu SSH user"}
+{"key": "ssh_alias", "value": "ubu", "desc": "SSH config alias"}
+{"key": "remote_dir", "value": "/home/aiden/airgenome", "desc": "Ubuntu working directory (영구)"}
+{"key": "tailscale_host", "value": "100.96.193.56", "desc": "Tailscale IP (외부 접속 시)"}
+{"key": "ubu_tmpfs", "value": "/mnt/ramdisk/airgenome", "desc": "Ubuntu tmpfs 경로 (AG3)"}
+{"key": "ubu_python", "value": "/usr/bin/python3", "desc": "Ubuntu python3 절대경로 (python 심볼릭 없음)"}
+{"key": "ubu_gpu_worker_dir", "value": "/home/aiden/airgenome", "desc": "Ubuntu gpu_*.py 워커 디렉토리"}
+{"key": "ubu_hexa_bin", "value": "/home/aiden/Dev/hexa-lang/target/release/hexa", "desc": "Ubuntu hexa 바이너리 실경로 (AG3)"}
+{"key": "ubu_ramdisk_cache", "value": "/mnt/ramdisk/blowup_cache", "desc": "blowup 캐시 디렉토리"}
+{"key": "ubu_ramdisk_root", "value": "/mnt/ramdisk", "desc": "Ubuntu ramdisk 루트"}
+{"key": "ubu_blowup_hexa", "value": "/home/aiden/Dev/nexus/mk2_hexa/native/blowup.hexa", "desc": "blowup.hexa 경로"}
+{"key": "ag3_mode", "value": "degrade", "desc": "AG3 집행 모드 (strict|degrade|off) — degrade→strict 골화: 원격 없으면 heavy 작업 차단 (배터리 보호)"}
+{"key": "log_rotate_max_bytes", "value": "10485760", "desc": "dispatch.log 최대 바이트 (10MB)"}
+{"key": "log_rotate_max_files", "value": "5", "desc": "dispatch.log 보관 세대 수"}
+{"key": "log_rotate_path", "value": "$HOME/Dev/airgenome/forge/dispatch.log", "desc": "rotation 대상 로그 경로 (절대경로, $HOME 치환 지원)"}
+{"key": "offload_cpu_threshold", "value": "50", "desc": "Mac CPU% 이상이면 오프로드 후보 탐색 (80→50 하향: trustd/mediaanalysisd 폭주 방지)"}
+{"key": "offload_ubu_max_cpu", "value": "70", "desc": "Ubuntu CPU% 이하일 때만 오프로드 권장"}
+{"key": "offload_htz_max_cpu", "value": "70", "desc": "Hetzner CPU% 이하일 때만 오프로드 권장 (ubu busy fallback)"}
+{"key": "offload_patterns", "value": "hexa,python3,node,cargo,gcc,clang,trustd,mediaanalysisd,mds_stores", "desc": "오프로드 대상 프로세스 패턴 (comma-sep)"}
+{"key": "offload_scan_interval", "value": "10", "desc": "watch 모드 폴링 간격 (초)"}
+{"key": "offload_top_n", "value": "3", "desc": "CPU hog 상위 N개 검사"}
+{"key": "scan_ok_sec", "value": "15", "desc": "ok 레벨 스캔 간격 (초)"}
+{"key": "scan_warn_sec", "value": "5", "desc": "warn 레벨 스캔 간격 (초)"}
+{"key": "scan_critical_sec", "value": "3", "desc": "critical/danger 레벨 스캔 간격 (초)"}
+{"key": "resource_priority_p0", "value": "anima", "desc": "P0 최우선 자원 할당 프로젝트"}
+{"key": "resource_priority_p1", "value": "nexus,airgenome", "desc": "P1 자원 할당 프로젝트"}
+{"key": "resource_priority_p2", "value": "hexa-lang", "desc": "P2 자원 할당 프로젝트"}
+{"key": "htz_ssh_alias", "value": "hetzner", "desc": "Hetzner SSH config alias"}
+{"key": "htz_hexa_bin", "value": "~/Dev/hexa-lang/target/release/hexa", "desc": "Hetzner hexa 바이너리 경로"}
+{"key": "htz_nexus_dir", "value": "~/Dev/nexus", "desc": "Hetzner nexus 작업 디렉토리"}
+{"key": "htz_hexa_lang_dir", "value": "~/Dev/hexa-lang", "desc": "Hetzner hexa-lang 소스 디렉토리"}
+{"key": "per_process_by_pid_dir", "value": "forge/by_pid", "desc": "per-PID 샘플러 출력 디렉토리 (genome 체인 입력)"}
+{"key": "per_process_sig_path", "value": "forge/per_process_sig.jsonl", "desc": "per-PID 6축 시그니처 출력"}
+{"key": "per_process_baseline_path", "value": "forge/per_process_sig.baseline.jsonl", "desc": "이전 사이클 시그니처 (diff baseline)"}
+{"key": "per_process_diff_out", "value": "forge/per_process_diff.jsonl", "desc": "per-PID baseline↔current diff 출력"}
+{"key": "per_process_anomaly_out", "value": "forge/per_process_anomaly.jsonl", "desc": "per-PID z-score 이상치 출력"}
+{"key": "per_source_genome_out", "value": "forge/per_source_genome.jsonl", "desc": "source별 게놈 누적 (append 모드)"}
+{"key": "genome_z_threshold", "value": "2.0", "desc": "per_process_anomaly z-score 임계치 (|z|>T → flagged)"}
+{"key": "mac_compute_allowed", "value": "true", "desc": "Mac 로컬 hexa 연산 금지 플래그 — false=원격만 허용, true=로컬 허용. 모든 hexa 실행자가 이 플래그를 확인해야 함."}

@@ -23,7 +23,7 @@ if NEXUS_HOME == "" { NEXUS_HOME = env("HOME") + "/Dev/nexus" }
 let CONFIG_PATH   = AG_HOME + "/nexus/shared/gate_config.jsonl"
 let POLICY_PATH   = AG_HOME + "/nexus/shared/ag3_policy.jsonl"
 let GROWTH_BUS    = NEXUS_HOME + "/shared/growth_bus.jsonl"
-let DISPATCH_LOG  = AG_HOME + "/dispatch.log"
+let DISPATCH_LOG  = AG_HOME + "/forge/dispatch.log"
 
 // ───────────────────────────────────────────────────────────────────────
 // Config loader (ubu_bridge.hexa 동일 패턴)

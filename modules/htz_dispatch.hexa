@@ -12,7 +12,7 @@
 
 let VERSION = "0.1.0"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
-let LOG_FILE = env("HOME") + "/Dev/airgenome/dispatch.log"
+let LOG_FILE = env("HOME") + "/Dev/airgenome/forge/dispatch.log"
 let SSH_OPTS = "-o ConnectTimeout=120 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o BatchMode=yes"
 
 // ── CONFIG ──────────────────────────────────────────────────────────────

@@ -1,0 +1,108 @@
+// airgenome/scripts/claude_data_compress.hexa — Claude Code 오래된 jsonl gzip 압축
+//
+// 목적: ~/.claude*/projects 의 mtime > AGE_DAYS 인 jsonl 을 gzip 압축해
+//       디스크/IO 부담을 줄인다. 통상 압축률 25-30%.
+//
+// 주의: 이건 "재해석 필터" 가 아니라 일반 압축이다. byte-level 의미 재해석은
+//       claude_byte_reinterpret.hexa 에 별도 분리.
+//
+// 사용:
+//   hexa scripts/claude_data_compress.hexa --apply         # 실제 압축
+//   hexa scripts/claude_data_compress.hexa                 # dry-run
+//   hexa scripts/claude_data_compress.hexa --age 14        # 14 일 임계
+//
+// 안전성:
+//   - lsof 검사로 활성 jsonl 파일 제외
+//   - 1 MB 미만 파일 skip (효과 미미)
+//   - gzip 성공 후 원본 삭제 (atomic-ish)
+
+let MIN_SIZE = 1048576
+
+fn ts() -> str {
+    return try { exec("date '+%Y-%m-%dT%H:%M:%S'").trim() } catch e { "?" }
+}
+
+fn fmt_mb(b: int) -> str {
+    return try { exec("awk 'BEGIN{printf \"%.1f MB\", " + str(b) + "/1048576}'").trim() } catch e { str(b) + " B" }
+}
+
+fn run() {
+    let argv = args()
+    let mut apply_mode = false
+    let mut age_days = 7
+
+    let mut ai = 0
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v == "--apply" { apply_mode = true }
+        if v == "--age" {
+            if ai + 1 < len(argv) { age_days = to_int(argv[ai + 1]) }
+        }
+        ai = ai + 1
+    }
+
+    // 활성 jsonl 목록 (lsof) — 한번에 수집
+    let active_list = try {
+        exec("lsof 2>/dev/null | awk '/\\.jsonl$/ {print $NF}' | sort -u")
+    } catch e { "" }
+
+    // find 대상 파일 목록
+    let find_cmd = "find " + env("HOME") + "/.claude*/projects -name '*.jsonl' " +
+                   "-mtime +" + str(age_days) + " -type f 2>/dev/null"
+    let files_str = try { exec(find_cmd) } catch e { "" }
+    let files = files_str.split("\n")
+
+    let mut total_files = 0
+    let mut total_bytes = 0
+    let mut compressed_bytes = 0
+    let mut skipped_active = 0
+    let mut skipped_small = 0
+
+    let mut i = 0
+    while i < len(files) {
+        let f = files[i].trim()
+        i = i + 1
+        if len(f) == 0 { continue }
+
+        // 활성 파일 건너뛰기
+        if active_list.contains(f) {
+            skipped_active = skipped_active + 1
+            continue
+        }
+
+        let sz_s = try { exec("stat -f %z '" + f + "' 2>/dev/null").trim() } catch e { "0" }
+        let sz = to_int(sz_s)
+        if sz < MIN_SIZE {
+            skipped_small = skipped_small + 1
+            continue
+        }
+
+        total_files = total_files + 1
+        total_bytes = total_bytes + sz
+
+        if apply_mode {
+            let ok = try {
+                exec("gzip -9 '" + f + "' 2>/dev/null && echo ok").trim()
+            } catch e { "" }
+            if ok == "ok" {
+                let gz_sz = to_int(try { exec("stat -f %z '" + f + ".gz' 2>/dev/null").trim() } catch e { "0" })
+                compressed_bytes = compressed_bytes + gz_sz
+            }
+        }
+    }
+
+    if apply_mode {
+        let saved = total_bytes - compressed_bytes
+        println(ts() + " APPLY files=" + str(total_files) +
+                " raw=" + fmt_mb(total_bytes) +
+                " gz=" + fmt_mb(compressed_bytes) +
+                " saved=" + fmt_mb(saved) +
+                " skipped(active=" + str(skipped_active) + " small=" + str(skipped_small) + ")")
+    } else {
+        println(ts() + " DRY-RUN files=" + str(total_files) +
+                " raw=" + fmt_mb(total_bytes) +
+                " skipped(active=" + str(skipped_active) + " small=" + str(skipped_small) + ")")
+    }
+}
+
+run()

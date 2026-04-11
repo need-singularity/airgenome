@@ -462,7 +462,7 @@ while true {
         }
 
         // dispatch.log rotation
-        let dl_path = DIR + "/dispatch.log"
+        let dl_path = DIR + "/forge/dispatch.log"
         if file_exists(dl_path) {
             let dl_size_s = try { exec("wc -c < '" + dl_path + "' 2>/dev/null").trim() } catch e { "0" }
             let mut dl_size = 0

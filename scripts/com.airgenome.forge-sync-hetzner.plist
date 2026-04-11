@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome forge-sync-hetzner — periodic Mac → Hetzner forge mirror
+  600초마다 forge/ rsync push to hetzner:/root/Dev/airgenome/forge/
+  SSH ControlMaster 가 ~/.ssh/cm/ 에 있어 호출당 핸드셰이크 비용 최소.
+  Template: __HOME__ → $HOME (sed 치환 후 ~/Library/LaunchAgents/ 에 복사)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.forge-sync-hetzner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
+        <string>__HOME__/Dev/airgenome/scripts/forge_sync_hetzner.hexa</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>StartInterval</key>
+    <integer>600</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>LowPriorityIO</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-forge-sync.out</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-forge-sync.err</string>
+</dict>
+</plist>

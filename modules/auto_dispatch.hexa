@@ -320,6 +320,9 @@ fn main() {
     let cmd = a[2]
     let state_path = resolve_state_path()
 
+    // 사이클당 1회 log_rotate (gate_config.log_rotate_path 대상)
+    try { exec("hexa '" + DIR + "/modules/log_rotate.hexa' >/dev/null 2>&1") } catch e {}
+
     if cmd == "check" {
         let result = check_once(state_path)
         println(result)

@@ -1,0 +1,146 @@
+// airgenome/scripts/claude_byte_reinterpret.hexa
+//   Claude Code conversation jsonl 의 byte 자체 재해석 분석.
+//
+// gzip 같은 일반 압축이 아니라, JSONL 의 의미 구조를 알아채서 같은 정보를
+// 훨씬 적은 byte 로 재인코딩한다. gzip 과 독립적으로 절약량을 측정.
+//
+// 원리:
+//   1. SESSION-CONSTANT 필드 추출 (sessionId/cwd/version 등 → 헤더 1번)
+//   2. PER-RECORD 는 차이만 (delta) 보관
+//   3. UUID 압축 (full UUID → 정수 id)
+//   4. VISUAL-DECORATION (═══, ─── 줄) dedup
+//   5. JSONL vs MessagePack 비교
+//
+// 사용:
+//   hexa scripts/claude_byte_reinterpret.hexa <PATH>
+//   hexa scripts/claude_byte_reinterpret.hexa --report-only <PATH>
+//
+// 외부 의존: python3 + msgpack (pip install msgpack)
+//
+// 구현: Python 페이로드를 임시 파일로 풀고 단일 호출 — heredoc 보다 escape 안전.
+
+let PAYLOAD = "import sys,os,json,gzip,re\n" +
+"from collections import Counter\n" +
+"path,report_only=sys.argv[1],len(sys.argv)>2 and sys.argv[2]=='1'\n" +
+"raw=open(path,'rb').read()\n" +
+"raw_size=len(raw)\n" +
+"recs=[]\n" +
+"for line in raw.decode('utf-8','replace').split('\\n'):\n" +
+"    line=line.strip()\n" +
+"    if not line: continue\n" +
+"    try: recs.append(json.loads(line))\n" +
+"    except: pass\n" +
+"seen={}; black=set()\n" +
+"for r in recs:\n" +
+"    for k,v in r.items():\n" +
+"        if k in black: continue\n" +
+"        if not isinstance(v,(str,int,float,bool)) and v is not None:\n" +
+"            black.add(k); seen.pop(k,None); continue\n" +
+"        if k not in seen: seen[k]=v\n" +
+"        elif seen[k]!=v: black.add(k); seen.pop(k,None)\n" +
+"consts=seen\n" +
+"if report_only:\n" +
+"    print(f'file: {path}')\n" +
+"    print(f'records: {len(recs)}')\n" +
+"    print(f'constant keys ({len(consts)}):')\n" +
+"    for k,v in sorted(consts.items()):\n" +
+"        vs=json.dumps(v,ensure_ascii=False)\n" +
+"        if len(vs)>80: vs=vs[:77]+'...'\n" +
+"        print(f'  {k} = {vs}')\n" +
+"    sys.exit(0)\n" +
+"UUID=re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')\n" +
+"DECO=re.compile(r'([\\u2550\\u2500\\u2501\\u2554\\u2557\\u255A\\u255D\\u2551\\u2560\\u2563\\u2566\\u2569\\u256C\\u250C\\u2510\\u2514\\u2518\\u2502\\u251C\\u2524\\u252C\\u2534\\u253C\\-=#*]{8,})')\n" +
+"deco_table={}; uuid_table={}\n" +
+"def strip_deco(t):\n" +
+"    def repl(m):\n" +
+"        c=m.group(1)\n" +
+"        for did,cc in deco_table.items():\n" +
+"            if cc==c: return f'\\x00D{did}\\x00'\n" +
+"        nid=len(deco_table); deco_table[nid]=c\n" +
+"        return f'\\x00D{nid}\\x00'\n" +
+"    return DECO.sub(repl,t)\n" +
+"def comp_uuids(t):\n" +
+"    def repl(m):\n" +
+"        u=m.group(0)\n" +
+"        if u not in uuid_table: uuid_table[u]=len(uuid_table)\n" +
+"        return f'\\x00U{uuid_table[u]}\\x00'\n" +
+"    return UUID.sub(repl,t)\n" +
+"def deep(o):\n" +
+"    if isinstance(o,str):\n" +
+"        if UUID.fullmatch(o):\n" +
+"            if o not in uuid_table: uuid_table[o]=len(uuid_table)\n" +
+"            return f'\\x00U{uuid_table[o]}\\x00'\n" +
+"        s=o\n" +
+"        if '-' in s and UUID.search(s): s=comp_uuids(s)\n" +
+"        s=strip_deco(s)\n" +
+"        return s\n" +
+"    if isinstance(o,list): return [deep(x) for x in o]\n" +
+"    if isinstance(o,dict): return {k:deep(v) for k,v in o.items()}\n" +
+"    return o\n" +
+"deltas=[]\n" +
+"for r in recs:\n" +
+"    d={k:v for k,v in r.items() if not(k in consts and v==consts[k])}\n" +
+"    deltas.append(deep(d))\n" +
+"header={'_v':'r2','const':consts,'deco':deco_table,'uuids':list(uuid_table.keys())}\n" +
+"jsonl_out='\\n'.join([json.dumps(header,ensure_ascii=False,separators=(',',':'))]+[json.dumps(d,ensure_ascii=False,separators=(',',':')) for d in deltas]).encode('utf-8')\n" +
+"jsonl_size=len(jsonl_out); jsonl_gz=len(gzip.compress(jsonl_out,9))\n" +
+"raw_gz=len(gzip.compress(raw,9))\n" +
+"try:\n" +
+"    import msgpack\n" +
+"    mp=msgpack.packb({'h':header,'d':deltas},use_bin_type=True)\n" +
+"    mp_size=len(mp); mp_gz=len(gzip.compress(mp,9))\n" +
+"except ImportError:\n" +
+"    mp_size=None; mp_gz=None\n" +
+"def mb(b): return f'{b/1048576:.2f}MB'\n" +
+"print(f'file: {os.path.basename(path)}')\n" +
+"print(f'records: {len(recs)}')\n" +
+"print(f'constants lifted: {len(consts)} keys')\n" +
+"print(f'deco dedup: {len(deco_table)} chunks')\n" +
+"print(f'uuid table: {len(uuid_table)} unique UUIDs')\n" +
+"print()\n" +
+"print(f'  raw jsonl              : {mb(raw_size):>10}  ({raw_size:>10} B)  100.0%')\n" +
+"print(f'  semantic jsonl         : {mb(jsonl_size):>10}  ({jsonl_size:>10} B)  {100*jsonl_size/raw_size:5.1f}%')\n" +
+"print(f'  raw + gzip             : {mb(raw_gz):>10}  ({raw_gz:>10} B)  {100*raw_gz/raw_size:5.1f}%')\n" +
+"print(f'  semantic jsonl + gzip  : {mb(jsonl_gz):>10}  ({jsonl_gz:>10} B)  {100*jsonl_gz/raw_size:5.1f}%')\n" +
+"if mp_size:\n" +
+"    print(f'  semantic msgpack       : {mb(mp_size):>10}  ({mp_size:>10} B)  {100*mp_size/raw_size:5.1f}%')\n" +
+"    print(f'  semantic msgpack + gz  : {mb(mp_gz):>10}  ({mp_gz:>10} B)  {100*mp_gz/raw_size:5.1f}%')\n" +
+"else:\n" +
+"    print('  (msgpack: pip install msgpack 로 설치 시 측정)')\n"
+
+fn run() {
+    let argv = args()
+    let mut report_only = false
+    let mut target = ""
+
+    let mut i = 0
+    while i < len(argv) {
+        let v = argv[i]
+        if v == "--report-only" { report_only = true }
+        else {
+            if v.contains("/") || v.contains(".jsonl") { target = v }
+        }
+        i = i + 1
+    }
+
+    if len(target) == 0 {
+        println("usage: hexa claude_byte_reinterpret.hexa [--report-only] <jsonl-path>")
+        return
+    }
+
+    if file_exists(target) == false {
+        println("ERROR: not found: " + target)
+        return
+    }
+
+    // Python 페이로드를 임시 파일에 기록 후 단일 호출
+    let tmp = "/tmp/claude_byte_reinterpret_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
+    write_file(tmp, PAYLOAD)
+
+    let report_flag = if report_only { "1" } else { "0" }
+    let cmd = "python3 '" + tmp + "' '" + target + "' " + report_flag + " 2>&1; rm -f '" + tmp + "'"
+    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    print(result)
+}
+
+run()

@@ -1,0 +1,170 @@
+// airgenome/scripts/ubu_hexa_guard.hexa — Ubuntu hexa 폭주 자동 진압 가드
+//
+// 이전 .sh 버전을 R1 HEXA-FIRST 규칙에 맞춰 .hexa 로 재작성.
+// 외부 명령(SSH, systemctl)은 exec() 로 위임 — 패턴은 log_rotate.hexa 와 동일.
+//
+// 동작:
+//   1. ssh ubu 한 번에 진단 (sampler/hexa count, loadavg, OOM kill, 서비스 상태)
+//   2. sampler.hexa 가 SAMPLER_MAX 초과 → SIGTERM, 잔존 시 SIGKILL
+//   3. airgenome-fill.service active 상태에서 폭주 시 → stop
+//   4. airgenome-launcher-cap activating 무한루프 → stop
+//   5. 30분 내 OOM-kill 임계 초과 → cooldown (fill/launcher-cap disable)
+//   6. 모든 조치는 멱등. cooldown_flag 로 재발화 노이즈 차단.
+
+let HOST = "ubu"
+let SAMPLER_MAX = 32
+let LOAD_MAX = 24
+let OOM_MAX_30M = 1
+let LOG = env("HOME") + "/Dev/airgenome/forge/ubu_guard.log"
+let COOLDOWN_FLAG = env("HOME") + "/.airgenome/ubu_guard_cooldown"
+
+fn ts() -> str {
+    return try { exec("date '+%Y-%m-%dT%H:%M:%S'").trim() } catch e { "?" }
+}
+
+fn log(msg: str) {
+    let line = ts() + " " + msg
+    try { exec("mkdir -p \"$(dirname '" + LOG + "')\"") } catch e {}
+    try { exec("echo " + shquote(line) + " >> '" + LOG + "'") } catch e {}
+    println(line)
+}
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn parse_kv(text: str, key: str, fallback: str) -> str {
+    let lines = text.split("\n")
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        let prefix = key + "="
+        if line.contains("=") && line.substring(0, len(prefix)) == prefix {
+            return line.substring(len(prefix), len(line))
+        }
+        i = i + 1
+    }
+    return fallback
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// 단일 SSH 호출로 모든 진단 수집 (hook 부담 최소화)
+// ───────────────────────────────────────────────────────────────────────
+fn probe_remote() -> str {
+    let probe = "SAMPLER=$(pgrep -c -f sampler.hexa 2>/dev/null || echo 0); " +
+                "HEXA_TOTAL=$(pgrep -c -f /hexa-lang/target/release/hexa 2>/dev/null || echo 0); " +
+                "LOAD1=$(awk '{print $1}' /proc/loadavg); " +
+                "OOM_30M=$(journalctl -k --since '30 min ago' 2>/dev/null | grep -c 'Out of memory: Killed'); " +
+                "FILL=$(systemctl is-active airgenome-fill.service 2>/dev/null | head -1); " +
+                "CAP=$(systemctl is-active airgenome-launcher-cap.service 2>/dev/null | head -1); " +
+                "CAP_TIMER=$(systemctl is-active airgenome-launcher-cap.timer 2>/dev/null | head -1); " +
+                "echo SAMPLER=$SAMPLER; echo HEXA_TOTAL=$HEXA_TOTAL; echo LOAD1=$LOAD1; " +
+                "echo OOM_30M=$OOM_30M; echo FILL=${FILL:-unknown}; echo CAP=${CAP:-unknown}; " +
+                "echo CAP_TIMER=${CAP_TIMER:-unknown}"
+    return try {
+        exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + HOST + " " + shquote(probe) + " 2>/dev/null")
+    } catch e { "" }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// 조치 명령 빌드 + 일괄 실행
+// ───────────────────────────────────────────────────────────────────────
+fn execute_actions(actions: list, oom_active: int) {
+    let mut remote = ""
+    let i = 0
+    while i < len(actions) {
+        let a = actions[i]
+        if a == "kill_excess_samplers" {
+            remote = remote + "echo '[guard] killing samplers'; "
+            remote = remote + "pkill -TERM -f sampler.hexa; sleep 2; "
+            remote = remote + "if [ \"$(pgrep -c -f sampler.hexa)\" -gt 5 ]; then pkill -KILL -f sampler.hexa; fi; "
+        }
+        if a == "stop_fill" {
+            remote = remote + "echo '[guard] stopping fill'; sudo -n systemctl stop airgenome-fill.service 2>&1 | head -3; "
+        }
+        if a == "stop_launcher_cap" {
+            remote = remote + "echo '[guard] stopping launcher-cap'; "
+            remote = remote + "sudo -n systemctl stop airgenome-launcher-cap.timer 2>&1 | head -2; "
+            remote = remote + "sudo -n systemctl stop airgenome-launcher-cap.service 2>&1 | head -2; "
+        }
+        if a == "oom_cooldown" {
+            remote = remote + "echo '[guard] OOM cooldown — disabling fill+launcher-cap'; "
+            remote = remote + "sudo -n systemctl disable --now airgenome-fill.service 2>&1 | head -3; "
+            remote = remote + "sudo -n systemctl disable --now airgenome-launcher-cap.timer 2>&1 | head -3; "
+            remote = remote + "sudo -n systemctl disable --now airgenome-launcher-cap.service 2>&1 | head -3; "
+            try { exec("mkdir -p \"$(dirname '" + COOLDOWN_FLAG + "')\" && touch '" + COOLDOWN_FLAG + "'") } catch e {}
+        }
+        i = i + 1
+    }
+
+    if len(remote) == 0 { return }
+    let result = try {
+        exec("ssh -o ConnectTimeout=8 -o BatchMode=yes " + HOST + " " + shquote(remote) + " 2>&1")
+    } catch e { "" }
+    let rlines = result.split("\n")
+    let j = 0
+    while j < len(rlines) {
+        let l = rlines[j].trim()
+        if len(l) > 0 { log("remote: " + l) }
+        j = j + 1
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Main
+// ───────────────────────────────────────────────────────────────────────
+fn run() {
+    let probe = probe_remote()
+    if len(probe) == 0 {
+        log("ssh probe failed")
+        return
+    }
+
+    let sampler = to_int(parse_kv(probe, "SAMPLER", "0"))
+    let hexa_total = parse_kv(probe, "HEXA_TOTAL", "0")
+    let load1 = parse_kv(probe, "LOAD1", "0")
+    let oom_30m = to_int(parse_kv(probe, "OOM_30M", "0"))
+    let fill = parse_kv(probe, "FILL", "unknown")
+    let cap = parse_kv(probe, "CAP", "unknown")
+    let cap_timer = parse_kv(probe, "CAP_TIMER", "unknown")
+
+    log("probe SAMPLER=" + str(sampler) + " HEXA=" + hexa_total + " LOAD1=" + load1 +
+        " OOM_30M=" + str(oom_30m) + " FILL=" + fill + " CAP=" + cap + " TIMER=" + cap_timer)
+
+    let mut actions = []
+
+    if sampler > SAMPLER_MAX { actions = actions + ["kill_excess_samplers"] }
+
+    let cooldown_set = file_exists(COOLDOWN_FLAG)
+    if oom_30m >= OOM_MAX_30M && cooldown_set == false {
+        actions = actions + ["oom_cooldown"]
+    }
+
+    if fill == "active" && sampler > SAMPLER_MAX {
+        actions = actions + ["stop_fill"]
+    }
+
+    if cap == "activating" || cap_timer == "activating" {
+        actions = actions + ["stop_launcher_cap"]
+    }
+
+    // loadavg 임계 (정수 부분만 추출 후 비교)
+    let load_int = to_int(load1.split(".")[0])
+    if load_int >= LOAD_MAX && fill == "active" {
+        actions = actions + ["stop_fill"]
+    }
+
+    if len(actions) == 0 {
+        log("OK clean state, nothing to do")
+        // OOM 윈도우 비었을 때만 cooldown flag 해제
+        if oom_30m == 0 && cooldown_set {
+            try { exec("rm -f '" + COOLDOWN_FLAG + "'") } catch e {}
+        }
+        return
+    }
+
+    log("ACTIONS=" + str(actions))
+    execute_actions(actions, oom_30m)
+}
+
+run()

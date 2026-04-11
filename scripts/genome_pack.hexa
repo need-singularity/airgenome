@@ -55,95 +55,61 @@ let lines = idx_content.split("\n")
 let total = len(lines)
 println("  records in index: " + to_string(total))
 
-// Backup existing pack file
+// Skip if pack already up-to-date (record count in header == index count).
+// 이전엔 매 사이클 동일 pack 을 rewrite → mtime 갱신 → rsync가 매번 전송했다.
+// 헤더 4바이트 카운트만 비교해서 변화 없으면 즉시 종료 (no-op).
 if file_exists(out_path) {
+    let hdr_cnt = exec("python3 -c 'import struct,sys; f=open(sys.argv[1],\"rb\"); h=f.read(7); print(struct.unpack(\"<I\", h[3:])[0] if len(h)==7 and h[:2]==b\"AG\" else 0)' " + out_path + " 2>/dev/null").trim()
+    let mut existing = 0
+    try { existing = to_int(to_float(hdr_cnt)) } catch e {}
+    if existing == total {
+        println("  pack already up-to-date (header count " + to_string(existing) + " == index " + to_string(total) + ") — skip rewrite")
+        exit(0)
+    }
+    println("  pack stale: header=" + to_string(existing) + " vs index=" + to_string(total) + " — rebuilding")
     let bak = out_path + ".bak"
     exec("cp " + out_path + " " + bak)
     println("  backed up existing pack to: " + bak)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  BATCH CONVERSION — python3 script for binary writing
+//  BATCH CONVERSION — single python3 invocation does everything
 // ═══════════════════════════════════════════════════════════════════════
-// Strategy: build a TSV of (ts, pid, comm, axes_csv, genome_hex) rows,
-// then feed to a single python3 invocation that writes the entire .pack.
-// This avoids N python3 calls (one per record).
+// 이전 구현은 레코드당 5번 awk fork (3578개=17,890 fork) + 3578 read_file()
+// → Mac IO 포화 시 분 단위로 stall. 단일 python3 호출로 위임 → 수 초.
+// Python: JSONL 파싱 + 파일 읽기 + 바이너리 쓰기 모두 in-process.
 
-// Phase 1: collect all records into a temp TSV
-let tmp_tsv = "/tmp/genome_pack_input_" + exec("date +%s%N 2>/dev/null || date +%s").trim() + ".tsv"
-let mut tsv_buf = ""
-let mut valid = 0
-let mut missing = 0
-let mut i = 0
+// "file" 필드는 "forge/genomes/xxx.genome" 같은 상대경로이므로
+// idx_path 의 grandparent (= ROOT) 를 base 로 잡는다. dirname 두 번.
+let base_dir = exec("dirname \"$(dirname '" + idx_path + "')\" 2>/dev/null").trim()
 
-while i < total {
-    try {
-        let line = lines[i].trim()
-        if len(line) > 0 {
-            // Parse JSON fields via awk (same pattern as genome_harvest.hexa cfg_str)
-            let ts_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"ts\":' '{print $2}' | awk -F',' '{print $1}'").trim()
-            let pid_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"pid\":' '{print $2}' | awk -F',' '{print $1}'").trim()
-            let comm_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"comm\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
-            let axes_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"axes\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
-            let file_s = exec("echo '" + line.replace("'", "") + "' | awk -F'\"file\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
-
-            if len(ts_s) > 0 && len(pid_s) > 0 && len(axes_s) > 0 && len(file_s) > 0 {
-                // Read genome file
-                let mut genome_hex = ""
-                if file_exists(file_s) {
-                    genome_hex = read_file(file_s).trim()
-                }
-                if len(genome_hex) == 120 {
-                    // TSV row: ts\tpid\tcomm\taxes\tgenome_hex
-                    let safe_comm = comm_s.replace("\t", " ").replace("'", "")
-                    tsv_buf = tsv_buf + ts_s + "\t" + pid_s + "\t" + safe_comm + "\t" + axes_s + "\t" + genome_hex + "\n"
-                    valid = valid + 1
-                } else {
-                    missing = missing + 1
-                }
-            }
-        }
-    } catch parse_err {
-        missing = missing + 1
-    }
-    i = i + 1
-    // Progress every 500 records
-    if i % 500 == 0 {
-        println("  scanned " + to_string(i) + "/" + to_string(total) + " ...")
-    }
-}
-
-println("  valid records: " + to_string(valid))
-if missing > 0 {
-    println("  skipped (missing/invalid genome): " + to_string(missing))
-}
-
-if valid == 0 {
-    println("ERROR: no valid records to pack")
-    exec("rm -f " + tmp_tsv)
-    exit(1)
-}
-
-// Write TSV to temp file
-write_file(tmp_tsv, tsv_buf)
-
-// Phase 2: python3 one-liner reads TSV, writes binary .pack
 let py = "python3 -c '" +
-    "import struct,sys\n" +
-    "tsv_path=sys.argv[1]; out_path=sys.argv[2]\n" +
-    "rows=[]\n" +
-    "with open(tsv_path,\"r\") as f:\n" +
+    "import sys,os,json,struct\n" +
+    "idx_path,out_path,base=sys.argv[1],sys.argv[2],sys.argv[3]\n" +
+    "rows=[]; missing=0\n" +
+    "with open(idx_path,\"r\") as f:\n" +
     "  for line in f:\n" +
     "    line=line.strip()\n" +
     "    if not line: continue\n" +
-    "    parts=line.split(\"\\t\",4)\n" +
-    "    if len(parts)<5: continue\n" +
-    "    ts=int(parts[0]); pid=int(parts[1])\n" +
-    "    comm=parts[2].encode(\"utf-8\")[:64]\n" +
-    "    axes=[int(x)&255 for x in parts[3].split(\",\")[:6]]\n" +
+    "    try:\n" +
+    "      r=json.loads(line)\n" +
+    "    except: continue\n" +
+    "    ts=int(r.get(\"ts\",0)); pid=int(r.get(\"pid\",0))\n" +
+    "    comm=str(r.get(\"comm\",\"\")).encode(\"utf-8\")[:64]\n" +
+    "    axes_s=str(r.get(\"axes\",\"\"))\n" +
+    "    if not axes_s: continue\n" +
+    "    axes=[int(x)&255 for x in axes_s.split(\",\")[:6]]\n" +
     "    while len(axes)<6: axes.append(0)\n" +
-    "    sig=bytes.fromhex(parts[4])\n" +
-    "    if len(sig)!=60: continue\n" +
+    "    fp=r.get(\"file\",\"\")\n" +
+    "    if not fp: continue\n" +
+    "    if not os.path.isabs(fp): fp=os.path.join(base,fp)\n" +
+    "    try:\n" +
+    "      with open(fp) as g: hx=g.read().strip()\n" +
+    "    except: missing+=1; continue\n" +
+    "    if len(hx)!=120: missing+=1; continue\n" +
+    "    try: sig=bytes.fromhex(hx)\n" +
+    "    except: missing+=1; continue\n" +
+    "    if len(sig)!=60: missing+=1; continue\n" +
     "    rows.append((ts,pid,comm,axes,sig))\n" +
     "with open(out_path,\"wb\") as f:\n" +
     "  f.write(b\"AG\"+struct.pack(\"<BI\",1,len(rows)))\n" +
@@ -151,15 +117,16 @@ let py = "python3 -c '" +
     "    f.write(struct.pack(\"<qI\",ts,pid))\n" +
     "    f.write(struct.pack(\"B\",len(comm))+comm)\n" +
     "    f.write(bytes(axes)+sig)\n" +
-    "import os\n" +
     "sz=os.path.getsize(out_path)\n" +
-    "print(str(len(rows))+\" \"+str(sz))' " +
-    tmp_tsv + " " + out_path
+    "print(str(len(rows))+\" \"+str(sz)+\" \"+str(missing))' " +
+    idx_path + " " + out_path + " " + base_dir
 
+println("  invoking python3 batch packer...")
 let result = exec(py).trim()
 
-// Cleanup temp
-exec("rm -f " + tmp_tsv)
+// Per-record metrics from python output
+let mut valid = 0
+let mut missing = 0
 
 if len(result) == 0 {
     println("ERROR: python3 pack writer failed")
@@ -173,8 +140,15 @@ try { packed_count = to_int(to_float(rparts[0])) } catch e {}
 if len(rparts) >= 2 {
     try { pack_size = to_int(to_float(rparts[1])) } catch e {}
 }
+if len(rparts) >= 3 {
+    try { missing = to_int(to_float(rparts[2])) } catch e {}
+}
+valid = packed_count
 
 println("  packed: " + to_string(packed_count) + " records")
+if missing > 0 {
+    println("  skipped (missing/invalid genome): " + to_string(missing))
+}
 println("  pack file size: " + to_string(pack_size) + " bytes")
 
 // ═══════════════════════════════════════════════════════════════════════

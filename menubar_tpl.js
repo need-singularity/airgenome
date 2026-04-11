@@ -8,7 +8,7 @@ var statePath = '__STATE__';
 var configPath = '__CONFIG__';
 var settingsJsPath = '__DIR__/settings.js';
 var ag3StatusPath = ($.NSString.stringWithString($('~/.airgenome/ag3_status.json')).stringByExpandingTildeInPath).js;
-var dispatchLogPath = '__DIR__/dispatch.log';
+var dispatchLogPath = '__DIR__/forge/dispatch.log';
 
 ObjC.registerSubclass({
     name: 'MenuHandler',

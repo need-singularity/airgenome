@@ -190,49 +190,9 @@ fn encode_genome(axes_csv: str) -> str {
 //             + axes (6B) + signature (60B)
 // Uses python3 struct.pack one-liner (same pattern as ring_io.hexa).
 
-// Append a single record to an existing .pack file.
-// If the file doesn't exist, creates it with header first.
-// genome_hex: 120 hex chars = 60 bytes signature.
-fn pack_append(pack_path: str, ts_str: str, pid_str: str, comm: str, axes_csv: str, genome_hex: str) -> bool {
-    if len(genome_hex) != 120 { return false }
-    // Truncate comm to 64 chars max
-    let mut safe_comm = comm.replace("'", "").replace("\\", "")
-    if len(safe_comm) > 64 { safe_comm = safe_comm.substring(0, 64) }
-    // Axes CSV → 6 ints
-    let axes_parts = axes_csv.split(",")
-    if len(axes_parts) < 6 { return false }
-    let mut axes_arg = axes_parts[0]
-    let mut ai = 1
-    while ai < 6 { axes_arg = axes_arg + " " + axes_parts[ai]; ai = ai + 1 }
-
-    // R23/G7: hexa release parser regression on multi-line string concat (`+` at EOL).
-    // Workaround: accumulate into mut var via single-line statements.
-    let mut py = "python3 -c '"
-    py = py + "import struct,os,sys\n"
-    py = py + "p=sys.argv[1]; ts=int(sys.argv[2]); pid=int(sys.argv[3])\n"
-    py = py + "comm=sys.argv[4].encode(\"utf-8\")[:64]\n"
-    py = py + "axes=[int(x) for x in sys.argv[5:11]]\n"
-    py = py + "sig=bytes.fromhex(sys.argv[11])\n"
-    py = py + "assert len(sig)==60\n"
-    py = py + "need_hdr=not os.path.exists(p) or os.path.getsize(p)<7\n"
-    py = py + "f=open(p,\"r+b\" if not need_hdr else \"wb\")\n"
-    py = py + "if need_hdr:\n"
-    py = py + "  f.write(b\"AG\" + struct.pack(\"<BI\",1,0))\n"
-    py = py + "  cnt=0\n"
-    py = py + "else:\n"
-    py = py + "  f.seek(2); cnt=struct.unpack(\"<I\",f.read(5)[1:])[0]\n"
-    py = py + "  f.seek(0,2)\n"
-    py = py + "rec=struct.pack(\"<qI\",ts,pid)\n"
-    py = py + "rec+=struct.pack(\"B\",len(comm))+comm\n"
-    py = py + "rec+=bytes(a&255 for a in axes)+sig\n"
-    py = py + "f.write(rec)\n"
-    py = py + "cnt+=1; f.seek(3); f.write(struct.pack(\"<I\",cnt))\n"
-    py = py + "f.close(); print(\"ok\")' "
-    py = py + pack_path + " " + ts_str + " " + pid_str + " '" + safe_comm + "' "
-    py = py + axes_arg + " " + genome_hex
-    let out = exec(py).trim()
-    return out == "ok"
-}
+// REMOVED 2026-04-11: fn pack_append — record당 python3 fork 로 race+slow 했다.
+// 200/3578 만 성공해서 pack 영구 stale. 대신 scripts/genome_pack.hexa (batch rebuilder)
+// 가 단일 python3 호출로 전체 인덱스→pack 재생성 (검증: 3678 records / ~1초 in normal IO).
 
 // ═══════════════════════════════════════════════════════════════════════
 //  HARVEST LOOP
@@ -303,10 +263,9 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
                                 try { write_file(fname, genome) } catch e {}
                                 let safe_comm = comm.replace("\"", "").replace("\\", "")
                                 idx_buf = idx_buf + "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm + "\",\"axes\":\"" + axes + "\",\"file\":\"" + fname + "\",\"encoding_ver\":2}\n"
-                                // Binary pack — parallel write (non-blocking; JSON remains primary)
-                                if len(pack_file) > 0 {
-                                    try { pack_append(pack_file, ts, pid, safe_comm, axes, genome) } catch pe {}
-                                }
+                                // Binary pack 는 batch rebuilder (scripts/genome_pack.hexa) 가 주기적으로 재생성한다.
+                                // 이전 inline pack_append 는 record 당 python3 fork → race+slow 로 200/3578 만 성공.
+                                // 제거됨 (2026-04-11). pack 동기화는 외부 스케줄에 위임.
                                 added = added + 1
                             }
                         }

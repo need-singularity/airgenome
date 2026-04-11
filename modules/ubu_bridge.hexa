@@ -28,7 +28,7 @@
 
 let VERSION = "0.1.0"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
-let LOG_FILE = "dispatch.log"
+let LOG_FILE = env("HOME") + "/Dev/airgenome/forge/dispatch.log"
 let GROWTH_BUS = env("HOME") + "/Dev/nexus/shared/growth_bus.jsonl"
 
 // ═══════════════════════════════════════════════════════════════════════
