@@ -216,8 +216,11 @@ fn fire_ubu_blowup(now_s: str) -> str {
     let ubu_blowup = load_cfg("ubu_blowup_script", "~/Dev/nexus/mk2_hexa/native/blowup.hexa")
     let blowup_domain = load_cfg("offload_ubu_blowup_domain", "airgenome")
     let blowup_depth = load_cfg("offload_ubu_blowup_depth", "3")
+    // 2026-04-11: prlimit + timeout 로 리소스 격리. ubu 30GB RAM 엄격.
+    let ubu_mem_bytes = load_cfg("ubu_blowup_mem_bytes", "16106127360")  // 15GB
+    let ubu_timeout_s = load_cfg("ubu_blowup_timeout_s", "90")
     // SSH 원격 nohup detach — 로컬은 즉시 리턴, ubu 에서 백그라운드 실행
-    let remote_cmd = "nohup " + ubu_hexa + " " + ubu_blowup + " " + blowup_domain + " " + blowup_depth + " --no-graph >/tmp/ag_ubu_blowup.out 2>&1 & disown"
+    let remote_cmd = "nohup timeout " + ubu_timeout_s + " prlimit --as=" + ubu_mem_bytes + " -- " + ubu_hexa + " " + ubu_blowup + " " + blowup_domain + " " + blowup_depth + " --no-graph >/tmp/ag_ubu_blowup.out 2>&1 & disown"
     let ssh_cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes " + ubu_alias + " '" + remote_cmd + "' >/tmp/ag_ubu_fire.out 2>&1 & echo $!"
     let mut pid = "0"
     try { pid = exec(ssh_cmd).trim() } catch e { return "fire_err" }

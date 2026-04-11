@@ -43,9 +43,9 @@
 {"key": "ubu_gate_sock", "value": "/mnt/ramdisk/airgenome/gate.sock", "desc": "Ubuntu AG3 gate unix socket 경로"}
 {"key": "infra_vast_enabled", "value": "false", "desc": "Vast.ai 프로브 활성화 (2026-04-11 decommissioned → false 기본). true 로 재활성 가능"}
 {"key": "infra_runpod_enabled", "value": "false", "desc": "Runpod 프로브 활성화 (기본 off — runpodctl CLI 10s 생략). true 로 재활성 가능"}
-{"key": "offload_htz_cooldown_s", "value": "60", "desc": "htz blowup 재발화 최소 간격 (2026-04-11: 300→60 공격적, 마구 발사 모드)"}
-{"key": "offload_htz_idle_threshold", "value": "70", "desc": "htz_cpu_pct 이 이 값 미만이면 idle 판정 (30→70 공격적)"}
-{"key": "offload_ubu_cooldown_s", "value": "60", "desc": "ubu blowup 재발화 최소 간격 (300→60 공격적)"}
-{"key": "offload_ubu_idle_gpu_threshold", "value": "50", "desc": "ubu gpu_util 이 이 값 미만이면 idle 판정 (5→50 공격적)"}
-{"key": "offload_htz_blowup_depth", "value": "1", "desc": "htz blowup depth (3→1: 메모리 경감 — depth=3 시 blowup 1개가 83GB RSS 소모 관찰)"}
-{"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth (3→1 동일 이유)"}
+{"key": "offload_htz_cooldown_s", "value": "90", "desc": "htz cooldown — depth=2 blowup runtime ~90s. blowup 끝나자마자 다음 fire (continuous busy). pgrep guard overlap 방지"}
+{"key": "offload_htz_idle_threshold", "value": "100", "desc": "htz_cpu_pct threshold — pgrep guard 에 의존, idle 기준은 무의미하게 풀어둠 (마구 발사)"}
+{"key": "offload_ubu_cooldown_s", "value": "30", "desc": "ubu cooldown — depth=1 blowup runtime ~30s. 최대한 짧게 (pgrep guard 로 overlap 막힘)"}
+{"key": "offload_ubu_idle_gpu_threshold", "value": "100", "desc": "ubu gpu threshold — pgrep 의존, 무제한"}
+{"key": "offload_htz_blowup_depth", "value": "2", "desc": "htz blowup depth: 128GB RAM + 32T 이라 depth=2 감내 (depth=3 은 83GB 괴물). 중간 깊이, 2-3min 지속"}
+{"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth: 30GB RAM 제한으로 depth=1 강제. 가볍고 빨리 (30s). 자주 발사"}

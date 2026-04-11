@@ -58,7 +58,11 @@ fn log_event(action: str, detail: str) -> void {
 
 fn cmd_blowup(domain: str, depth: str) -> void {
     print("[HTZ] blowup " + domain + " depth=" + depth)
-    let cmd = "cd " + HTZ_NEXUS + " && " + HTZ_HEXA + " " + HTZ_BLOWUP + " " + domain + " " + depth + " --no-graph"
+    // 2026-04-11: prlimit(--as 가상메모리 상한) + timeout(wall clock) 로 리소스 격리
+    // blowup 이 OOM / 무한루프 로 시스템 발목 잡는 거 방지. 초과 시 자동 kill.
+    let mem_bytes = load_cfg("htz_blowup_mem_bytes", "64424509440")  // 60GB
+    let timeout_s = load_cfg("htz_blowup_timeout_s", "180")
+    let cmd = "cd " + HTZ_NEXUS + " && timeout " + timeout_s + " prlimit --as=" + mem_bytes + " -- " + HTZ_HEXA + " " + HTZ_BLOWUP + " " + domain + " " + depth + " --no-graph"
     let out = ssh_run(cmd)
     if out.contains("error") || out.contains("refused") || out.contains("timed out") {
         print("[HTZ] ERROR: " + out)
