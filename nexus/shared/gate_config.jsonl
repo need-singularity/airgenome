@@ -47,7 +47,7 @@
 {"key": "offload_htz_enabled", "value": "false", "desc": "htz proactive fire 활성/비활성 토글 (2026-04-11: 사용자 본인 train_decoder_cpu.py 10 cores 점유 중 → blowup 경합 방지로 기본 off). true 로 재활성"}
 {"key": "offload_ubu_enabled", "value": "true", "desc": "ubu proactive fire 활성/비활성 토글"}
 {"key": "offload_htz_idle_threshold", "value": "100", "desc": "htz_cpu_pct threshold — pgrep guard 에 의존, idle 기준은 무의미하게 풀어둠 (마구 발사)"}
-{"key": "offload_ubu_cooldown_s", "value": "30", "desc": "ubu cooldown — depth=1 blowup runtime ~30s. 최대한 짧게 (pgrep guard 로 overlap 막힘)"}
+{"key": "offload_ubu_cooldown_s", "value": "5", "desc": "ubu cooldown — blowup runtime ~14s, cooldown 은 race 방어용만. pgrep guard 가 병렬 차단. 완료 즉시 재발사 (최대 활용)"}
 {"key": "offload_ubu_idle_gpu_threshold", "value": "100", "desc": "ubu gpu threshold — pgrep 의존, 무제한"}
 {"key": "offload_htz_blowup_depth", "value": "2", "desc": "htz blowup depth: 128GB RAM + 32T 이라 depth=2 감내 (depth=3 은 83GB 괴물). 중간 깊이, 2-3min 지속"}
 {"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth: 30GB RAM 제한으로 depth=1 강제. 가볍고 빨리 (30s). 자주 발사"}

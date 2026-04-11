@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  auto_dispatch — OFFLOAD_O1 자동 오프로드 권장기 (watch 모드)
-  내부 while-loop이 10초 간격으로 동작하므로 KeepAlive로 프로세스 유지
+  auto_dispatch — OFFLOAD_O1 권장기 (check = ONCE 모드, 골화 2026-04-10)
+  watch 모드의 while-true + exec/sleep 9~10h 누적 → 81% CPU 폭주 (D1) 후
+  check 1회 모드로 전환. StartInterval로 launchd가 주기 담당.
+  2026-04-11: StartInterval 10→5 (자원 최대 활용 — blowup 완료 감지 5s 내)
 -->
 <plist version="1.0">
 <dict>
@@ -12,12 +14,14 @@
     <array>
         <string>__HOME__/Dev/hexa-lang/target/release/hexa</string>
         <string>__HOME__/Dev/airgenome/modules/auto_dispatch.hexa</string>
-        <string>watch</string>
+        <string>check</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <false/>
+    <key>StartInterval</key>
+    <integer>5</integer>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
@@ -30,6 +34,6 @@
     <key>StandardErrorPath</key>
     <string>/tmp/airgenome-auto-dispatch.err</string>
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>5</integer>
 </dict>
 </plist>
