@@ -221,6 +221,13 @@ fn probe_htz() -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn probe_vast() -> str {
+    // 2026-04-11: Vast.ai decommissioned — default disabled. gate_config 에서
+    // infra_vast_enabled="true" 로 수동 재활성 가능. 기본 false 는 vastai CLI
+    // 호출(최대 10s) 과 infra_probe 총 소요 시간을 단축.
+    let vast_enabled = load_cfg("infra_vast_enabled", "false")
+    if vast_enabled != "true" {
+        return "\"vast\":{\"status\":\"offline\",\"reason\":\"disabled (infra_vast_enabled=false)\"}"
+    }
     // Load from infrastructure.json (no hardcoded IP/port/gpu/price — R2)
     let vast_id = load_infra_int("id", 0)
     if vast_id == 0 {

@@ -41,3 +41,4 @@
 {"key": "mac_compute_allowed", "value": "true", "desc": "Mac 로컬 hexa 연산 금지 플래그 — false=원격만 허용, true=로컬 허용. 모든 hexa 실행자가 이 플래그를 확인해야 함."}
 {"key": "ubu_ring_path", "value": "/mnt/ramdisk/airgenome/genome.ring", "desc": "Ubuntu AG3 genome ring buffer 절대경로 (ubu_tmpfs + /genome.ring)"}
 {"key": "ubu_gate_sock", "value": "/mnt/ramdisk/airgenome/gate.sock", "desc": "Ubuntu AG3 gate unix socket 경로"}
+{"key": "infra_vast_enabled", "value": "false", "desc": "Vast.ai 프로브 활성화 (2026-04-11 decommissioned → false 기본). true 로 재활성 가능"}
