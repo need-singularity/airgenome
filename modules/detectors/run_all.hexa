@@ -24,13 +24,13 @@ fn gate_cfg(key: str, default: str) -> str {
 let UBU_HEXA = gate_cfg("ubu_hexa_bin", "")
 let UBU_DIR  = gate_cfg("remote_dir", "")
 let mut UBU_AVAILABLE = false
-try { UBU_AVAILABLE = exec("ssh -o ConnectTimeout=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e {}
+try { UBU_AVAILABLE = exec("ssh -o ConnectTimeout=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e {}
 
 fn run_one(name: str) -> str {
     let path = DET_DIR + "/" + name + ".hexa"
     let subcmd = if name == "predictive_throttle" { " predict" } else { "" }
     let out = if UBU_AVAILABLE {
-        try { exec("ssh -o ConnectTimeout=10 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + path + subcmd + "' 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
+        try { exec("ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + path + subcmd + "' 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
     } else {
         try { exec(HEXA_BIN + " " + path + subcmd + " 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
     }

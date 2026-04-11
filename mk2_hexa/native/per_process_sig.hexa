@@ -1,10 +1,28 @@
-// per_process_sig.hexa — per-PID 6-axis signature extractor
+// airgenome/mk2_hexa/native/per_process_sig.hexa — per-PID 6-axis signature sampler
 //
 // Phase 2 of airgenome-next task#1 (per-process hexagon projection).
-// Reads forge/by_pid/<PID>.jsonl time-series → computes mean/std/min/max
-// per axis → writes forge/per_process_sig.jsonl (one line per PID).
 //
-// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_sig.hexa [<by_pid_dir>]
+// Two modes:
+//   (a) sample — live ps snapshot: top 50 PIDs → 6-axis normalized signatures
+//   (b) build  — batch from forge/by_pid/<PID>.jsonl time-series (legacy)
+//
+// 6 axes: cpu%, rss, vsize, threads, nice, io
+// Each axis normalized to [0.0, 1.0] relative to sample maximum.
+//
+// Output: forge/per_process_sig.jsonl
+// Format: {"ts":iso,"pid":N,"comm":"name","sig":[c,r,v,t,n,i],"raw":{cpu:X,rss:X,...}}
+//
+// Usage: ~/.hx/bin/hexa mk2_hexa/native/per_process_sig.hexa [command]
+// Commands: sample, build [<by_pid_dir>], show, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "2.0.0"
+let SIG_PATH = "forge/per_process_sig.jsonl"
+let TOP_N = 50
+
+// Gate config for dynamic paths
+let GATE_CFG_PATH = env("HOME") + "/Dev/nexus/shared/gate_config.jsonl"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MATH — Newton sqrt (hexa lacks native sqrt in older builds)
@@ -22,11 +40,20 @@ fn sqrt_newton(x: float) -> float {
     return g
 }
 
+fn fabs(x: float) -> float {
+    if x < 0.0 { return 0.0 - x }
+    return x
+}
+
+fn max_float(a: float, b: float) -> float {
+    if a > b { return a }
+    return b
+}
+
 // ═══════════════════════════════════════════════════════════════════════
-//  JSONL PARSE — extract axes CSV + pid + comm from one record line
+//  JSONL PARSE — extract axes CSV + pid + comm from by_pid record
 // ═══════════════════════════════════════════════════════════════════════
 
-// Return "a,b,c,d,e,f" or "" on failure.
 fn extract_axes(line: str) -> str {
     let parts = line.split("\"axes\":\"")
     if len(parts) < 2 { return "" }
@@ -35,7 +62,6 @@ fn extract_axes(line: str) -> str {
     return tail[0]
 }
 
-// Return pid int or -1 on failure.
 fn extract_pid(line: str) -> int {
     let parts = line.split("\"pid\":")
     if len(parts) < 2 { return -1 }
@@ -44,7 +70,6 @@ fn extract_pid(line: str) -> int {
     try { return to_int(to_float(tail[0].trim())) } catch e { return -1 }
 }
 
-// Return comm string or "" on failure.
 fn extract_comm(line: str) -> str {
     let parts = line.split("\"comm\":\"")
     if len(parts) < 2 { return "" }
@@ -54,10 +79,174 @@ fn extract_comm(line: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  PER-FILE PROCESSING — read jsonl → compute 6-axis stats
+//  LIVE SAMPLING: ps snapshot → raw 6-axis extraction for top 50 PIDs
 // ═══════════════════════════════════════════════════════════════════════
 
-// Return compact JSON signature for one PID file, or "" if empty/invalid.
+// Returns array of arrays: [[pid, comm, cpu, rss_kb, vsz_kb, threads, nice, io], ...]
+fn sample_top_pids() -> auto {
+    let raw = exec("ps -axo pid=,comm=,%cpu=,rss=,vsz=,nice= -r 2>/dev/null | head -" + to_string(TOP_N)).trim()
+    let lines = raw.split("\n")
+
+    let mut result = []
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            let parts = line.split(" ")
+            // Compact: remove empty strings from multiple-space splits
+            let mut clean = []
+            let mut p = 0
+            while p < len(parts) {
+                let s = parts[p].trim()
+                if len(s) > 0 {
+                    clean = clean + [s]
+                }
+                p = p + 1
+            }
+            // Need at least 6 fields: pid comm cpu rss vsz nice
+            if len(clean) >= 6 {
+                let mut pid = 0
+                try { pid = to_int(clean[0]) } catch e { pid = 0 }
+                if pid > 0 {
+                    let mut comm = clean[1]
+                    // Strip path prefix
+                    if comm.contains("/") {
+                        let seg = comm.split("/")
+                        comm = seg[len(seg) - 1]
+                    }
+                    let mut cpu_pct = 0.0
+                    try { cpu_pct = to_float(clean[2]) } catch e {}
+                    let mut rss_kb = 0.0
+                    try { rss_kb = to_float(clean[3]) } catch e {}
+                    let mut vsz_kb = 0.0
+                    try { vsz_kb = to_float(clean[4]) } catch e {}
+                    let mut nice_val = 0.0
+                    try { nice_val = to_float(clean[5]) } catch e {}
+
+                    // Thread count via ps -M (macOS: one line per thread, minus header)
+                    let mut thr = 1
+                    try {
+                        let thr_str = exec("ps -M -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
+                        thr = to_int(thr_str)
+                        if thr > 1 { thr = thr - 1 }
+                    } catch e { thr = 1 }
+                    if thr < 1 { thr = 1 }
+
+                    // IO heuristic: open file descriptor count * page size
+                    let mut io_bytes = 0.0
+                    try {
+                        let io_raw = exec("lsof -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
+                        io_bytes = to_float(io_raw) * 4096.0
+                    } catch e { io_bytes = 0.0 }
+
+                    result = result + [[pid, comm, cpu_pct, rss_kb, vsz_kb, to_float(thr), nice_val, io_bytes]]
+                }
+            }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  NORMALIZATION: raw values → 0-1 range per axis
+// ═══════════════════════════════════════════════════════════════════════
+
+// Finds global max for each of the 6 axes across all sampled PIDs
+fn find_axis_maxima(samples: auto) -> auto {
+    let mut max_cpu = 1.0
+    let mut max_rss = 1.0
+    let mut max_vsz = 1.0
+    let mut max_thr = 1.0
+    let max_nice = 40.0    // nice range: -20..+20 → abs max = 40
+    let mut max_io = 1.0
+
+    let mut i = 0
+    while i < len(samples) {
+        let s = samples[i]
+        // s = [pid, comm, cpu, rss, vsz, thr, nice, io]
+        if s[2] > max_cpu { max_cpu = s[2] }
+        if s[3] > max_rss { max_rss = s[3] }
+        if s[4] > max_vsz { max_vsz = s[4] }
+        if s[5] > max_thr { max_thr = s[5] }
+        if s[7] > max_io  { max_io = s[7] }
+        i = i + 1
+    }
+
+    return [max_cpu, max_rss, max_vsz, max_thr, max_nice, max_io]
+}
+
+fn normalize_axis(val: float, axis_max: float) -> float {
+    if axis_max <= 0.0 { return 0.0 }
+    let mut n = val / axis_max
+    if n > 1.0 { n = 1.0 }
+    if n < 0.0 { n = 0.0 }
+    return n
+}
+
+// Nice normalization: map -20..+20 → 0..1 (nice -20 = 0, nice 0 = 0.5, nice +20 = 1)
+fn normalize_nice(nice_val: float) -> float {
+    let mut n = (nice_val + 20.0) / 40.0
+    if n > 1.0 { n = 1.0 }
+    if n < 0.0 { n = 0.0 }
+    return n
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  WRITE: build JSONL output from live sample
+// ═══════════════════════════════════════════════════════════════════════
+
+fn write_live_signatures(samples: auto, maxima: auto) -> int {
+    let ts = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+    let mut output = ""
+    let mut count = 0
+
+    let mut i = 0
+    while i < len(samples) {
+        let s = samples[i]
+        let pid = to_int(s[0])
+        let comm = s[1]
+        let cpu_raw = s[2]
+        let rss_raw = s[3]
+        let vsz_raw = s[4]
+        let thr_raw = s[5]
+        let nice_raw = s[6]
+        let io_raw = s[7]
+
+        // Normalize to 6-axis signature [c, r, v, t, n, i]
+        let c = normalize_axis(cpu_raw, maxima[0])
+        let r = normalize_axis(rss_raw, maxima[1])
+        let v = normalize_axis(vsz_raw, maxima[2])
+        let t = normalize_axis(thr_raw, maxima[3])
+        let n = normalize_nice(nice_raw)
+        let io = normalize_axis(io_raw, maxima[5])
+
+        // Round to 4 decimal places via python
+        let sig_str = exec("python3 -c \"print('[' + ','.join(f'{x:.4f}' for x in [" + to_string(c) + "," + to_string(r) + "," + to_string(v) + "," + to_string(t) + "," + to_string(n) + "," + to_string(io) + "]) + ']')\" 2>/dev/null").trim()
+
+        let safe_comm = comm.replace("\"", "").replace("\\", "")
+        let mut line = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
+        line = line + ",\"comm\":\"" + safe_comm + "\""
+        line = line + ",\"sig\":" + sig_str
+        line = line + ",\"raw\":{\"cpu\":" + to_string(cpu_raw)
+        line = line + ",\"rss\":" + to_string(rss_raw)
+        line = line + ",\"vsize\":" + to_string(vsz_raw)
+        line = line + ",\"threads\":" + to_string(to_int(thr_raw))
+        line = line + ",\"nice\":" + to_string(to_int(nice_raw))
+        line = line + ",\"io\":" + to_string(io_raw) + "}}"
+        output = output + line + "\n"
+        count = count + 1
+        i = i + 1
+    }
+
+    write_file(SIG_PATH, output)
+    return count
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BUILD MODE: batch from forge/by_pid/<PID>.jsonl (legacy path)
+// ═══════════════════════════════════════════════════════════════════════
+
 fn process_pid_file(path: str) -> str {
     if file_exists(path) == false { return "" }
     let body = read_file(path)
@@ -66,7 +255,6 @@ fn process_pid_file(path: str) -> str {
     let mut pid = -1
     let mut comm = ""
 
-    // Accumulators: sum, sum_sq, min, max per axis
     let mut sum   = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     let mut sum2  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     let mut amin  = [255, 255, 255, 255, 255, 255]
@@ -136,7 +324,9 @@ fn process_pid_file(path: str) -> str {
     if stability > 1.0 { stability = 1.0 }
 
     let safe_comm = comm.replace("\"", "").replace("\\", "")
-    let mut json = "{\"pid\":" + to_string(pid)
+    let ts = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+
+    let mut json = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
     json = json + ",\"comm\":\"" + safe_comm + "\""
     json = json + ",\"n_samples\":" + to_string(n)
     json = json + ",\"axes_mean\":[" + mean_parts + "]"
@@ -147,49 +337,23 @@ fn process_pid_file(path: str) -> str {
     return json
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-//  CONSCIOUSNESS — CLI entry
-// ═══════════════════════════════════════════════════════════════════════
+fn cmd_build(by_pid_dir: str) -> str {
+    let out_file = SIG_PATH
+    println("  per_process_sig build — dir=" + by_pid_dir + " out=" + out_file)
 
-consciousness PerProcessSig {
-    let t0 = exec("date +%s").trim()
-
-    let argv = args()
-    let mut by_pid_dir = "forge/by_pid"
-    // hexa argv: prefer slot after the .hexa script path; ignore bin paths.
-    let mut ai = 0
-    let mut saw_script = false
-    while ai < len(argv) {
-        let v = argv[ai]
-        if v.contains(".hexa") { saw_script = true }
-        else {
-            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
-                by_pid_dir = v
-            }
-        }
-        ai = ai + 1
-    }
-
-    let out_file = "forge/per_process_sig.jsonl"
-    println("  per_process_sig — dir=" + by_pid_dir + " out=" + out_file)
-
-    // Use find instead of ls glob — find returns empty string (not error) when no matches.
     let mut listing = ""
     try { listing = exec("find " + by_pid_dir + " -maxdepth 1 -name '*.jsonl' 2>/dev/null").trim() } catch le { listing = "" }
     if len(listing) == 0 {
         println("  no .jsonl files found in " + by_pid_dir)
-        exit(1)
+        return "empty"
     }
     let files = listing.split("\n")
     let n_files = len(files)
     println("  files: " + to_string(n_files))
 
-    // Reset output file (not append mode)
     write_file(out_file, "")
 
     let mut ok = 0
-    let mut first_line = ""
-    let mut last_line  = ""
     let mut fi = 0
     while fi < n_files {
         let path = files[fi].trim()
@@ -198,8 +362,6 @@ consciousness PerProcessSig {
                 let sig = process_pid_file(path)
                 if len(sig) > 0 {
                     exec("printf '%s\\n' " + "'" + sig.replace("'", "") + "'" + " >> " + out_file)
-                    if ok == 0 { first_line = sig }
-                    last_line = sig
                     ok = ok + 1
                 }
             } catch fe {}
@@ -207,12 +369,151 @@ consciousness PerProcessSig {
         fi = fi + 1
     }
 
+    println("  processed: " + to_string(ok) + " / " + to_string(n_files))
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMANDS
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_sample() -> str {
+    let t0 = exec("date +%s").trim()
+
+    println("")
+    println("  per-process signature sampler v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+
+    let samples = sample_top_pids()
+    if len(samples) == 0 {
+        println("  no processes sampled")
+        return "empty"
+    }
+
+    let maxima = find_axis_maxima(samples)
+    let count = write_live_signatures(samples, maxima)
+
     let t1 = exec("date +%s").trim()
     let mut dt = 0
-    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+    try { dt = to_int(t1) - to_int(t0) } catch e {}
 
-    println("  processed: " + to_string(ok) + " / " + to_string(n_files))
-    println("  elapsed:   " + to_string(dt) + "s")
-    println("  first: " + first_line)
-    println("  last:  " + last_line)
+    println("  sampled " + to_string(count) + " PIDs -> " + SIG_PATH)
+    println("  axis maxima: cpu=" + to_string(maxima[0]) + " rss=" + to_string(maxima[1]) + "KB vsz=" + to_string(maxima[2]) + "KB")
+    println("               thr=" + to_string(to_int(maxima[3])) + " nice_range=40 io=" + to_string(maxima[5]))
+    println("  elapsed: " + to_string(dt) + "s")
+    println("")
+    return "ok"
 }
+
+fn cmd_show() -> str {
+    if file_exists(SIG_PATH) == false {
+        println("  no signatures found — run 'sample' first")
+        return "empty"
+    }
+    let content = read_file(SIG_PATH)
+    let lines = content.split("\n")
+
+    println("")
+    println("  per-process signatures (last sample)")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  PID     COMM            SIG [cpu,rss,vsz,thr,nice,io]")
+    println("  ──────  ──────────────  ─────────────────────────────────")
+
+    let mut i = 0
+    let mut shown = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                let pid_str = to_string(parsed["pid"])
+                let comm = parsed["comm"]
+                let sig = parsed["sig"]
+
+                let mut sig_fmt = "["
+                let mut a = 0
+                while a < len(sig) {
+                    if a > 0 { sig_fmt = sig_fmt + "," }
+                    sig_fmt = sig_fmt + to_string(sig[a])
+                    a = a + 1
+                }
+                sig_fmt = sig_fmt + "]"
+
+                println("  " + pid_str + "\t" + comm + "\t" + sig_fmt)
+                shown = shown + 1
+            } catch pe {}
+        }
+        i = i + 1
+    }
+    println("")
+    println("  " + to_string(shown) + " signatures loaded")
+    println("")
+    return "ok"
+}
+
+fn sig_help() -> str {
+    println("per_process_sig v" + VERSION + " — per-PID 6-axis signature sampler")
+    println("")
+    println("Commands:")
+    println("  sample        — live ps snapshot: top " + to_string(TOP_N) + " PIDs, normalize, write")
+    println("  build [dir]   — batch from forge/by_pid/<PID>.jsonl (legacy)")
+    println("  show          — display current signatures from " + SIG_PATH)
+    println("  help          — this message")
+    println("")
+    println("6 axes: cpu%, rss, vsize, threads, nice, io")
+    println("Each axis normalized to [0.0, 1.0] range relative to sample max.")
+    println("")
+    println("Output: " + SIG_PATH)
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let mut cmd = "sample"
+
+    // Parse command from argv (skip binary + script path)
+    let mut positional = []
+    let mut ai = 0
+    let mut saw_script = false
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        if saw_script == false { ai = ai + 1; next }
+        if v.contains(".hexa") { ai = ai + 1; next }
+        if v.contains("hexa-bin") == false {
+            if len(v) > 0 {
+                positional = positional + [v]
+            }
+        }
+        ai = ai + 1
+    }
+
+    if len(positional) > 0 { cmd = positional[0] }
+
+    if cmd == "help"   { sig_help() }
+    if cmd == "sample" { cmd_sample() }
+    if cmd == "show"   { cmd_show() }
+    if cmd == "build" {
+        let mut by_pid_dir = "forge/by_pid"
+        if len(positional) > 1 { by_pid_dir = positional[1] }
+        cmd_build(by_pid_dir)
+    }
+
+    if cmd != "help" {
+        if cmd != "sample" {
+            if cmd != "show" {
+                if cmd != "build" {
+                    println("unknown command: " + cmd)
+                    sig_help()
+                }
+            }
+        }
+    }
+}
+
+main()

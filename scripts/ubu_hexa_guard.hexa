@@ -62,7 +62,7 @@ fn probe_remote() -> str {
                 "echo OOM_30M=$OOM_30M; echo FILL=${FILL:-unknown}; echo CAP=${CAP:-unknown}; " +
                 "echo CAP_TIMER=${CAP_TIMER:-unknown}"
     return try {
-        exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + HOST + " " + shquote(probe) + " 2>/dev/null")
+        exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote(probe) + " 2>/dev/null")
     } catch e { "" }
 }
 
@@ -99,7 +99,7 @@ fn execute_actions(actions: list, oom_active: int) {
 
     if len(remote) == 0 { return }
     let result = try {
-        exec("ssh -o ConnectTimeout=8 -o BatchMode=yes " + HOST + " " + shquote(remote) + " 2>&1")
+        exec("ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote(remote) + " 2>&1")
     } catch e { "" }
     let rlines = result.split("\n")
     let j = 0

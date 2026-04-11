@@ -1,0 +1,197 @@
+// launchd_status.hexa — airgenome launchd agent 상태 대시보드
+// 2026-04-12 · airgenome
+//
+// 18개 airgenome launchd agent 의 PID / exit status 를 한 번에 조회.
+// Prime Directive safe: read-only — launchctl list 만 읽고 표시.
+//
+// Usage:
+//   hexa modules/launchd_status.hexa
+
+let VERSION = "0.1.0"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Signal name lookup (macOS signal.h 표준)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn signal_name(code: int) -> str {
+    if code == 0   { return "OK" }
+    // 양수 exit code
+    if code > 0    { return "exit(" + to_string(code) + ")" }
+    // 음수 → signal (launchctl 은 -signal 로 표기)
+    let sig = -code
+    if sig == 1    { return "SIGHUP" }
+    if sig == 2    { return "SIGINT" }
+    if sig == 3    { return "SIGQUIT" }
+    if sig == 6    { return "SIGABRT" }
+    if sig == 9    { return "SIGKILL" }
+    if sig == 11   { return "SIGSEGV" }
+    if sig == 13   { return "SIGPIPE" }
+    if sig == 14   { return "SIGALRM" }
+    if sig == 15   { return "SIGTERM" }
+    return "SIG(" + to_string(sig) + ")"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Pad string to fixed width (right-pad with spaces)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn pad(s: str, width: int) -> str {
+    let mut out = s
+    while len(out) < width { out = out + " " }
+    return out
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Parse one launchctl line → [label, pid_str, exit_str]
+//  Format: "PID\tExitStatus\tLabel"  or  "-\t0\tcom.airgenome.foo"
+// ═══════════════════════════════════════════════════════════════════════
+
+fn parse_agent_line(line: str) -> auto {
+    // launchctl list output is tab-separated: PID \t Status \t Label
+    let parts = line.trim().split("\t")
+    if parts.len() < 3 { return ["", "", ""] }
+    let pid_raw = parts[0].trim()
+    let exit_raw = parts[1].trim()
+    let label = parts[2].trim()
+    return [label, pid_raw, exit_raw]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Determine display status for an agent
+// ═══════════════════════════════════════════════════════════════════════
+
+fn agent_status(pid_str: str, exit_code: int) -> auto {
+    // Running: has a PID (not "-")
+    if pid_str != "-" && len(pid_str) > 0 {
+        return ["running", "●"]
+    }
+    // Idle: exited with 0
+    if exit_code == 0 {
+        return ["idle", "○"]
+    }
+    // Error: non-zero exit
+    return ["error", "✗"]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Short label: strip "com.airgenome." prefix for readability
+// ═══════════════════════════════════════════════════════════════════════
+
+fn short_label(label: str) -> str {
+    if label.contains("com.airgenome.") {
+        return label.split("com.airgenome.")[1]
+    }
+    return label
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Main
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness MainBlock {
+    let raw = try { exec("launchctl list 2>/dev/null | grep airgenome").trim() } catch e { "" }
+
+    if len(raw) == 0 {
+        println("  ERROR: airgenome agent 가 등록되어 있지 않습니다.")
+        println("  launchctl list | grep airgenome 결과 없음.")
+        exit(1)
+    }
+
+    let lines = raw.split("\n")
+    let n_agents = len(lines)
+
+    // Collect parsed data
+    let mut labels = []
+    let mut pids = []
+    let mut exits = []
+    let mut statuses = []
+    let mut icons = []
+    let mut status_texts = []
+
+    let mut count_running = 0
+    let mut count_idle = 0
+    let mut count_error = 0
+
+    let mut i = 0
+    while i < n_agents {
+        let parsed = parse_agent_line(lines[i])
+        let label = parsed[0]
+        let pid_str = parsed[1]
+        let exit_str = parsed[2]
+
+        if len(label) == 0 { i = i + 1; continue }
+
+        let mut exit_code = 0
+        try { exit_code = to_int(exit_str) } catch e { exit_code = 0 }
+
+        let st = agent_status(pid_str, exit_code)
+        let kind = st[0]
+        let icon = st[1]
+
+        let mut status_text = ""
+        if kind == "running" {
+            status_text = "실행중"
+            count_running = count_running + 1
+        } else if kind == "idle" {
+            status_text = "대기"
+            count_idle = count_idle + 1
+        } else {
+            status_text = signal_name(exit_code)
+            count_error = count_error + 1
+        }
+
+        labels = labels + [label]
+        pids = pids + [pid_str]
+        exits = exits + [exit_str]
+        statuses = statuses + [kind]
+        icons = icons + [icon]
+        status_texts = status_texts + [status_text]
+
+        i = i + 1
+    }
+
+    let total = len(labels)
+
+    // ── Header box ────────────────────────────────────────────────────
+    let ts = try { exec("date '+%Y-%m-%d %H:%M:%S'").trim() } catch e { "?" }
+
+    println("")
+    println("  ╔══════════════════════════════════════════════╗")
+    println("  ║  airgenome launchd agents — 상태 대시보드     ║")
+    println("  ╚══════════════════════════════════════════════╝")
+    println("  " + ts + "  (agents: " + to_string(total) + ")")
+    println("")
+
+    // ── Column header ─────────────────────────────────────────────────
+    let col_label = pad("agent", 32)
+    let col_pid = pad("PID", 8)
+    let col_exit = pad("exit", 8)
+    let col_st = "상태"
+    println("  " + col_label + col_pid + col_exit + col_st)
+    println("  ─────────────────────────────────────────────────────────")
+
+    // ── Rows: running first, then idle, then error ────────────────────
+    // Sort order: running → idle → error (stable within group)
+    let order = ["running", "idle", "error"]
+    let mut oi = 0
+    while oi < 3 {
+        let want = order[oi]
+        let mut ri = 0
+        while ri < total {
+            if statuses[ri] == want {
+                let display_label = pad(short_label(labels[ri]), 32)
+                let display_pid = pad(pids[ri], 8)
+                let display_exit = pad(exits[ri], 8)
+                let display_status = icons[ri] + " " + status_texts[ri]
+                println("  " + display_label + display_pid + display_exit + display_status)
+            }
+            ri = ri + 1
+        }
+        oi = oi + 1
+    }
+
+    // ── Summary line ──────────────────────────────────────────────────
+    println("")
+    println("  실행중: " + to_string(count_running) + " | 대기: " + to_string(count_idle) + " | 오류: " + to_string(count_error))
+    println("")
+}

@@ -41,7 +41,7 @@ fn cfg(key: str, fallback: str) -> str {
 fn rsync_to(label: str, src: str, alias: str, dst: str) {
     println("[sync_remote] " + label + " : " + alias + ":" + dst)
     // 1) 원격 디렉토리 mkdir -p (없으면 생성)
-    let mkdir_cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes '" + alias + "' 'mkdir -p \"" + dst + "\"' 2>&1 || true"
+    let mkdir_cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes '" + alias + "' 'mkdir -p \"" + dst + "\"' 2>&1 || true"
     exec(mkdir_cmd)
     // 2) rsync -az (no --delete, --timeout 으로 hang 방지, || true 로 부분 실패 격리)
     let cmd = "rsync -az --timeout=30 '" + src + "/' '" + alias + ":" + dst + "/' 2>&1 || true"

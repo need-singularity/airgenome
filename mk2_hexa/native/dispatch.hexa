@@ -356,7 +356,7 @@ fn genome_roll_baseline() -> void {
 
     // Mirror baseline to Ubuntu so per_process_diff finds it there.
     if ubu_reachable() {
-        exec("scp -o ConnectTimeout=3 -q " + abs_base + " " + REMOTE + ":" + REMOTE_DIR + "/" + baseline_path + " 2>/dev/null")
+        exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + abs_base + " " + REMOTE + ":" + REMOTE_DIR + "/" + baseline_path + " 2>/dev/null")
     }
 
     let ts = exec("date +%s").trim()
@@ -423,10 +423,10 @@ fn genome_fanout() -> str {
     let out_diff = load_cfg("per_process_diff_out", "forge/per_process_diff.jsonl")
     let out_anom = load_cfg("per_process_anomaly_out", "forge/per_process_anomaly.jsonl")
     let out_src  = load_cfg("per_source_genome_out",  "forge/per_source_genome.jsonl")
-    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_diff + " " + env("HOME") + "/Dev/airgenome/" + out_diff + " 2>/dev/null")
-    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_anom + " " + env("HOME") + "/Dev/airgenome/" + out_anom + " 2>/dev/null")
+    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_diff + " " + env("HOME") + "/Dev/airgenome/" + out_diff + " 2>/dev/null")
+    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_anom + " " + env("HOME") + "/Dev/airgenome/" + out_anom + " 2>/dev/null")
     // per_source_genome appends — merge by scp + cat.
-    exec("scp -o ConnectTimeout=3 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_src + " /tmp/_genome_src_remote.jsonl 2>/dev/null")
+    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_src + " /tmp/_genome_src_remote.jsonl 2>/dev/null")
     exec("cat /tmp/_genome_src_remote.jsonl >> " + env("HOME") + "/Dev/airgenome/" + out_src + " 2>/dev/null")
 
     append_file(LOG_FILE, ts_start + "\tgenome\tfanout\tubu\t" + to_string(elapsed) + "s\n")

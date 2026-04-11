@@ -122,7 +122,7 @@ fn probe_ubu() -> str {
     let ssh_alias = load_cfg("ssh_alias", "ubu")
     // LC_ALL=C 강제: ubu 가 한국어 로케일이면 free -m 이 "메모리:" 로 출력되어
     // awk '/Mem/' 매칭 실패 → lines 밀림 → ram/gpu 전부 0 파싱 (2026-04-11 발견)
-    let cmd = "ssh -o ConnectTimeout=3 -o BatchMode=yes " + ssh_alias + " \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits\" 2>/dev/null"
+    let cmd = "ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + ssh_alias + " \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits\" 2>/dev/null"
     let mut out = ""
     try { out = exec(cmd).trim() } catch e { out = "" }
     if len(out) == 0 {
@@ -176,7 +176,7 @@ fn probe_ubu() -> str {
 
 fn probe_htz() -> str {
     // LC_ALL=C 예방: 로케일 의존 제거 (ubu 사례와 동일 방어)
-    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nproc\" 2>/dev/null"
+    let cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes hetzner \"export LC_ALL=C; uptime && free -m | awk '/Mem/{print \\$2,\\$3,\\$7}' && nproc\" 2>/dev/null"
     let mut out = ""
     try { out = exec(cmd).trim() } catch e { out = "" }
     if len(out) == 0 {

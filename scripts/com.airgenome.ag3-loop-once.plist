@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ag3-loop-once — AG3 연속 돌파 루프 (ONCE 모드)
+  StartInterval=5: launchd가 5초 간격으로 프로세스 1회 실행
+  while-true + sleep 누적 CPU 폭주 방지 (D1 골화 2026-04-10)
+  상태 영속: ~/.airgenome/ag3_loop_state.json (last_write_idx, idle_ticks, last_run_ts)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.ag3-loop-once</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>export AG3LOOP_ONCE=1 HOME=__HOME__; exec __HOME__/.hx/bin/hexa __HOME__/Dev/airgenome/modules/ag3_loop.hexa</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>AG3LOOP_ONCE</key>
+        <string>1</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-ag3-loop-once.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-ag3-loop-once.err</string>
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+</dict>
+</plist>

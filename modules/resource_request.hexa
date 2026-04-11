@@ -213,7 +213,7 @@ fn cmd_check(project: str) -> void {
         ubu_gpu_free = 12 - ubu_used
     } else {
         // infra_state 없을 시 SSH 프로브 (R17: timeout)
-        let ubu_probe = exec("ssh -o ConnectTimeout=3 ubu 'nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null || echo -1'").trim()
+        let ubu_probe = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null || echo -1'").trim()
         try {
             let free_mb = to_int(to_float(ubu_probe))
             if free_mb > 0 {

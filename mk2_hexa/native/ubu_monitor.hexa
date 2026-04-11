@@ -92,9 +92,11 @@ fn is_excluded(name: str, excludes: auto) -> bool {
 //  SSH helper
 // ═══════════════════════════════════════════════════════════════════════
 
+let SSH_OPTS = "-o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes"
+
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ubu_mon.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ubu_mon.sh 2>/dev/null")
+    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ubu_mon.sh 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }

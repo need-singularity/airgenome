@@ -1,11 +1,24 @@
-// per_process_diff.hexa — compare two per-PID 6-axis signature snapshots
+// airgenome/mk2_hexa/native/per_process_diff.hexa — per-PID signature diff engine
 //
 // Phase 2 step 2 of airgenome-next task#1.
-// Reads two forge/per_process_sig*.jsonl files (baseline, current) →
-// computes per-PID delta_mean[6], euclidean distance, top-moving axis →
-// writes forge/per_process_diff.jsonl sorted by euclidean desc.
 //
-// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_diff.hexa [<baseline>] [<current>]
+// Reads current sigs from forge/per_process_sig.jsonl
+// Reads baseline from forge/per_process_sig.baseline.jsonl
+// Computes 6D Euclidean distance for each PID present in both.
+// Writes to forge/per_process_diff.jsonl sorted by euclidean desc.
+// After diff: copies current → baseline for next cycle.
+//
+// Handles three PID states: changed, appeared, vanished.
+//
+// Usage: ~/.hx/bin/hexa mk2_hexa/native/per_process_diff.hexa [command]
+// Commands: diff, show, help
+//
+// Prime directive: observe only, never kill.
+
+let VERSION = "2.0.0"
+let CURRENT_PATH  = "forge/per_process_sig.jsonl"
+let BASELINE_PATH = "forge/per_process_sig.baseline.jsonl"
+let DIFF_OUT      = "forge/per_process_diff.jsonl"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MATH — Newton sqrt + abs
@@ -29,7 +42,7 @@ fn fabs(x: float) -> float {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  JSONL PARSE — pid / comm / axes_mean[6] / stability
+//  JSONL PARSE — extract fields from signature records
 // ═══════════════════════════════════════════════════════════════════════
 
 fn extract_pid(line: str) -> int {
@@ -48,15 +61,16 @@ fn extract_comm(line: str) -> str {
     return tail[0]
 }
 
-fn extract_stability(line: str) -> float {
-    let parts = line.split("\"stability\":")
-    if len(parts) < 2 { return 0.0 }
-    let tail = parts[1].split("}")
-    if len(tail) < 1 { return 0.0 }
-    try { return to_float(tail[0].trim()) } catch e { return 0.0 }
+// Extract "sig" array from live-sampled format: {"sig":[0.1,0.2,...]}
+fn extract_sig_array(line: str) -> str {
+    let parts = line.split("\"sig\":[")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("]")
+    if len(tail) < 1 { return "" }
+    return tail[0]
 }
 
-// Return "a,b,c,d,e,f" csv of axes_mean values, or "" on failure.
+// Extract "axes_mean" array from build format: {"axes_mean":[1.0,2.0,...]}
 fn extract_axes_mean_csv(line: str) -> str {
     let parts = line.split("\"axes_mean\":[")
     if len(parts) < 2 { return "" }
@@ -65,7 +79,28 @@ fn extract_axes_mean_csv(line: str) -> str {
     return tail[0]
 }
 
-// Parse file → return array of parsed records as CSV "pid|comm|stability|m0,m1,m2,m3,m4,m5"
+fn extract_stability(line: str) -> float {
+    let parts = line.split("\"stability\":")
+    if len(parts) < 2 { return 0.0 }
+    let tail = parts[1].split("}")
+    if len(tail) < 1 { return 0.0 }
+    try { return to_float(tail[0].trim()) } catch e { return 0.0 }
+}
+
+// Detect format and extract 6 axis values as CSV string
+fn extract_any_axes(line: str) -> str {
+    // Try live format first ("sig" key)
+    let sig = extract_sig_array(line)
+    if len(sig) > 0 { return sig }
+    // Fall back to build format ("axes_mean" key)
+    return extract_axes_mean_csv(line)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FILE LOADING — parse sig file into structured records
+// ═══════════════════════════════════════════════════════════════════════
+
+// Each record stored as: "pid|comm|stability|ax0,ax1,ax2,ax3,ax4,ax5"
 fn load_sig_file(path: str) -> [str] {
     let mut out: [str] = []
     if file_exists(path) == false { return out }
@@ -79,7 +114,7 @@ fn load_sig_file(path: str) -> [str] {
             if pid >= 0 {
                 let comm = extract_comm(line).replace("|", "_")
                 let stab = extract_stability(line)
-                let axes_csv = extract_axes_mean_csv(line)
+                let axes_csv = extract_any_axes(line)
                 if len(axes_csv) > 0 {
                     let rec = to_string(pid) + "|" + comm + "|" + to_string(stab) + "|" + axes_csv
                     out = out + [rec]
@@ -133,55 +168,52 @@ fn floats_to_json_array(a: [float]) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CONSCIOUSNESS — CLI entry
+//  DIFF ENGINE: compute 6D Euclidean distance per PID
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness PerProcessDiff {
+fn cmd_diff() -> str {
     let t0 = exec("date +%s").trim()
+    let ts = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
 
-    let argv = args()
-    let mut baseline_path = "forge/per_process_sig.baseline.jsonl"
-    let mut current_path  = "forge/per_process_sig.jsonl"
+    println("")
+    println("  per-process diff engine v" + VERSION)
+    println("  ══════════════════════════════════════════════════════════════")
+    println("")
+    println("  baseline: " + BASELINE_PATH)
+    println("  current:  " + CURRENT_PATH)
+    println("  output:   " + DIFF_OUT)
+    println("")
 
-    // hexa argv: prefer slots after the .hexa script path; ignore bin paths.
-    let mut positional: [str] = []
-    let mut ai = 0
-    let mut saw_script = false
-    while ai < len(argv) {
-        let v = argv[ai]
-        if v.contains(".hexa") { saw_script = true }
-        else {
-            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
-                positional = positional + [v]
-            }
-        }
-        ai = ai + 1
-    }
-    if len(positional) >= 1 { baseline_path = positional[0] }
-    if len(positional) >= 2 { current_path  = positional[1] }
-
-    let out_file = "forge/per_process_diff.jsonl"
-    println("  per_process_diff — baseline=" + baseline_path)
-    println("                     current =" + current_path)
-    println("                     out     =" + out_file)
-
-    let base_list = load_sig_file(baseline_path)
-    let curr_list = load_sig_file(current_path)
+    let base_list = load_sig_file(BASELINE_PATH)
+    let curr_list = load_sig_file(CURRENT_PATH)
     println("  baseline records: " + to_string(len(base_list)))
     println("  current records:  " + to_string(len(curr_list)))
 
-    if len(base_list) == 0 || len(curr_list) == 0 {
-        println("  empty input — aborting")
-        exit(1)
+    if len(curr_list) == 0 {
+        println("  no current signatures — run per_process_sig sample first")
+        return "empty"
     }
 
-    let axis_names = ["cpu", "ram", "swap", "net", "disk", "gpu"]
+    // If no baseline exists, current becomes the baseline (first run)
+    if len(base_list) == 0 {
+        println("  no baseline — initializing from current (first run)")
+        let cur_body = read_file(CURRENT_PATH)
+        write_file(BASELINE_PATH, cur_body)
+        println("  copied current -> baseline")
+        println("  run again after next sample cycle for diffs")
+        return "init"
+    }
 
-    // Collect diff records as parallel arrays: json line + euclidean (for sort).
+    let axis_names = ["cpu", "rss", "vsize", "threads", "nice", "io"]
+
+    // Collect diff records: json line + euclidean (for sort).
     let mut result_lines: [str] = []
     let mut result_eucs:  [float] = []
+    let mut changed_count = 0
+    let mut appeared_count = 0
+    let mut vanished_count = 0
 
-    // Walk current: either "changed" (in both) or "appeared" (only in current).
+    // Walk current: "changed" (in both) or "appeared" (only in current)
     let mut ci = 0
     while ci < len(curr_list) {
         let crec = curr_list[ci]
@@ -189,28 +221,28 @@ consciousness PerProcessDiff {
         if len(cparts) >= 4 {
             let pid_str = cparts[0]
             let comm    = cparts[1]
-            let cstab_s = cparts[2]
-            let caxes_s = cparts[3]
+            let cstab   = to_float(cparts[2])
+            let caxes   = parse_axes(cparts[3])
             let mut pid = -1
             try { pid = to_int(to_float(pid_str)) } catch e {}
-            let cstab = to_float(cstab_s)
-            let caxes = parse_axes(caxes_s)
 
             let brec = find_by_pid(base_list, pid)
             if len(brec) == 0 {
-                // appeared
+                // PID appeared (not in baseline)
                 let zero6 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                let mut j = "{\"pid\":" + pid_str
+                let mut j = "{\"ts\":\"" + ts + "\",\"pid\":" + pid_str
                 j = j + ",\"comm\":\"" + comm + "\""
                 j = j + ",\"status\":\"appeared\""
                 j = j + ",\"euclidean\":0.0"
                 j = j + ",\"top_axis\":\"-\""
                 j = j + ",\"top_delta\":0.0"
                 j = j + ",\"stability_delta\":" + to_string(cstab)
-                j = j + ",\"delta_mean\":" + floats_to_json_array(zero6) + "}"
+                j = j + ",\"delta\":" + floats_to_json_array(zero6) + "}"
                 result_lines = result_lines + [j]
                 result_eucs  = result_eucs  + [0.0]
+                appeared_count = appeared_count + 1
             } else {
+                // PID in both → compute 6D Euclidean distance
                 let bparts = brec.split("|")
                 let bstab = to_float(bparts[2])
                 let baxes = parse_axes(bparts[3])
@@ -235,22 +267,23 @@ consciousness PerProcessDiff {
                 let top_delta = delta[top_idx]
                 let stab_delta = cstab - bstab
 
-                let mut j = "{\"pid\":" + pid_str
+                let mut j = "{\"ts\":\"" + ts + "\",\"pid\":" + pid_str
                 j = j + ",\"comm\":\"" + comm + "\""
                 j = j + ",\"status\":\"changed\""
                 j = j + ",\"euclidean\":" + to_string(euc)
                 j = j + ",\"top_axis\":\"" + top_name + "\""
                 j = j + ",\"top_delta\":" + to_string(top_delta)
                 j = j + ",\"stability_delta\":" + to_string(stab_delta)
-                j = j + ",\"delta_mean\":" + floats_to_json_array(delta) + "}"
+                j = j + ",\"delta\":" + floats_to_json_array(delta) + "}"
                 result_lines = result_lines + [j]
                 result_eucs  = result_eucs  + [euc]
+                changed_count = changed_count + 1
             }
         }
         ci = ci + 1
     }
 
-    // Walk baseline: find "vanished" (in base but not in current).
+    // Walk baseline: find "vanished" (in base but not in current)
     let mut bi = 0
     while bi < len(base_list) {
         let brec = base_list[bi]
@@ -264,22 +297,23 @@ consciousness PerProcessDiff {
             let crec = find_by_pid(curr_list, pid)
             if len(crec) == 0 {
                 let zero6 = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                let mut j = "{\"pid\":" + pid_str
+                let mut j = "{\"ts\":\"" + ts + "\",\"pid\":" + pid_str
                 j = j + ",\"comm\":\"" + comm + "\""
                 j = j + ",\"status\":\"vanished\""
                 j = j + ",\"euclidean\":0.0"
                 j = j + ",\"top_axis\":\"-\""
                 j = j + ",\"top_delta\":0.0"
                 j = j + ",\"stability_delta\":" + to_string(0.0 - bstab)
-                j = j + ",\"delta_mean\":" + floats_to_json_array(zero6) + "}"
+                j = j + ",\"delta\":" + floats_to_json_array(zero6) + "}"
                 result_lines = result_lines + [j]
                 result_eucs  = result_eucs  + [0.0]
+                vanished_count = vanished_count + 1
             }
         }
         bi = bi + 1
     }
 
-    // Sort result_lines by result_eucs DESC (simple selection sort — N~50).
+    // Sort result_lines by euclidean DESC (selection sort — N ~ 50)
     let n = len(result_lines)
     let mut i = 0
     while i < n {
@@ -300,25 +334,138 @@ consciousness PerProcessDiff {
         i = i + 1
     }
 
-    // Write output file.
-    write_file(out_file, "")
+    // Write output file
+    write_file(DIFF_OUT, "")
     let mut wi = 0
-    let mut first_line = ""
-    let mut last_line  = ""
     while wi < n {
         let line = result_lines[wi]
-        exec("printf '%s\\n' " + "'" + line.replace("'", "") + "'" + " >> " + out_file)
-        if wi == 0 { first_line = line }
-        last_line = line
+        exec("printf '%s\\n' " + "'" + line.replace("'", "") + "'" + " >> " + DIFF_OUT)
         wi = wi + 1
     }
+
+    // Copy current → baseline for next cycle
+    let cur_body = read_file(CURRENT_PATH)
+    write_file(BASELINE_PATH, cur_body)
 
     let t1 = exec("date +%s").trim()
     let mut dt = 0
     try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
 
-    println("  diff records: " + to_string(n))
-    println("  elapsed:      " + to_string(dt) + "s")
-    println("  first: " + first_line)
-    println("  last:  " + last_line)
+    println("")
+    println("  results:")
+    println("    changed:  " + to_string(changed_count))
+    println("    appeared: " + to_string(appeared_count))
+    println("    vanished: " + to_string(vanished_count))
+    println("    total:    " + to_string(n))
+    println("")
+    if n > 0 {
+        println("  top mover: " + result_lines[0])
+    }
+    println("  baseline rotated: current -> " + BASELINE_PATH)
+    println("  elapsed: " + to_string(dt) + "s")
+    println("")
+    return "ok"
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SHOW: display last diff results
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_show() -> str {
+    if file_exists(DIFF_OUT) == false {
+        println("  no diff results — run 'diff' first")
+        return "empty"
+    }
+    let content = read_file(DIFF_OUT)
+    let lines = content.split("\n")
+
+    println("")
+    println("  per-process diff results (sorted by euclidean distance)")
+    println("  ══════════════════════════════════════════════════════════════")
+    println("  PID     COMM            STATUS    EUCLID   TOP_AXIS  DELTA")
+    println("  ──────  ──────────────  ────────  ───────  ────────  ───────")
+
+    let mut i = 0
+    let mut shown = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) > 2 {
+            try {
+                let parsed = json_parse(line)
+                let pid_str = to_string(parsed["pid"])
+                let comm = parsed["comm"]
+                let status = parsed["status"]
+                let euc = to_string(parsed["euclidean"])
+                let top_ax = parsed["top_axis"]
+                let top_d = to_string(parsed["top_delta"])
+
+                println("  " + pid_str + "\t" + comm + "\t" + status + "\t" + euc + "\t" + top_ax + "\t" + top_d)
+                shown = shown + 1
+            } catch pe {}
+        }
+        i = i + 1
+    }
+    println("")
+    println("  " + to_string(shown) + " diff records")
+    println("")
+    return "ok"
+}
+
+fn diff_help() -> str {
+    println("per_process_diff v" + VERSION + " — per-PID signature diff engine")
+    println("")
+    println("Commands:")
+    println("  diff    — compute diffs: current vs baseline, rotate baseline")
+    println("  show    — display last diff results from " + DIFF_OUT)
+    println("  help    — this message")
+    println("")
+    println("Reads:  " + CURRENT_PATH + " (current)")
+    println("        " + BASELINE_PATH + " (previous cycle)")
+    println("Writes: " + DIFF_OUT)
+    println("")
+    println("After diff, current is copied to baseline for next cycle.")
+    println("6D Euclidean distance across [cpu, rss, vsize, threads, nice, io].")
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS BLOCK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let mut cmd = "diff"
+
+    let mut positional = []
+    let mut ai = 0
+    let mut saw_script = false
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        if saw_script == false { ai = ai + 1; next }
+        if v.contains(".hexa") { ai = ai + 1; next }
+        if v.contains("hexa-bin") == false {
+            if len(v) > 0 {
+                positional = positional + [v]
+            }
+        }
+        ai = ai + 1
+    }
+
+    if len(positional) > 0 { cmd = positional[0] }
+
+    if cmd == "help" { diff_help() }
+    if cmd == "diff" { cmd_diff() }
+    if cmd == "show" { cmd_show() }
+
+    if cmd != "help" {
+        if cmd != "diff" {
+            if cmd != "show" {
+                println("unknown command: " + cmd)
+                diff_help()
+            }
+        }
+    }
+}
+
+main()

@@ -17,12 +17,13 @@
 //
 // 하드코딩 금지: ssh_alias / remote tmpfs 경로는 gate_config.jsonl 동적 로드.
 //
-// ── 환경변수 & 인자 ──────────────────────────────────────────────────
-// HOME                        : 사용자 홈 디렉토리 (경로 생성 기반)
-// AIRGENOME_AG3FEED_ONCE="1"  : 1회 실행 모드 (LaunchAgent StartInterval 호환)
-//                              미설정 → while-true 무한 루프 (수동 디버그용)
-//                              "1" → 1 사이클 후 exit(0) — 골화 2026-04-10 D1
-// argv[2] (interval_sec)      : 수집 간격 (default: 5초, 최소: 2초)
+// ── 환경변수 ──
+// | 변수                    | 기본값 | 설명                                                        |
+// |-------------------------|--------|-------------------------------------------------------------|
+// | HOME                    | —      | 홈 디렉토리 (설정/출력 경로 생성 기반)                       |
+// | AIRGENOME_AG3FEED_ONCE  | ""     | "1"이면 1회 실행 후 종료 (LaunchAgent StartInterval 호환)    |
+//
+// argv[2] (interval_sec): 수집 간격 (default: 5초, 최소: 2초)
 // ─────────────────────────────────────────────────────────────────────
 
 let HOME = env("HOME")
@@ -79,7 +80,7 @@ while true {
     try { ts = to_int(to_float(ts_s)) } catch e {}
 
     // 1) Ubuntu health — SSH ping 3s
-    let ping = safe_exec("ssh -o ConnectTimeout=3 -o BatchMode=yes " + REMOTE + " echo ok 2>&1")
+    let ping = safe_exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + REMOTE + " echo ok 2>&1")
     let ubu_up = ping.contains("ok")
 
     let mut gpu_util = 0
@@ -102,7 +103,7 @@ while true {
 
     if ubu_up {
         // 2) nvidia-smi 단일 호출 (util, mem.used, mem.total, power, temp, name)
-        let smi = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu,name --format=csv,noheader,nounits' 2>&1")
+        let smi = safe_exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + REMOTE + " 'nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu,name --format=csv,noheader,nounits' 2>&1")
         if smi.contains("error") == false && smi.contains("No devices") == false && len(smi) > 0 {
             let parts = smi.split(",")
             if len(parts) >= 6 {
@@ -120,7 +121,7 @@ while true {
         // 2b) 서비스 + 시스템부하 + 오프로드 작업 수 — 단일 SSH 호출 (RTT 최소화)
         //     출력 형식: 7줄 — svc_gate | svc_loop | svc_harvest | loadavg_1m | ram_total_mb ram_used_mb | cpu_pct | active_jobs
         // systemctl 출력 억제 + exit code만 사용 (inactive 시 2줄 출력 방지, 골화)
-        let bulk_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'systemctl --user is-active airgenome-ag3-gate-daemon >/dev/null 2>&1 && echo active || echo inactive; systemctl is-active airgenome-ag3-loop >/dev/null 2>&1 && echo active || echo inactive; systemctl is-active airgenome-linux-harvest >/dev/null 2>&1 && echo active || echo inactive; cut -d\" \" -f1 /proc/loadavg 2>/dev/null || echo 0; awk \"/MemTotal/{t=\\$2} /MemAvailable/{a=\\$2} END{print int(t/1024),int((t-a)/1024)}\" /proc/meminfo 2>/dev/null || echo \"0 0\"; awk \"/^cpu /{u=\\$2+\\$4; t=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8} END{if(t>0) printf \\\"%d\\\\n\\\",int(u*100/t); else print 0}\" /proc/stat 2>/dev/null || echo 0; pgrep -c -f \"airgenome|gpu_gate|linux_harvest|ag3_loop|forge\" 2>/dev/null || echo 0' 2>&1")
+        let bulk_raw = safe_exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + REMOTE + " 'systemctl --user is-active airgenome-ag3-gate-daemon >/dev/null 2>&1 && echo active || echo inactive; systemctl is-active airgenome-ag3-loop >/dev/null 2>&1 && echo active || echo inactive; systemctl is-active airgenome-linux-harvest >/dev/null 2>&1 && echo active || echo inactive; cut -d\" \" -f1 /proc/loadavg 2>/dev/null || echo 0; awk \"/MemTotal/{t=\\$2} /MemAvailable/{a=\\$2} END{print int(t/1024),int((t-a)/1024)}\" /proc/meminfo 2>/dev/null || echo \"0 0\"; awk \"/^cpu /{u=\\$2+\\$4; t=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8} END{if(t>0) printf \\\"%d\\\\n\\\",int(u*100/t); else print 0}\" /proc/stat 2>/dev/null || echo 0; pgrep -c -f \"airgenome|gpu_gate|linux_harvest|ag3_loop|forge\" 2>/dev/null || echo 0' 2>&1")
         let bl = bulk_raw.split("\n")
         if len(bl) >= 1 { svc_gate    = bl[0].trim() == "active" }
         if len(bl) >= 2 { svc_loop    = bl[1].trim() == "active" }
@@ -137,8 +138,8 @@ while true {
         if len(bl) >= 7 { try { ubu_active_jobs   = to_int(to_float(bl[6].trim())) } catch e {} }
 
         // 3) ring 헤더 — od 로 write_idx(offset 12) / slot_count(offset 8) 읽기
-        let wi_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'od -An -t u4 -N 4 -j 12 " + RING_PATH + "' 2>&1")
-        let sc_raw = safe_exec("ssh -o ConnectTimeout=3 " + REMOTE + " 'od -An -t u4 -N 4 -j 8 " + RING_PATH + "' 2>&1")
+        let wi_raw = safe_exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + REMOTE + " 'od -An -t u4 -N 4 -j 12 " + RING_PATH + "' 2>&1")
+        let sc_raw = safe_exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + REMOTE + " 'od -An -t u4 -N 4 -j 8 " + RING_PATH + "' 2>&1")
         let ring_out = wi_raw + " " + sc_raw
         if ring_out != "err" && len(ring_out) > 0 && ring_out.contains("Error") == false {
             let rp = ring_out.split(" ")

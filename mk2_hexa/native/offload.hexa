@@ -34,16 +34,18 @@ let UBU_HOST = load_cfg("remote_host", "")
 //  SSH helpers
 // ═══════════════════════════════════════════════════════════════════════
 
+let SSH_OPTS = "-o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes"
+
 fn ssh_cmd(cmd: str) -> str {
     write_file("/tmp/_ag_ssh.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>&1")
+    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>&1")
     if to_string(result).contains("exec error") { return to_string(result) }
     return result.trim()
 }
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ag_ssh.sh", cmd)
-    let result = exec("ssh " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>/dev/null")
+    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }
@@ -287,7 +289,7 @@ fn remote_hexa(script_args: str) -> str {
 
     // Sync hexa.toml and dependencies
     exec("scp hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
-    exec("ssh " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
+    exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
     exec("scp $HOME/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
 
     // Extract just the filename
@@ -328,7 +330,7 @@ fn remote_python(script_args: str) -> str {
 
     // Sync script
     println("  [offload] syncing " + script + " → Ubuntu")
-    exec("ssh " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
+    exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
     exec("scp " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     let fname = script

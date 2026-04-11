@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  detector-loop-once — detector_loop ONCE mode (launchd interval)
+  StartInterval=60: launchd triggers 1 iteration every 60s (matches loop_interval_sec default)
+  KeepAlive=false: process exits after single tick, launchd re-invokes on schedule
+  State persisted: ~/.airgenome/detector_loop_state.json (prev_mi, prev_cascade, prev_limit, last_blow_ts, tick)
+  Replaces unconditional while-true daemon to prevent process accumulation (D1 audit 2026-04-12)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.detector-loop-once</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>export DETECTOR_LOOP_ONCE=1 HOME=__HOME__; exec __HOME__/.hx/bin/hexa __HOME__/Dev/airgenome/modules/detectors/detector_loop.hexa</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>DETECTOR_LOOP_ONCE</key>
+        <string>1</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-detector-loop-once.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-detector-loop-once.err</string>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>

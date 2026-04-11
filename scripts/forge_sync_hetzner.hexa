@@ -38,7 +38,7 @@ fn log_err(msg: str) {
 fn run() {
     // 원격 디렉토리 보장
     let mkdir_ok = try {
-        exec("ssh -o ConnectTimeout=8 " + HOST + " 'mkdir -p \"" + DST_DIR + "\"' 2>&1")
+        exec("ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " 'mkdir -p \"" + DST_DIR + "\"' 2>&1")
         true
     } catch e { false }
     if mkdir_ok == false {

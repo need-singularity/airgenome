@@ -50,7 +50,7 @@ println("== forge_remote_pack — Hetzner native PoC ==")
 //       사용자 인자를 흘려버리는 이슈가 있어, 원격 복사본 기본 경로를 sed 로
 //       REMOTE_PACK 으로 직접 치환한다. 로컬 원본은 건드리지 않는다.
 println("[1/5] pushing scripts/genome_pack.hexa → " + HOST + " (with output path injected)")
-let push_mk = "ssh -o ConnectTimeout=8 " + HOST +
+let push_mk = "ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST +
     " 'mkdir -p " + REMOTE_ROOT + "/scripts' 2>&1"
 try { exec(push_mk) } catch e {
     println("ERROR: remote mkdir failed: " + to_string(e))
@@ -64,7 +64,7 @@ try { exec(push_cmd) } catch e {
     exit(1)
 }
 // Inject hard-coded default out_path = REMOTE_PACK on remote copy
-let sed_cmd = "ssh " + HOST + " " + shquote(
+let sed_cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote(
     "sed -i 's|ROOT + \"/forge/genomes.pack\"|\"" + REMOTE_PACK + "\"|' " +
     REMOTE_ROOT + "/scripts/genome_pack.hexa"
 ) + " 2>&1"
@@ -78,7 +78,7 @@ println("  push+inject ok")
 println("[2/5] executing remote packer (non-destructive → " + REMOTE_PACK + ")")
 let remote_inner = HEXA_BIN + " " + REMOTE_ROOT + "/scripts/genome_pack.hexa " +
     REMOTE_ROOT + "/forge/genomes.index.jsonl " + REMOTE_PACK
-let remote_cmd = "ssh " + HOST + " " + shquote("cd " + REMOTE_ROOT + " && rm -f " + REMOTE_PACK + " && " + remote_inner) + " 2>&1"
+let remote_cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote("cd " + REMOTE_ROOT + " && rm -f " + REMOTE_PACK + " && " + remote_inner) + " 2>&1"
 
 let r_start = now_ms()
 let remote_out = try { exec(remote_cmd) } catch e {

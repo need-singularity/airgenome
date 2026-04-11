@@ -2,14 +2,20 @@
 //
 // Phase 2 of airgenome-next task#2 (per-source genome accumulation).
 // Reads forge/per_process_sig.jsonl (per-PID signatures) → groups by
-// basename(comm) → aggregates mean/std across PIDs of same source →
+// basename(comm) → aggregates mean/max/std across PIDs of same source →
 // appends one record per source to forge/per_source_genome.jsonl with
-// current unix timestamp. Append mode = time-series genome.
+// ISO 8601 timestamp. Append mode = time-series genome.
+//
+// Record format:
+//   {"ts":"2026-04-12T15:30:00+09:00","source":"Chrome","pid_count":5,
+//    "axes":{"cpu":{"mean":12.3,"max":45.0,"std":8.1},"ram":{...},...}}
+//
+// Env: PER_SOURCE_ONCE=1  → single pass, then exit (no loop)
 //
 // Run: ~/.hx/bin/hexa mk2_hexa/native/per_source_genome.hexa [<sig_file>]
 
 // ═══════════════════════════════════════════════════════════════════════
-//  MATH — Newton sqrt
+//  MATH — Newton sqrt (hexa lacks native sqrt in older builds)
 // ═══════════════════════════════════════════════════════════════════════
 
 fn sqrt_newton(x: float) -> float {
@@ -41,7 +47,7 @@ fn basename(path: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  JSONL PARSE — pid / comm / n_samples / stability / axes_mean csv
+//  JSONL PARSE — comm / n_samples / stability / axes_mean / axes_max
 // ═══════════════════════════════════════════════════════════════════════
 
 fn extract_comm(line: str) -> str {
@@ -68,9 +74,10 @@ fn extract_stability(line: str) -> float {
     try { return to_float(tail[0].trim()) } catch e { return 0.0 }
 }
 
-// Return "a,b,c,d,e,f" csv of axes_mean values, or "" on failure.
-fn extract_axes_mean_csv(line: str) -> str {
-    let parts = line.split("\"axes_mean\":[")
+// Return "a,b,c,d,e,f" csv from a named array field, or "" on failure.
+fn extract_array_csv(line: str, field: str) -> str {
+    let marker = "\"" + field + "\":["
+    let parts = line.split(marker)
     if len(parts) < 2 { return "" }
     let tail = parts[1].split("]")
     if len(tail) < 1 { return "" }
@@ -95,6 +102,9 @@ fn parse_axes(csv: str) -> [float] {
 //  SOURCE TABLE — parallel arrays keyed by source name
 // ═══════════════════════════════════════════════════════════════════════
 
+// Axis names for JSON output (matches per_process_diff convention).
+let AXIS_NAMES = ["cpu", "ram", "swap", "net", "disk", "gpu"]
+
 // Find index of source name in list, or -1.
 fn find_source(names: [str], target: str) -> int {
     let mut i = 0
@@ -103,6 +113,187 @@ fn find_source(names: [str], target: str) -> int {
         i = i + 1
     }
     return -1
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  EMIT — build per-axis {"mean":..,"max":..,"std":..} objects
+// ═══════════════════════════════════════════════════════════════════════
+
+fn build_axis_obj(mean_v: float, max_v: float, std_v: float) -> str {
+    return "{\"mean\":" + to_string(mean_v) + ",\"max\":" + to_string(max_v) + ",\"std\":" + to_string(std_v) + "}"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CORE — read sig file, group by source, compute stats, emit records
+// ═══════════════════════════════════════════════════════════════════════
+
+fn run_accumulation(sig_file: str, out_file: str) -> int {
+    if file_exists(sig_file) == false {
+        println("  input not found — aborting")
+        return 0
+    }
+
+    let body = read_file(sig_file)
+    let lines = body.split("\n")
+
+    // Parallel source tables.
+    let mut src_names:   [str]   = []
+    let mut src_count:   [int]   = []    // n_instances (# PIDs)
+    let mut src_samples: [int]   = []    // total n_samples
+    let mut src_stab:    [float] = []    // sum of stability
+    // 6-axis accumulators: stored as pipe-delimited strings to dodge [[float]].
+    let mut src_sum_mean: [str]  = []    // sum of axes_mean per axis
+    let mut src_sum_sq:   [str]  = []    // sum of (axes_mean)^2 per axis
+    let mut src_max:      [str]  = []    // running max per axis
+
+    let mut li = 0
+    let mut n_pids = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let comm = extract_comm(line)
+            let axes_csv = extract_array_csv(line, "axes_mean")
+            let max_csv  = extract_array_csv(line, "axes_max")
+            if len(comm) > 0 && len(axes_csv) > 0 {
+                let name = basename(comm)
+                let ns   = extract_n_samples(line)
+                let stab = extract_stability(line)
+                let axes = parse_axes(axes_csv)
+                // axes_max from per_process_sig — use mean as fallback
+                let mut axes_mx = parse_axes(axes_csv)
+                if len(max_csv) > 0 {
+                    axes_mx = parse_axes(max_csv)
+                }
+
+                let idx = find_source(src_names, name)
+                if idx < 0 {
+                    // new source
+                    src_names   = src_names + [name]
+                    src_count   = src_count + [1]
+                    src_samples = src_samples + [ns]
+                    src_stab    = src_stab + [stab]
+                    let mut sm = ""
+                    let mut ss = ""
+                    let mut mx = ""
+                    let mut k = 0
+                    while k < 6 {
+                        if k > 0 {
+                            sm = sm + "|"
+                            ss = ss + "|"
+                            mx = mx + "|"
+                        }
+                        sm = sm + to_string(axes[k])
+                        ss = ss + to_string(axes[k] * axes[k])
+                        mx = mx + to_string(axes_mx[k])
+                        k = k + 1
+                    }
+                    src_sum_mean = src_sum_mean + [sm]
+                    src_sum_sq   = src_sum_sq + [ss]
+                    src_max      = src_max + [mx]
+                } else {
+                    src_count[idx]   = src_count[idx] + 1
+                    src_samples[idx] = src_samples[idx] + ns
+                    src_stab[idx]    = src_stab[idx] + stab
+                    let old_sm = src_sum_mean[idx].split("|")
+                    let old_ss = src_sum_sq[idx].split("|")
+                    let old_mx = src_max[idx].split("|")
+                    let mut sm = ""
+                    let mut ss = ""
+                    let mut mx = ""
+                    let mut k = 0
+                    while k < 6 {
+                        let mut prev_m = 0.0
+                        let mut prev_s = 0.0
+                        let mut prev_x = 0.0
+                        try { prev_m = to_float(old_sm[k]) } catch e {}
+                        try { prev_s = to_float(old_ss[k]) } catch e2 {}
+                        try { prev_x = to_float(old_mx[k]) } catch e3 {}
+                        let nm = prev_m + axes[k]
+                        let nq = prev_s + axes[k] * axes[k]
+                        let mut nx = prev_x
+                        if axes_mx[k] > nx { nx = axes_mx[k] }
+                        if k > 0 {
+                            sm = sm + "|"
+                            ss = ss + "|"
+                            mx = mx + "|"
+                        }
+                        sm = sm + to_string(nm)
+                        ss = ss + to_string(nq)
+                        mx = mx + to_string(nx)
+                        k = k + 1
+                    }
+                    src_sum_mean[idx] = sm
+                    src_sum_sq[idx]   = ss
+                    src_max[idx]      = mx
+                }
+                n_pids = n_pids + 1
+            }
+        }
+        li = li + 1
+    }
+
+    let n_sources = len(src_names)
+    println("  pids parsed:  " + to_string(n_pids))
+    println("  sources:      " + to_string(n_sources))
+
+    if n_sources == 0 {
+        println("  no sources — aborting")
+        return 0
+    }
+
+    // ISO 8601 timestamp for this snapshot.
+    let ts_iso = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+
+    // Emit one json record per source — APPEND mode.
+    let mut first_line = ""
+    let mut last_line  = ""
+    let mut si = 0
+    while si < n_sources {
+        let name     = src_names[si]
+        let n_inst   = src_count[si]
+        let nf       = to_float(to_string(n_inst))
+
+        let sm_parts = src_sum_mean[si].split("|")
+        let ss_parts = src_sum_sq[si].split("|")
+        let mx_parts = src_max[si].split("|")
+
+        // Build the "axes" object with per-axis {mean, max, std}.
+        let mut axes_json = ""
+        let mut k = 0
+        while k < 6 {
+            let mut sm_k = 0.0
+            let mut ss_k = 0.0
+            let mut mx_k = 0.0
+            try { sm_k = to_float(sm_parts[k]) } catch e {}
+            try { ss_k = to_float(ss_parts[k]) } catch e2 {}
+            try { mx_k = to_float(mx_parts[k]) } catch e3 {}
+            let mean_k = sm_k / nf
+            let var_k  = (ss_k / nf) - (mean_k * mean_k)
+            let mut vv = var_k
+            if vv < 0.0 { vv = 0.0 }
+            let std_k = sqrt_newton(vv)
+            if k > 0 { axes_json = axes_json + "," }
+            axes_json = axes_json + "\"" + AXIS_NAMES[k] + "\":" + build_axis_obj(mean_k, mx_k, std_k)
+            k = k + 1
+        }
+
+        let safe_name = name.replace("\"", "").replace("\\", "")
+        let mut json = "{\"ts\":\"" + ts_iso + "\""
+        json = json + ",\"source\":\"" + safe_name + "\""
+        json = json + ",\"pid_count\":" + to_string(n_inst)
+        json = json + ",\"axes\":{" + axes_json + "}"
+        json = json + "}"
+
+        exec("printf '%s\\n' " + "'" + json.replace("'", "") + "'" + " >> " + out_file)
+        if si == 0 { first_line = json }
+        last_line = json
+        si = si + 1
+    }
+
+    println("  appended:     " + to_string(n_sources) + " records → " + out_file)
+    println("  first: " + first_line)
+    println("  last:  " + last_line)
+    return n_sources
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -133,160 +324,34 @@ consciousness PerSourceGenome {
     println("  per_source_genome — in =" + sig_file)
     println("                      out=" + out_file)
 
-    if file_exists(sig_file) == false {
-        println("  input not found — aborting")
-        exit(1)
-    }
+    // ONCE mode: env PER_SOURCE_ONCE=1 → single pass and exit.
+    let mut once_mode = false
+    let once_env = env("PER_SOURCE_ONCE")
+    if once_env == "1" { once_mode = true }
 
-    let body = read_file(sig_file)
-    let lines = body.split("\n")
+    if once_mode {
+        println("  mode: ONCE (single pass)")
+        let n = run_accumulation(sig_file, out_file)
+        let t1 = exec("date +%s").trim()
+        let mut dt = 0
+        try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+        println("  elapsed: " + to_string(dt) + "s")
+    } else {
+        println("  mode: CONTINUOUS (Ctrl+C to stop)")
+        let mut run_num = 0
+        while run_num < 999999 {
+            println("")
+            println("  ── pass #" + to_string(run_num) + " ──")
+            let n = run_accumulation(sig_file, out_file)
 
-    // Parallel source tables.
-    let mut src_names:   [str]     = []
-    let mut src_count:   [int]     = []    // n_instances (# PIDs)
-    let mut src_samples: [int]     = []    // total n_samples
-    let mut src_stab:    [float]   = []    // sum of stability (divide by count at end)
-    // 6-axis accumulators: stored as flat strings "a|b|c|d|e|f" to dodge [[float]].
-    let mut src_sum_mean: [str]  = []      // sum of axes_mean per axis
-    let mut src_sum_sq:   [str]  = []      // sum of (axes_mean)^2 per axis
+            let t1 = exec("date +%s").trim()
+            let mut dt = 0
+            try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+            println("  elapsed: " + to_string(dt) + "s (cumulative)")
 
-    let mut li = 0
-    let mut n_pids = 0
-    while li < len(lines) {
-        let line = lines[li].trim()
-        if len(line) > 0 {
-            let comm = extract_comm(line)
-            let axes_csv = extract_axes_mean_csv(line)
-            if len(comm) > 0 && len(axes_csv) > 0 {
-                let name = basename(comm)
-                let ns   = extract_n_samples(line)
-                let stab = extract_stability(line)
-                let axes = parse_axes(axes_csv)
-
-                let idx = find_source(src_names, name)
-                if idx < 0 {
-                    // new source
-                    src_names   = src_names + [name]
-                    src_count   = src_count + [1]
-                    src_samples = src_samples + [ns]
-                    src_stab    = src_stab + [stab]
-                    let mut sm = ""
-                    let mut ss = ""
-                    let mut k = 0
-                    while k < 6 {
-                        if k > 0 {
-                            sm = sm + "|"
-                            ss = ss + "|"
-                        }
-                        sm = sm + to_string(axes[k])
-                        ss = ss + to_string(axes[k] * axes[k])
-                        k = k + 1
-                    }
-                    src_sum_mean = src_sum_mean + [sm]
-                    src_sum_sq   = src_sum_sq + [ss]
-                } else {
-                    src_count[idx]   = src_count[idx] + 1
-                    src_samples[idx] = src_samples[idx] + ns
-                    src_stab[idx]    = src_stab[idx] + stab
-                    let old_sm = src_sum_mean[idx].split("|")
-                    let old_ss = src_sum_sq[idx].split("|")
-                    let mut sm = ""
-                    let mut ss = ""
-                    let mut k = 0
-                    while k < 6 {
-                        let mut prev_m = 0.0
-                        let mut prev_s = 0.0
-                        try { prev_m = to_float(old_sm[k]) } catch e {}
-                        try { prev_s = to_float(old_ss[k]) } catch e2 {}
-                        let nm = prev_m + axes[k]
-                        let nq = prev_s + axes[k] * axes[k]
-                        if k > 0 {
-                            sm = sm + "|"
-                            ss = ss + "|"
-                        }
-                        sm = sm + to_string(nm)
-                        ss = ss + to_string(nq)
-                        k = k + 1
-                    }
-                    src_sum_mean[idx] = sm
-                    src_sum_sq[idx]   = ss
-                }
-                n_pids = n_pids + 1
-            }
+            // Sleep between passes (60s default, aligned with runtime interval).
+            exec("sleep 60")
+            run_num = run_num + 1
         }
-        li = li + 1
     }
-
-    let n_sources = len(src_names)
-    println("  pids parsed:  " + to_string(n_pids))
-    println("  sources:      " + to_string(n_sources))
-
-    if n_sources == 0 {
-        println("  no sources — aborting")
-        exit(1)
-    }
-
-    // Current timestamp for this snapshot.
-    let ts_str = t0
-
-    // Emit one json record per source — APPEND mode.
-    let mut first_line = ""
-    let mut last_line  = ""
-    let mut si = 0
-    while si < n_sources {
-        let name     = src_names[si]
-        let n_inst   = src_count[si]
-        let tot_s    = src_samples[si]
-        let stab_sum = src_stab[si]
-        let nf       = to_float(to_string(n_inst))
-        let stab_avg = stab_sum / nf
-
-        let sm_parts = src_sum_mean[si].split("|")
-        let ss_parts = src_sum_sq[si].split("|")
-
-        let mut mean_csv = ""
-        let mut std_csv  = ""
-        let mut k = 0
-        while k < 6 {
-            let mut sm_k = 0.0
-            let mut ss_k = 0.0
-            try { sm_k = to_float(sm_parts[k]) } catch e {}
-            try { ss_k = to_float(ss_parts[k]) } catch e2 {}
-            let mean_k = sm_k / nf
-            let var_k  = (ss_k / nf) - (mean_k * mean_k)
-            let mut vv = var_k
-            if vv < 0.0 { vv = 0.0 }
-            let std_k = sqrt_newton(vv)
-            if k > 0 {
-                mean_csv = mean_csv + ","
-                std_csv  = std_csv + ","
-            }
-            mean_csv = mean_csv + to_string(mean_k)
-            std_csv  = std_csv + to_string(std_k)
-            k = k + 1
-        }
-
-        let safe_name = name.replace("\"", "").replace("\\", "")
-        let mut json = "{\"ts\":" + ts_str
-        json = json + ",\"source\":\"" + safe_name + "\""
-        json = json + ",\"n_instances\":" + to_string(n_inst)
-        json = json + ",\"axes_mean\":[" + mean_csv + "]"
-        json = json + ",\"axes_std\":["  + std_csv  + "]"
-        json = json + ",\"total_n_samples\":" + to_string(tot_s)
-        json = json + ",\"source_stability\":" + to_string(stab_avg) + "}"
-
-        exec("printf '%s\\n' " + "'" + json.replace("'", "") + "'" + " >> " + out_file)
-        if si == 0 { first_line = json }
-        last_line = json
-        si = si + 1
-    }
-
-    let t1 = exec("date +%s").trim()
-    let mut dt = 0
-    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
-
-    println("  appended:     " + to_string(n_sources) + " records")
-    println("  elapsed:      " + to_string(dt) + "s")
-    println("  first: " + first_line)
-    println("  last:  " + last_line)
 }

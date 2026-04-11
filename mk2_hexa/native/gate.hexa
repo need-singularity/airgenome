@@ -97,7 +97,7 @@ fn setup() -> str {
     // SSH 키 복사
     println("")
     println("  [SSH] 키 설정 중...")
-    let ssh_test = exec("ssh -o ConnectTimeout=3 " + new_user + "@" + new_host + " echo ok 2>&1").trim()
+    let ssh_test = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + new_user + "@" + new_host + " echo ok 2>&1").trim()
     if ssh_test == "ok" {
         println("  SSH 이미 설정됨")
     }
@@ -352,7 +352,7 @@ fn gate_install() -> str {
         println("")
         println("  [Ubuntu] nexus/shared 심볼릭 링크 설정 중...")
         let link_cmd = "mkdir -p ~/Dev/nexus && ln -sfn /tmp/airgenome/nexus/shared ~/Dev/nexus/shared"
-        let link_ok = exec("ssh -o ConnectTimeout=3 " + SSH_ALIAS + " '" + link_cmd + "' 2>&1 && echo ok").trim()
+        let link_ok = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + SSH_ALIAS + " '" + link_cmd + "' 2>&1 && echo ok").trim()
         if link_ok.contains("ok") {
             println("  [Ubuntu] ~/Dev/nexus/shared → /tmp/airgenome/nexus/shared")
         }

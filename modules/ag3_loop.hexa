@@ -11,7 +11,7 @@
 // Prime Directive: kill 금지. 관찰+기록+트리거만.
 // Usage: hexa run modules/ag3_loop.hexa
 
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"
 let AG_HOME = env("AIRGENOME_HOME")
 if AG_HOME == "" { AG_HOME = env("HOME") + "/Dev/airgenome" }
 let NEXUS_HOME = env("NEXUS_HOME")
@@ -102,29 +102,42 @@ fn gpu_util() -> int {
 
 // ── STATE PERSIST (ONCE 모드 inter-iter 상태 복원) ──────────────────────
 // 단순 정규식/split 파싱 — sampler.hexa read_jsonl_val 패턴 (R14: 외부 의존 X)
+// v0.2: try/catch 방어 + last_run_ts 필드 추가 (launchd 실행 추적)
 fn parse_int_field(raw: str, key: str, default_val: int) -> int {
     if raw.contains("\"" + key + "\"") == false { return default_val }
     let p = raw.split("\"" + key + "\"")[1]
     let v = p.split(":")[1].split(",")[0].split("}")[0].trim()
-    return to_int(v)
+    return try { to_int(v) } catch e { default_val }
+}
+
+fn parse_str_field(raw: str, key: str, default_val: str) -> str {
+    if raw.contains("\"" + key + "\"") == false { return default_val }
+    let p = raw.split("\"" + key + "\"")[1]
+    let v = p.split(":")[1].split(",")[0].split("}")[0].trim()
+    // strip surrounding quotes
+    if len(v) >= 2 { v = v.split("\"")[1] }
+    return v
 }
 
 fn load_state() -> str {
-    if file_exists(STATE_PATH) == false { return "" }
-    return read_file(STATE_PATH).trim()
+    let state = try { read_file(STATE_PATH).trim() } catch e { "" }
+    return state
 }
 
 fn save_state(wi: int, idle: int) -> void {
-    let js = "{\"last_write_idx\":" + to_string(wi) + ",\"idle_ticks\":" + to_string(idle) + ",\"ts\":\"" + ts_now() + "\"}"
-    exec("mkdir -p " + env("HOME") + "/.airgenome")
-    write_file(STATE_PATH, js + "\n")
+    let ts = ts_now()
+    let js = "{\"last_write_idx\":" + to_string(wi) + ",\"idle_ticks\":" + to_string(idle) + ",\"last_run_ts\":\"" + ts + "\"}"
+    try { exec("mkdir -p " + env("HOME") + "/.airgenome") } catch e { println("warn: mkdir: " + e) }
+    try { write_file(STATE_PATH, js + "\n") } catch e { println("warn: save_state: " + e) }
     return
 }
 
 // ── MAIN LOOP ───────────────────────────────────────────────────────────
 fn main() {
     println("[AG3-LOOP v" + VERSION + "] started. remote=" + REMOTE + " ring=" + RING_PATH)
-    let once_mode = env("AG3LOOP_ONCE") == "1"
+    let once_raw = try { to_string(exec("printenv AG3LOOP_ONCE")).trim() } catch e { "" }
+    let once_mode = once_raw == "1"
+    if once_mode { println("[AG3-LOOP] ONCE mode active (launchd StartInterval)") }
     let last_write_idx = -1
     let idle_ticks = 0
     let tick = 0
@@ -134,7 +147,8 @@ fn main() {
     if len(prev) > 0 {
         last_write_idx = parse_int_field(prev, "last_write_idx", -1)
         idle_ticks = parse_int_field(prev, "idle_ticks", 0)
-        println("[AG3-LOOP] state restored: wi=" + to_string(last_write_idx) + " idle=" + to_string(idle_ticks))
+        let prev_ts = parse_str_field(prev, "last_run_ts", "unknown")
+        println("[AG3-LOOP] state restored: wi=" + to_string(last_write_idx) + " idle=" + to_string(idle_ticks) + " last_run=" + prev_ts)
     }
 
     while true {

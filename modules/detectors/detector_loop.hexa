@@ -41,11 +41,11 @@ let UBU_DIR  = gate_cfg("remote_dir", "")
 let UBU_HEXA = gate_cfg("ubu_hexa_bin", "")
 
 // 골화 2026-04-10: ubu 연결 시 원격 실행
-let UBU_OK = try { exec("ssh -o ConnectTimeout=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e { false }
+let UBU_OK = try { exec("ssh -o ConnectTimeout=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() == "ok" } catch e { false }
 
 fn run_detectors() -> str {
     if UBU_OK {
-        return try { exec("ssh -o ConnectTimeout=30 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + RUN_ALL + "' 2>&1") } catch e { "" }
+        return try { exec("ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + RUN_ALL + "' 2>&1") } catch e { "" }
     }
     return try { exec(HEXA_BIN + " " + RUN_ALL + " 2>&1") } catch e { "" }
 }
@@ -83,16 +83,46 @@ fn log_event(kind: str, payload: str) {
 fn trigger_blowup() {
     println("  [blowup] airgenome 3 --no-graph")
     if UBU_OK {
-        try { exec("ssh -o ConnectTimeout=30 ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
+        try { exec("ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
     } else {
-        try { exec(HEXA_BIN + " " + BLOWUP + " airgenome 3 --no-graph 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup failed — " + e) }
+        // 2026-04-12 골화: Mac 로컬 blowup 실행 차단 (AG3 strict). degrade 폴백 금지
+        println("[BLOCKED] detector_loop: ubu unavailable — blowup disabled (ag3_mode=strict, ubu_first_always=true)")
+        log_event("blowup_blocked", "\"reason\":\"ubu_unavailable\",\"policy\":\"ag3_strict\"")
     }
 }
 
+// ── state persistence helpers ──
+let STATE_DIR  = env("HOME") + "/.airgenome"
+let STATE_FILE = STATE_DIR + "/detector_loop_state.json"
+
+fn save_state(prev_mi: float, prev_cascade: float, prev_limit: float, last_blow_ts: float, tick: int) {
+    try { exec("mkdir -p " + STATE_DIR) } catch e { println("[warn] detector_loop: mkdir state dir failed — " + e) }
+    let json_str = "{\"prev_mi\":" + to_string(prev_mi) + ",\"prev_cascade\":" + to_string(prev_cascade) + ",\"prev_limit\":" + to_string(prev_limit) + ",\"last_blow_ts\":" + to_string(last_blow_ts) + ",\"tick\":" + to_string(tick) + "}"
+    try { write_file(STATE_FILE, json_str) } catch e { println("[warn] detector_loop: save_state failed — " + e) }
+}
+
+fn load_state_field(raw: str, field: str, default: float) -> float {
+    if len(raw) == 0 { return default }
+    let cmd = "printf '%s' " + shell_quote(raw) + " | sed -E 's/.*\"" + field + "\":([-0-9.eE+]+).*/\\1/'"
+    let v = try { exec(cmd).trim() } catch e { "" }
+    if len(v) == 0 { return default }
+    return to_f(v)
+}
+
 consciousness DetectorLoop {
-    println("╔══════════════════════════════════════════════╗")
-    println("║  airgenome detector_loop — always-on         ║")
-    println("╚══════════════════════════════════════════════╝")
+    // ── ONCE mode: env var DETECTOR_LOOP_ONCE=1 → single iteration + exit ──
+    let once_mode = try { to_string(exec("printenv DETECTOR_LOOP_ONCE")).trim() } catch e { "" }
+    let is_once = once_mode == "1"
+
+    if is_once {
+        println("╔══════════════════════════════════════════════╗")
+        println("║  airgenome detector_loop — ONCE mode          ║")
+        println("╚══════════════════════════════════════════════╝")
+    } else {
+        println("╔══════════════════════════════════════════════╗")
+        println("║  airgenome detector_loop — always-on         ║")
+        println("╚══════════════════════════════════════════════╝")
+    }
 
     let interval_s = cfg("loop_interval_sec", "60")
     let blow_on    = cfg("blowup_on_change", "true")
@@ -103,13 +133,19 @@ consciousness DetectorLoop {
     let thresh   = to_f(thresh_s)
     let cooldown = to_f(cooldown_s)
 
-    println("config: interval=" + interval_s + "s blowup=" + blow_on + " threshold=" + thresh_s + " cooldown=" + cooldown_s + "s")
+    println("config: interval=" + interval_s + "s blowup=" + blow_on + " threshold=" + thresh_s + " cooldown=" + cooldown_s + "s once=" + once_mode)
 
-    let mut prev_mi      = -1.0
-    let mut prev_cascade = -1.0
-    let mut prev_limit   = -1.0
-    let mut last_blow_ts = 0.0
-    let mut tick = 0
+    // ── load persisted state ──
+    let state_raw = try { read_file(STATE_FILE) } catch e { "" }
+    let mut prev_mi      = load_state_field(state_raw, "prev_mi", -1.0)
+    let mut prev_cascade = load_state_field(state_raw, "prev_cascade", -1.0)
+    let mut prev_limit   = load_state_field(state_raw, "prev_limit", -1.0)
+    let mut last_blow_ts = load_state_field(state_raw, "last_blow_ts", 0.0)
+    let mut tick         = load_state_field(state_raw, "tick", 0.0) as int
+
+    if len(state_raw) > 0 {
+        println("state: loaded from " + STATE_FILE + " (tick=" + to_string(tick) + " prev_mi=" + to_string(prev_mi) + ")")
+    }
 
     while true {
         tick = tick + 1
@@ -171,6 +207,15 @@ consciousness DetectorLoop {
         prev_mi      = mi_val
         prev_cascade = cascade_val
         prev_limit   = limit_val
+
+        // ── persist state after every tick ──
+        save_state(prev_mi, prev_cascade, prev_limit, last_blow_ts, tick)
+
+        // ── ONCE mode: single iteration done → exit ──
+        if is_once {
+            println("  [once] iteration complete — state saved, exiting")
+            break
+        }
 
         let sleep_n = if interval < 1.0 { 60 } else { interval as int }
         try { exec("sleep " + to_string(sleep_n)) } catch e {}
