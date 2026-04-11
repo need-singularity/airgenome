@@ -246,7 +246,15 @@ while true; do
       cd "$AIRGENOME" && $HEXA $AIRGENOME/modules/usage.hexa -- one "$CURRENT_NAME" >/dev/null 2>&1
     ) &
 
-    LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
+    # 2026-04-12: 두 가지 fix
+    #  (1) ${CURRENT_DIR}projects/ → ${CURRENT_DIR}/projects/ (slash 누락 — rule#3 trailing-slash 금지와 충돌)
+    #  (2) zsh nomatch abort 방지 + 빈 매치 가드. 단순 setopt null_glob 만 쓰면 매치 0건일 때
+    #      ls -t 가 인자 없이 호출되어 cwd 를 리스트하는 함정. 배열로 모은 뒤 길이 체크.
+    LATEST_JSONL=$(
+      setopt null_glob
+      matches=( "${CURRENT_DIR}/projects/"*/sessions/*.jsonl "${CURRENT_DIR}/projects/"*/*.jsonl )
+      (( ${#matches} )) && ls -t -- "${matches[@]}" 2>/dev/null | head -1
+    )
     if [ -n "$LATEST_JSONL" ]; then
         tail -50 "$LATEST_JSONL" > "$LOGFILE" 2>/dev/null
     fi

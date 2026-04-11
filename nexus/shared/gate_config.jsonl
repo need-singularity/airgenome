@@ -10,7 +10,12 @@
 {"key": "ubu_hexa_bin", "value": "/home/aiden/Dev/hexa-lang/target/release/hexa", "desc": "Ubuntu hexa 바이너리 실경로 (AG3)"}
 {"key": "ubu_ramdisk_cache", "value": "/mnt/ramdisk/blowup_cache", "desc": "blowup 캐시 디렉토리"}
 {"key": "ubu_ramdisk_root", "value": "/mnt/ramdisk", "desc": "Ubuntu ramdisk 루트"}
-{"key": "ubu_blowup_hexa", "value": "/home/aiden/Dev/nexus/mk2_hexa/native/blowup.hexa", "desc": "blowup.hexa 경로"}
+{"key": "ubu_blowup_hexa", "value": "/home/aiden/Dev/nexus/shared/blowup/core/blowup.hexa", "desc": "blowup.hexa 경로 (2026-04-12: mk2_hexa/native → shared/blowup/core 이동. OPT-07 shell-uplift 포함)"}
+{"key": "ubu_blowup_script", "value": "/home/aiden/Dev/nexus/shared/blowup/core/blowup.hexa", "desc": "auto_dispatch 호환 키 — ubu_blowup_hexa 와 동일 (2026-04-12 키 불일치 버그 fix, auto_dispatch.hexa:218 이 이 키를 읽음). DEPRECATED: 2026-04-12 fire_ubu_blowup 가 bt_shell_discover.sh 로 전환. 키는 다른 경로에서 여전히 사용될 수 있어 유지"}
+{"key": "ubu_bt_shell_script", "value": "/home/aiden/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh", "desc": "2026-04-12: DIAG-01 우회 shell-native BT 생성기. blowup.hexa silent dead-code 대체. n6_constants.jsonl 읽어 awk 단일패스로 BT 생성, 메모리 <5MB, 런타임 <500ms. auto_dispatch.fire_ubu_blowup() 이 호출"}
+{"key": "htz_bt_shell_script", "value": "/root/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh", "desc": "Hetzner 용 bt_shell_discover.sh 경로. auto_dispatch.fire_htz_blowup() 이 호출"}
+{"key": "offload_ubu_bt_count", "value": "3", "desc": "fire 당 생성할 BT 개수 (bt_shell_discover.sh 2번째 인자). 기존 offload_ubu_blowup_depth 를 count 로 재해석"}
+{"key": "offload_htz_bt_count", "value": "3", "desc": "Hetzner fire 당 생성할 BT 개수"}
 {"key": "ag3_mode", "value": "strict", "desc": "AG3 집행 모드 (strict|degrade|off) — 2026-04-12 골화: strict 강제. 원격 없으면 heavy 작업 차단 (배터리 보호). degrade 금지"}
 {"key": "log_rotate_max_bytes", "value": "10485760", "desc": "dispatch.log 최대 바이트 (10MB)"}
 {"key": "log_rotate_max_files", "value": "5", "desc": "dispatch.log 보관 세대 수"}
@@ -45,11 +50,11 @@
 {"key": "ubu_gate_sock", "value": "/mnt/ramdisk/airgenome/gate.sock", "desc": "Ubuntu AG3 gate unix socket 경로"}
 {"key": "infra_vast_enabled", "value": "false", "desc": "Vast.ai 프로브 활성화 (2026-04-11 decommissioned → false 기본). true 로 재활성 가능"}
 {"key": "infra_runpod_enabled", "value": "false", "desc": "Runpod 프로브 활성화 (기본 off — runpodctl CLI 10s 생략). true 로 재활성 가능"}
-{"key": "offload_htz_cooldown_s", "value": "5", "desc": "htz cooldown — nice 19 공존 모드. pgrep guard 가 overlap 막고 cooldown 은 race 방어만"}
+{"key": "offload_htz_cooldown_s", "value": "300", "desc": "htz cooldown — 2026-04-12: 5s → 300s. blowup 이 silent OOM 하는 상황에서 5s 쿨다운은 6초마다 15GB 신규 프로세스 스택킹. pgrep guard race window 불충분. 300s 면 blowup runtime(~90s) + 오버헤드 포함 안전 마진"}
 {"key": "offload_htz_enabled", "value": "true", "desc": "htz proactive fire 토글. 2026-04-11: nice -n 19 + ionice -c 3 로 spare capacity 만 사용 → train_decoder 와 공존 가능. 재활성"}
 {"key": "offload_ubu_enabled", "value": "true", "desc": "ubu proactive fire 활성/비활성 토글"}
 {"key": "offload_htz_idle_threshold", "value": "100", "desc": "htz_cpu_pct threshold — pgrep guard 에 의존, idle 기준은 무의미하게 풀어둠 (마구 발사)"}
-{"key": "offload_ubu_cooldown_s", "value": "5", "desc": "ubu cooldown — blowup runtime ~14s, cooldown 은 race 방어용만. pgrep guard 가 병렬 차단. 완료 즉시 재발사 (최대 활용)"}
+{"key": "offload_ubu_cooldown_s", "value": "300", "desc": "ubu cooldown — 2026-04-12: 5s → 300s. DIAG-01: blowup.hexa silent-completion(rc=0, 0byte output) 확인. 5s 쿨다운은 rss=10GB 프로세스를 6초마다 스택킹 → OOM 캐스케이드. 300s 는 blowup runtime(~90s) + buffer. 복구 후 재조정"}
 {"key": "offload_ubu_idle_gpu_threshold", "value": "100", "desc": "ubu gpu threshold — pgrep 의존, 무제한"}
 {"key": "offload_htz_blowup_depth", "value": "2", "desc": "htz blowup depth: 128GB RAM + 32T 이라 depth=2 감내 (depth=3 은 83GB 괴물). 중간 깊이, 2-3min 지속"}
 {"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth: 30GB RAM 제한으로 depth=1 강제. 가볍고 빨리 (30s). 자주 발사"}

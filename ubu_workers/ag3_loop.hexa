@@ -83,7 +83,7 @@ fn append_growth(event: auto) {
 // ── BLOWUP trigger ─────────────────────────────────────────────────────
 fn trigger_blowup(cfg: auto, domain: str) -> bool {
     let hexa = cfg_str(cfg, "ubu_hexa_bin", HEXA_BIN)
-    let blowup = cfg_str(cfg, "ubu_blowup_hexa", env("HOME") + "/Dev/nexus/mk2_hexa/native/blowup.hexa")
+    let blowup = cfg_str(cfg, "ubu_blowup_hexa", env("HOME") + "/Dev/nexus/shared/blowup/core/blowup.hexa")
     // R17: fire-and-forget — nohup+disown ensures blowup detaches fully
     let cmd = "nohup " + hexa + " " + blowup + " " + domain + " 3 --no-graph >/dev/null 2>&1 & disown"
     exec(cmd)

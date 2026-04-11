@@ -18,7 +18,7 @@ if file_exists(HEXA_BIN) == false { HEXA_BIN = env("HOME") + "/.hx/bin/hexa" }
 let AG_ROOT    = env("HOME") + "/Dev/airgenome"
 let NEXUS_ROOT = env("HOME") + "/Dev/nexus"
 let RUN_ALL    = AG_ROOT + "/modules/detectors/run_all.hexa"
-let BLOWUP     = NEXUS_ROOT + "/mk2_hexa/native/blowup.hexa"
+let BLOWUP     = NEXUS_ROOT + "/shared/blowup/core/blowup.hexa"
 let CONFIG     = AG_ROOT + "/nexus/shared/detectors.jsonl"
 let GATE_CFG   = AG_ROOT + "/nexus/shared/gate_config.jsonl"
 let GROWTH_BUS = NEXUS_ROOT + "/shared/growth_bus.jsonl"
