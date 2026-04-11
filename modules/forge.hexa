@@ -66,11 +66,18 @@ effect ConversationScanner {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  KEYCHAIN HACK — OAuth token extraction
+//  KEYCHAIN — OAuth token extraction (KeychainSensor impl)
 // ═══════════════════════════════════════════════════════════════════════
 
+fn sanitize_label(label: str) -> str {
+    // Strip single-quotes to prevent shell injection
+    return label.replace("'", "")
+}
+
 fn read_keychain(label: str) -> str {
-    let result = exec("security find-generic-password -l '" + label + "' -w 2>/dev/null")
+    let safe = sanitize_label(label)
+    if len(safe) == 0 { return "" }
+    let result = exec("security find-generic-password -l '" + safe + "' -w 2>/dev/null || echo ''")
     return result.trim()
 }
 
