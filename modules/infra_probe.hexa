@@ -313,6 +313,11 @@ fn probe_vast() -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn probe_runpod() -> str {
+    // 2026-04-11: vast 와 동일 패턴 — 기본 disabled. runpodctl CLI 호출 (최대 10s) 생략.
+    let runpod_enabled = load_cfg("infra_runpod_enabled", "false")
+    if runpod_enabled != "true" {
+        return "\"runpod\":{\"status\":\"offline\",\"reason\":\"disabled (infra_runpod_enabled=false)\"}"
+    }
     // runpodctl pod list → JSON array
     let cmd = "gtimeout 10 runpodctl pod list --format json 2>/dev/null"
     let mut raw = ""

@@ -39,7 +39,8 @@ let INFRA_STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
 let SYS_EXCLUDE = "kernel_task|WindowServer|launchd|loginwindow|Finder|Dock|opendirectoryd|mds_stores|hidd|coreservicesd"
 // 본질적으로 mac 로컬 전용 (GUI/CLI 본체) — 오프로드 불가능 카테고리
 // hog 가 이 패턴에 매칭되면 "patterns 에 추가하면 해결" 이라는 잘못된 인상을 안 주도록 별도 분류
-let NON_OFFLOADABLE = "claude|iTerm2|Cursor|Code Helper|Electron|Chrome|Safari|Firefox|Slack|Discord|Notion|Spotify|zoom|Music|Photos"
+// 2026-04-11: rsync/git 추가 — 파일 동기화/로컬 repo 작업은 원격 이관 불가 (unknown → non_off 로 강등)
+let NON_OFFLOADABLE = "claude|iTerm2|Cursor|Code Helper|Electron|Chrome|Safari|Firefox|Slack|Discord|Notion|Spotify|zoom|Music|Photos|rsync|git|Terminal|LoginItems"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  Config loader (ag3_loop.hexa 동일 패턴)
