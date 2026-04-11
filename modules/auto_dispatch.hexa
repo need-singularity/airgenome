@@ -134,6 +134,41 @@ fn ts_iso() -> str {
     return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  htz blowup 자동 발화 (cooldown throttle — 2026-04-11)
+//
+//  기존: offload_htz 조건 충족 시 JSON status 만 반환 (실제 집행 없음)
+//  추가: htz_dispatch.hexa blowup airgenome 을 nohup 으로 detach 실행,
+//        /tmp/ag_htz_fire.lock 에 epoch 기록하여 cooldown_s 내 재발화 방지.
+//  반환: "fired(pid=N)" | "throttled(Ns)" | "fire_err:..."
+// ═══════════════════════════════════════════════════════════════════════
+
+fn fire_htz_blowup(now_s: str) -> str {
+    let lock_file = "/tmp/ag_htz_fire.lock"
+    let cooldown_s = load_cfg_int("offload_htz_cooldown_s", 300)
+    let mut cooldown_left = 0
+    if file_exists(lock_file) {
+        let mut lock_ts = "0"
+        try { lock_ts = read_file(lock_file).trim() } catch e {}
+        try {
+            let diff = to_int(to_float(now_s)) - to_int(to_float(lock_ts))
+            if diff < cooldown_s { cooldown_left = cooldown_s - diff }
+        } catch e {}
+    }
+    if cooldown_left > 0 {
+        return "throttled(" + to_string(cooldown_left) + "s)"
+    }
+    try { write_file(lock_file, now_s) } catch e {}
+    let hexa_bin = DIR + "/nexus/shared/bin/hexa"
+    let dispatch_path = DIR + "/modules/htz_dispatch.hexa"
+    let blowup_domain = load_cfg("offload_htz_blowup_domain", "airgenome")
+    let blowup_depth = load_cfg("offload_htz_blowup_depth", "3")
+    let fire_cmd = hexa_bin + " " + dispatch_path + " blowup " + blowup_domain + " " + blowup_depth + " >/tmp/ag_htz_fire.out 2>&1 & echo $!"
+    let mut pid = "0"
+    try { pid = exec(fire_cmd).trim() } catch e { return "fire_err" }
+    return "fired(pid=" + pid + ")"
+}
+
 fn ts_epoch() -> str {
     return exec("date +%s").trim()
 }
@@ -178,18 +213,27 @@ fn check_once(state_path: str) -> str {
         let mut htz_cpu = 100
         let mut htz_status = "unknown"
 
-        // infra_state.json 에서 htz 상태 읽기
+        // infra_state.json 에서 htz 상태 읽기 (nested JSON → python3, vast 패턴 재사용)
+        // 2026-04-11: 기존 read_json_str(raw,"htz_status") 는 top-level 키만 찾아 실패했고,
+        // SSH probe awk 수식도 "$1*100/($1+$4)" 로 0 만 출력하던 이중 고장 수정.
         if file_exists(INFRA_STATE_PATH) {
-            let infra_raw = read_file(INFRA_STATE_PATH).trim()
-            if len(infra_raw) > 10 {
-                htz_status = read_json_str(infra_raw, "htz_status", "unknown")
-                htz_cpu = read_json_int(infra_raw, "htz_cpu_used", 100)
-            }
+            let hst = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz']['status'])\" 2>/dev/null").trim() } catch e { "" }
+            if len(hst) > 0 { htz_status = hst }
+            // load/threads → cpu_pct 환산 (htz.load 는 1분 load average, cpu_threads 로 정규화)
+            let hload = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz'].get('load','100'))\" 2>/dev/null").trim() } catch e { "100" }
+            let hthr = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz'].get('cpu_threads',1))\" 2>/dev/null").trim() } catch e { "1" }
+            try {
+                let hload_f = to_float(hload)
+                let hthr_f = to_float(hthr)
+                if hthr_f > 0.0 {
+                    htz_cpu = to_int(hload_f * 100.0 / hthr_f)
+                }
+            } catch e {}
         }
 
-        // infra_state 없거나 stale → SSH probe fallback
+        // infra_state 없거나 stale → SSH probe fallback (정정: /proc/stat NR==1 올바른 수식)
         if htz_status == "unknown" {
-            let probe = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner \"awk '{printf \\\"%d\\\", \\$1*100/(\\$1+\\$4)}' /proc/stat 2>/dev/null || echo 100\" 2>/dev/null").trim()
+            let probe = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner \"awk 'NR==1{idle=\\$5; total=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8+\\$9; if(total>0) printf \\\"%d\\\", (total-idle)*100/total; else print 100}' /proc/stat 2>/dev/null || echo 100\" 2>/dev/null").trim()
             try {
                 htz_cpu = to_int(to_float(probe))
                 if htz_cpu >= 0 && htz_cpu <= 100 { htz_status = "active" }
@@ -197,7 +241,11 @@ fn check_once(state_path: str) -> str {
         }
 
         if htz_status == "active" && htz_cpu <= htz_max {
-            return "{\"ts\":\"" + ts + "\",\"status\":\"offload_htz\",\"host\":\"htz\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"reason\":\"ubu busy, htz available\"}"
+            // 2026-04-11: recommend → enforce 승격. 실제 htz blowup 자동 발화.
+            let fire = fire_htz_blowup(epoch)
+            let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"OFFLOAD_HTZ_FIRE\",\"action\":\"" + fire + "\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + "}"
+            try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
+            return "{\"ts\":\"" + ts + "\",\"status\":\"offload_htz\",\"host\":\"htz\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"ubu_cpu\":" + to_string(ubu_cpu) + ",\"htz_cpu\":" + to_string(htz_cpu) + ",\"fire\":\"" + fire + "\",\"reason\":\"ubu busy, htz available → " + fire + "\"}"
         }
 
         // ── vast fallback: ubu+htz both busy → Vast.ai 확인 ──
