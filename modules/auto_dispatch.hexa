@@ -228,6 +228,9 @@ fn fire_ubu_blowup(now_s: str) -> str {
 }
 
 fn proactive_ubu_check(ts: str, epoch: str) -> str {
+    // 0. Toggle check
+    let enabled = load_cfg("offload_ubu_enabled", "true")
+    if enabled != "true" { return "disabled" }
     // 1. Fast cooldown check
     let lock_file = "/tmp/ag_ubu_fire.lock"
     let cooldown_s = load_cfg_int("offload_ubu_cooldown_s", 300)
@@ -270,6 +273,9 @@ fn proactive_ubu_check(ts: str, epoch: str) -> str {
 // ═══════════════════════════════════════════════════════════════════════
 
 fn proactive_htz_check(ts: str, epoch: str) -> str {
+    // ── 0. Toggle check (사용자 수동 on/off) ──
+    let enabled = load_cfg("offload_htz_enabled", "true")
+    if enabled != "true" { return "disabled" }
     // ── 1. Fast cooldown check (Python3 호출 회피) ──
     let lock_file = "/tmp/ag_htz_fire.lock"
     let cooldown_s = load_cfg_int("offload_htz_cooldown_s", 300)
@@ -322,19 +328,19 @@ fn check_once(state_path: str) -> str {
     let patterns   = load_cfg("offload_patterns", "hexa,python3,node,cargo,gcc,clang")
     let top_n      = load_cfg_int("offload_top_n", 3)
 
-    // ── B1: Proactive htz idle fire ──
+    // ── B1: Proactive htz idle fire (모든 결과 로그 — return 응답 2026-04-11) ──
     let htz_proactive = proactive_htz_check(ts, epoch)
-    if htz_proactive.contains("fired") {
-        let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"HTZ_PROACTIVE_FIRE\",\"action\":\"" + htz_proactive + "\"}"
-        try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
-    }
+    let mut htz_type = "HTZ_PROACTIVE_SKIP"
+    if htz_proactive.contains("fired") { htz_type = "HTZ_PROACTIVE_FIRE" }
+    let htz_log = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"" + htz_type + "\",\"action\":\"" + htz_proactive + "\"}"
+    try { append_file(DISPATCH_LOG, htz_log + "\n") } catch e {}
 
-    // ── B2: Proactive ubu idle fire ── (htz 와 병렬 가능)
+    // ── B2: Proactive ubu idle fire (모든 결과 로그) ──
     let ubu_proactive = proactive_ubu_check(ts, epoch)
-    if ubu_proactive.contains("fired") {
-        let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"UBU_PROACTIVE_FIRE\",\"action\":\"" + ubu_proactive + "\"}"
-        try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
-    }
+    let mut ubu_type = "UBU_PROACTIVE_SKIP"
+    if ubu_proactive.contains("fired") { ubu_type = "UBU_PROACTIVE_FIRE" }
+    let ubu_log = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"" + ubu_type + "\",\"action\":\"" + ubu_proactive + "\"}"
+    try { append_file(DISPATCH_LOG, ubu_log + "\n") } catch e {}
 
     // ── 상태 읽기 ──
     if file_exists(state_path) == false {
