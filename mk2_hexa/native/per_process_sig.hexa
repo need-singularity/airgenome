@@ -511,8 +511,8 @@ fn main() {
     while ai < len(argv) {
         let v = argv[ai]
         if v.contains(".hexa") { saw_script = true }
-        if saw_script == false { ai = ai + 1; next }
-        if v.contains(".hexa") { ai = ai + 1; next }
+        if saw_script == false { ai = ai + 1; continue }
+        if v.contains(".hexa") { ai = ai + 1; continue }
         if v.contains("hexa-bin") == false {
             if len(v) > 0 {
                 positional = positional + [v]
