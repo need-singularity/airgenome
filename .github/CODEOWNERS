@@ -12,4 +12,6 @@ modules/ag3_menubar_feed.hexa @need-singularity
 modules/growth_bus_sync.hexa @need-singularity
 modules/gate_client.hexa @need-singularity
 modules/cl.hexa @need-singularity
+modules/mac_compute_zero.hexa @need-singularity
+scripts/com.airgenome.mac-compute-zero.plist @need-singularity
 CLAUDE.md @need-singularity
