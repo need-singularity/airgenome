@@ -678,7 +678,7 @@ fn resolve_launch(account_name: str) -> str {
 fn add_account(name: str, config_dir: str) -> void {
     let path = R_ACCOUNTS
     let entries = list_accounts(path)
-    if entries.contains(name + "|") {
+    if ("\n" + entries + "\n").contains("\n" + name + "|") {
         println("  ⬡ 계정 이미 존재: " + name)
         return
     }

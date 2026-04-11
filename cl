@@ -239,23 +239,12 @@ while true; do
     ~/.local/bin/claude --effort "$CLAUDE_EFFORT"
     EXIT_CODE=$?
 
-    # 세션 종료 후 해당 계정 usage 즉시 갱신
-    # 1) 키체인 토큰 갱신: claude -p 로 짧은 실행 → 키체인에 새 토큰 저장
-    # 2) usage API 호출
-    echo ""
-    echo "  ⬡ $CURRENT_NAME usage 갱신 중..."
-    echo '{}' > ~/.airgenome/refresh-cooldown.json
-
-    # Step 1: 키체인 토큰이 만료됐으면 CLI로 강제 갱신
-    CLAUDE_CONFIG_DIR="$CURRENT_DIR" ~/.local/bin/claude -p "ok" --max-turns 1 >/dev/null 2>&1
-
-    # Step 2: usage API 호출
-    _result=$(cd "$AIRGENOME" && $HEXA $AIRGENOME/modules/usage.hexa -- one "$CURRENT_NAME" 2>&1)
-    if echo "$_result" | grep -q '✓'; then
-        echo "$_result" | tail -2
-    else
-        echo "    ✗ 갱신 실패"
-    fi
+    # 세션 종료 후 해당 계정 usage 백그라운드 갱신 (종료 블로킹 방지)
+    (
+      echo '{}' > ~/.airgenome/refresh-cooldown.json
+      CLAUDE_CONFIG_DIR="$CURRENT_DIR" ~/.local/bin/claude -p "ok" --max-turns 1 >/dev/null 2>&1
+      cd "$AIRGENOME" && $HEXA $AIRGENOME/modules/usage.hexa -- one "$CURRENT_NAME" >/dev/null 2>&1
+    ) &
 
     LATEST_JSONL=$(ls -t "${CURRENT_DIR}projects/"*"/"{sessions,}/*.jsonl 2>/dev/null | head -1)
     if [ -n "$LATEST_JSONL" ]; then
