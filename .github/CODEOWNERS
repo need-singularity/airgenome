@@ -11,4 +11,5 @@ modules/ag3_shipper.hexa @need-singularity
 modules/ag3_menubar_feed.hexa @need-singularity
 modules/growth_bus_sync.hexa @need-singularity
 modules/gate_client.hexa @need-singularity
+modules/cl.hexa @need-singularity
 CLAUDE.md @need-singularity
