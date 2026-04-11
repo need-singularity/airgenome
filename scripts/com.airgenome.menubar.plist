@@ -1,9 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  airgenome menubar — SwiftBar/메뉴바 앱 런처
-  Template: __HOME__ is replaced with $HOME by scripts/install_core_agents.hexa
--->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -12,7 +8,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>exec __HOME__/.hx/bin/airgenome</string>
+        <string>pgrep -f 'osascript.*airgenome-menubar' &amp;&amp; exit 0; DIR=/Users/ghost/.hx/packages/airgenome; STATE=/tmp/airgenome-state.json; CONFIG=$HOME/.airgenome/config.json; JS=/tmp/airgenome-menubar.js; sed -e "s|__STATE__|${STATE}|g" -e "s|__CONFIG__|${CONFIG}|g" -e "s|__DIR__|${DIR}|g" "$DIR/menubar_tpl.js" > "$JS" &amp;&amp; exec /usr/bin/osascript -l JavaScript "$JS"</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -22,8 +18,10 @@
     <integer>5</integer>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/tmp/airgenome.log</string>
