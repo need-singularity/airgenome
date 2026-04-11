@@ -478,7 +478,7 @@ consciousness LinuxHarvest {
 
     // Ring path
     let ring_env = env("AG3_RING")
-    let ring_path = if len(ring_env) > 0 { ring_env } else { cfg_str(cfg, "ubu_tmpfs", "/mnt/ramdisk/airgenome") + "/genome.ring" }
+    let ring_path = if len(ring_env) > 0 { ring_env } else { cfg_str(cfg, "ubu_tmpfs", "") + "/genome.ring" }
 
     // Parse CLI args
     let argv = args()

@@ -332,7 +332,7 @@ while true {
         if len(gh) > 0 { ubu_host = gh }
         if len(gp) > 0 { ubu_port = gp }
     }
-    if len(ubu_host) == 0 { ubu_host = try { exec("printenv AG3_UBU_HOST 2>/dev/null || echo 192.168.50.119").trim() } catch e { "192.168.50.119" } }
+    if len(ubu_host) == 0 { ubu_host = try { exec("printenv AG3_UBU_HOST 2>/dev/null || true").trim() } catch e { "" } }
 
     let mut gate = "offline"
     let mut ubu_load = "0"

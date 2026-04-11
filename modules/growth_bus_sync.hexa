@@ -1,7 +1,7 @@
 // airgenome/modules/growth_bus_sync.hexa — AG3 growth_bus ubu → Mac merge
 //
 // ═══════════════════════════════════════════════════════════════════════
-//  단방향 merge: ubu(/home/aiden/Dev/nexus/shared/growth_bus.jsonl)
+//  단방향 merge: ubu nexus growth_bus.jsonl
 //             → Mac(~/Dev/airgenome/nexus/shared/growth_bus.jsonl)
 //
 //  - append only, 중복 라인 제거 (python set diff)

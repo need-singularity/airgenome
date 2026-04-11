@@ -65,7 +65,7 @@ while ai < len(argv) {
 }
 
 let ubu_alias  = cfg("ssh_alias", "ubu")
-let ubu_dir    = cfg("remote_dir", "/home/aiden/airgenome")
+let ubu_dir    = cfg("remote_dir", "")
 let htz_alias  = cfg("htz_ssh_alias", "hetzner")
 let htz_ag_dir = cfg("htz_airgenome_dir", "/root/Dev/airgenome")
 let htz_nx_dir = cfg("htz_nexus_dir", "/root/Dev/nexus")

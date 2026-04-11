@@ -10,7 +10,7 @@
 //   read_header/stats/tail : 순수 `od -An -v -t u1` 바이트 덤프 → hexa 내부 LE 파싱
 //   init/append/probe      : python3 struct.pack one-liner (ag3_shipper 와 동일 패턴)
 //
-// 기본 대상은 원격 ubu 의 /mnt/ramdisk/airgenome/genome.ring (env AG3_RING).
+// 기본 대상은 원격 ubu 의 AG3 ring buffer (gate_config.jsonl: ubu_ring_path, env AG3_RING).
 // --local 플래그로 Mac 로컬 파일도 대상 가능. --remote <alias> 로 ssh alias 지정.
 //
 // Usage:
@@ -27,7 +27,6 @@ fn load_env_or(key: str, fallback: str) -> str {
     if len(v) > 0 { return v }
     return fallback
 }
-let DEFAULT_PATH = load_env_or("AG3_RING", "/mnt/ramdisk/airgenome/genome.ring")
 let HEADER_SIZE = 64
 let SLOT_SIZE = 128
 let SLOT_COUNT = 65536
@@ -49,6 +48,7 @@ fn load_cfg(key: str, fallback: str) -> str {
     }
     return fallback
 }
+let DEFAULT_PATH = load_env_or("AG3_RING", load_cfg("ubu_ring_path", ""))
 
 // ── EXEC: 로컬/원격 명령 실행 ────────────────────────────────────────────
 fn run_at(remote: str, cmd: str) -> str {
