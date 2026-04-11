@@ -37,6 +37,8 @@ let HTZ          = load_cfg("htz_ssh_alias",    "hetzner")
 let HTZ_HEXA     = load_cfg("htz_hexa_bin",     "~/Dev/airgenome/nexus/shared/bin/hexa")
 let HTZ_NEXUS    = load_cfg("htz_nexus_dir",    "~/Dev/nexus")
 let HTZ_HEXA_DIR = load_cfg("htz_hexa_lang_dir","~/Dev/hexa-lang")
+// 2026-04-11: blowup.hexa 경로 분리 (mk2_hexa/native → shared/blowup/core 이동 반영)
+let HTZ_BLOWUP   = load_cfg("htz_blowup_script","shared/blowup/core/blowup.hexa")
 
 // ── SSH wrapper ─────────────────────────────────────────────────────────
 
@@ -56,7 +58,7 @@ fn log_event(action: str, detail: str) -> void {
 
 fn cmd_blowup(domain: str, depth: str) -> void {
     print("[HTZ] blowup " + domain + " depth=" + depth)
-    let cmd = "cd " + HTZ_NEXUS + " && " + HTZ_HEXA + " mk2_hexa/native/blowup.hexa " + domain + " " + depth + " --no-graph"
+    let cmd = "cd " + HTZ_NEXUS + " && " + HTZ_HEXA + " " + HTZ_BLOWUP + " " + domain + " " + depth + " --no-graph"
     let out = ssh_run(cmd)
     if out.contains("error") || out.contains("refused") || out.contains("timed out") {
         print("[HTZ] ERROR: " + out)
@@ -115,32 +117,34 @@ fn cmd_status() -> void {
 // ── MAIN ────────────────────────────────────────────────────────────────
 
 fn main() {
+    // hexa-lang argv(): [interpreter_path, script_path, user_arg1, user_arg2, ...]
+    // 2026-04-11 fix: 기존 args[1] 은 script 경로였음 (첫 user arg 은 args[2])
     let args = argv()
-    if len(args) < 2 {
-        print("Usage: hexa run modules/htz_dispatch.hexa <blowup|build|exec|status> [args...]")
+    if len(args) < 3 {
+        print("Usage: hexa modules/htz_dispatch.hexa <blowup|build|exec|status> [args...]")
         return
     }
-    let cmd = args[1]
+    let cmd = args[2]
     if cmd == "blowup" {
-        if len(args) < 3 {
+        if len(args) < 4 {
             print("Usage: htz_dispatch blowup <domain> [depth]")
             return
         }
         let depth = "3"
-        if len(args) >= 4 { depth = args[3] }
-        cmd_blowup(args[2], depth)
+        if len(args) >= 5 { depth = args[4] }
+        cmd_blowup(args[3], depth)
     } else if cmd == "build" {
         let project = "hexa-lang"
-        if len(args) >= 3 { project = args[2] }
+        if len(args) >= 4 { project = args[3] }
         cmd_build(project)
     } else if cmd == "exec" {
-        if len(args) < 3 {
+        if len(args) < 4 {
             print("Usage: htz_dispatch exec <command>")
             return
         }
         // join remaining args
         let parts = []
-        let i = 2
+        let i = 3
         while i < len(args) {
             parts = parts + [args[i]]
             i = i + 1

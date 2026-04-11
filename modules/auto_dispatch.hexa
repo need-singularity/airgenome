@@ -169,6 +169,52 @@ fn fire_htz_blowup(now_s: str) -> str {
     return "fired(pid=" + pid + ")"
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  Proactive htz idle check (B1 — 2026-04-11)
+//
+//  기존 slice A 는 "ubu busy → htz fallback" 만 발동. 둘 다 idle 이면 영원히 논다.
+//  이 함수는 mac/ubu 상태와 무관하게 htz 자체 유휴도 체크 → 일감 투입.
+//
+//  동작: cooldown fast-path 먼저 → infra_state.json 읽어 htz_cpu_pct 환산 →
+//        idle_threshold 이하 면 fire_htz_blowup 호출.
+//  cooldown 체크는 fire_htz_blowup 내부에도 있어 이중 안전망.
+// ═══════════════════════════════════════════════════════════════════════
+
+fn proactive_htz_check(ts: str, epoch: str) -> str {
+    // ── 1. Fast cooldown check (Python3 호출 회피) ──
+    let lock_file = "/tmp/ag_htz_fire.lock"
+    let cooldown_s = load_cfg_int("offload_htz_cooldown_s", 300)
+    if file_exists(lock_file) {
+        let mut lock_ts = "0"
+        try { lock_ts = read_file(lock_file).trim() } catch e {}
+        let mut diff_i = 9999
+        try { diff_i = to_int(to_float(epoch)) - to_int(to_float(lock_ts)) } catch e {}
+        if diff_i < cooldown_s {
+            return "cooldown(" + to_string(cooldown_s - diff_i) + "s)"
+        }
+    }
+
+    // ── 2. Probe htz idle via infra_state.json (10min stale OK — rough threshold) ──
+    let htz_idle_threshold = load_cfg_int("offload_htz_idle_threshold", 30)
+    let mut htz_cpu_pct = 100
+    let mut htz_status = "unknown"
+    if file_exists(INFRA_STATE_PATH) {
+        let hst = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz']['status'])\" 2>/dev/null").trim() } catch e { "" }
+        if len(hst) > 0 { htz_status = hst }
+        let hload = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz'].get('load','100'))\" 2>/dev/null").trim() } catch e { "100" }
+        let hthr = try { exec("python3 -c \"import json; d=json.load(open('" + INFRA_STATE_PATH + "')); print(d['hosts']['htz'].get('cpu_threads',1))\" 2>/dev/null").trim() } catch e { "1" }
+        try {
+            let hload_f = to_float(hload)
+            let hthr_f = to_float(hthr)
+            if hthr_f > 0.0 { htz_cpu_pct = to_int(hload_f * 100.0 / hthr_f) }
+        } catch e {}
+    }
+    if htz_status != "active" { return "unavailable(" + htz_status + ")" }
+    if htz_cpu_pct >= htz_idle_threshold { return "not_idle(" + to_string(htz_cpu_pct) + "%)" }
+    // htz 유휴 확인 + cooldown 통과 → fire (내부에서 한번 더 cooldown write)
+    return fire_htz_blowup(epoch)
+}
+
 fn ts_epoch() -> str {
     return exec("date +%s").trim()
 }
@@ -187,13 +233,20 @@ fn check_once(state_path: str) -> str {
     let patterns   = load_cfg("offload_patterns", "hexa,python3,node,cargo,gcc,clang")
     let top_n      = load_cfg_int("offload_top_n", 3)
 
+    // ── B1: Proactive htz idle fire (mac/ubu 상태 선행 — 자원 놀지 않도록) ──
+    let htz_proactive = proactive_htz_check(ts, epoch)
+    if htz_proactive.contains("fired") {
+        let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"HTZ_PROACTIVE_FIRE\",\"action\":\"" + htz_proactive + "\"}"
+        try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
+    }
+
     // ── 상태 읽기 ──
     if file_exists(state_path) == false {
-        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"reason\":\"state file not found: " + state_path + "\"}"
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"htz_proactive\":\"" + htz_proactive + "\",\"reason\":\"state file not found: " + state_path + "\"}"
     }
     let raw = read_file(state_path).trim()
     if len(raw) < 10 {
-        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"reason\":\"state file empty\"}"
+        return "{\"ts\":\"" + ts + "\",\"status\":\"no_state\",\"htz_proactive\":\"" + htz_proactive + "\",\"reason\":\"state file empty\"}"
     }
 
     let mac_cpu = read_json_int(raw, "cpu", 0)
@@ -202,7 +255,7 @@ fn check_once(state_path: str) -> str {
 
     // ── 조건 평가 ──
     if mac_cpu < cpu_thresh {
-        return "{\"ts\":\"" + ts + "\",\"status\":\"idle\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"threshold\":" + to_string(cpu_thresh) + ",\"reason\":\"mac cpu below threshold\"}"
+        return "{\"ts\":\"" + ts + "\",\"status\":\"idle\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"threshold\":" + to_string(cpu_thresh) + ",\"htz_proactive\":\"" + htz_proactive + "\",\"reason\":\"mac cpu below threshold\"}"
     }
     if gate != "online" {
         return "{\"ts\":\"" + ts + "\",\"status\":\"gate_offline\",\"mac_cpu\":" + to_string(mac_cpu) + ",\"gate\":\"" + gate + "\",\"reason\":\"ubuntu gate not online\"}"
