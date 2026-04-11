@@ -19,6 +19,37 @@
 [ -f ~/.zprofile ] && source ~/.zprofile
 [ -f ~/.zshrc ] && source ~/.zshrc
 
+# ─── --effort 파싱 (claude CLI --effort <level> 로 전달) ───
+# 기본값: max (low/medium/high 로 낮추려면 --effort 로 override)
+# 위치: 어디서든 --effort low|medium|high|max 혹은 --effort=low 형태 허용
+CLAUDE_EFFORT="max"
+_cl_new_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --effort)
+            shift
+            CLAUDE_EFFORT="$1"
+            shift
+            ;;
+        --effort=*)
+            CLAUDE_EFFORT="${1#--effort=}"
+            shift
+            ;;
+        *)
+            _cl_new_args+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${_cl_new_args[@]}"
+case "$CLAUDE_EFFORT" in
+    low|medium|high|max) ;;
+    *)
+        echo "ERROR(cl): --effort must be one of: low, medium, high, max (got: $CLAUDE_EFFORT)" >&2
+        exit 2
+        ;;
+esac
+
 ORIG_DIR="$(pwd)"
 AIRGENOME=~/Dev/airgenome
 # HEXA resolver — shared/bin/hexa 우선 (외부 의존 없음, R5 SSOT)
@@ -204,7 +235,8 @@ while true; do
 
     export CLAUDE_CONFIG_DIR="$CURRENT_DIR"
 
-    ~/.local/bin/claude
+    echo "  ⬡ effort=$CLAUDE_EFFORT"
+    ~/.local/bin/claude --effort "$CLAUDE_EFFORT"
     EXIT_CODE=$?
 
     # 세션 종료 후 해당 계정 usage 즉시 갱신

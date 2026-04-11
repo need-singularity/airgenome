@@ -995,6 +995,11 @@ fn print_help() -> void {
     println("  cl sessions     → 활성 세션 목록")
     println("  cl help         → 도움말")
     println("")
+    println("Flags:")
+    println("  --effort <level>  → claude --effort 로 전달 (low|medium|high|max)")
+    println("                      기본값: max — 낮추려면 --effort low|medium|high")
+    println("                      예: cl --effort low  |  cl pick claude3 --effort high")
+    println("")
     println("Rate limit 시 자동 전환. 오염 방지 내장.")
     println("Config: nexus/shared/cl_config.jsonl")
 }
