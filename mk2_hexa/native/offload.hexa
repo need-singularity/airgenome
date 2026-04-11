@@ -259,10 +259,10 @@ fn sync_results() -> str {
     ssh_quiet("mkdir -p " + REMOTE_DIR)
 
     println("  [sync] MacBook → Ubuntu: genomes.log")
-    exec("scp genomes.log " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 genomes.log " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     println("  [sync] Ubuntu → MacBook: results")
-    exec("scp " + REMOTE + ":" + REMOTE_DIR + "/*.log . 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + REMOTE + ":" + REMOTE_DIR + "/*.log . 2>/dev/null")
 
     println("  [sync] done")
     return "ok"
@@ -285,12 +285,12 @@ fn remote_hexa(script_args: str) -> str {
     let parts = script_args.split(" ")
     let script = parts[0]
     println("  [offload] syncing " + script + " → Ubuntu")
-    exec("scp " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     // Sync hexa.toml and dependencies
-    exec("scp hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
     exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
-    exec("scp $HOME/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 $HOME/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
 
     // Extract just the filename
     let fname = script
@@ -331,7 +331,7 @@ fn remote_python(script_args: str) -> str {
     // Sync script
     println("  [offload] syncing " + script + " → Ubuntu")
     exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
-    exec("scp " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
 
     let fname = script
     if script.contains("/") {

@@ -285,7 +285,7 @@ fn probe_vast() -> str {
     // (실패해도 silent — menubar 는 0/96G 표시해도 OK)
     let mut vram_used_gb = 0
     if status == "active" && len(vast_ssh_host) > 0 && vast_ssh_port > 0 {
-        let ssh_cmd = "gtimeout 8 ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes -p " + to_string(vast_ssh_port) + " root@" + vast_ssh_host + " \"nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits\" 2>/dev/null"
+        let ssh_cmd = "gtimeout 8 ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o BatchMode=yes -p " + to_string(vast_ssh_port) + " root@" + vast_ssh_host + " \"nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits\" 2>/dev/null"
         let mut ssh_out = ""
         try { ssh_out = exec(ssh_cmd).trim() } catch e { ssh_out = "" }
         if len(ssh_out) > 0 {
