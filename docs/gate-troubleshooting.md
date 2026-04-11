@@ -85,13 +85,14 @@ ssh ubu 'pgrep -fl socat'                    # socat 프로세스 확인
 ssh ubu 'cat /tmp/airgenome/gate.pid'        # PID 확인
 
 # 재시작:
-ssh ubu 'cd /tmp/airgenome && /tmp/hexa-build/hexa-lang/target/release/hexa run gate_daemon.hexa start 9900'
+ssh ubu 'cd /tmp/airgenome && /usr/local/bin/hexa run gate_daemon.hexa start 9900'
 ```
 
-### 5. Ubuntu hexa 빌드 오래됨
+### 5. Ubuntu native hexa 업데이트
 
 ```bash
-ssh ubu 'source ~/.cargo/env && cd /tmp/hexa-build/hexa-lang && git pull && cargo build --release'
+# 최신 native hexa 바이너리를 /usr/local/bin/hexa 로 재배치
+ssh ubu 'sudo install -m 755 ~/hexa /usr/local/bin/hexa && /usr/local/bin/hexa --version'
 ```
 
 ## 수렴 원칙

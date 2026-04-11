@@ -1,6 +1,6 @@
 // airgenome/modules/htz_dispatch.hexa — Hetzner SSH dispatch (heavy CPU offload)
 //
-// Mac은 디스패치 전용, CPU-heavy 작업(blowup, cargo build 등)은 htz에서 실행.
+// Mac은 디스패치 전용, CPU-heavy 작업(blowup, hexa native exec 등)은 htz에서 실행.
 // 하드코딩 금지: ssh alias / 경로는 gate_config.jsonl 에서 동적 로드.
 // Prime Directive 준수 (프로세스 kill 없음).
 //
@@ -82,20 +82,17 @@ fn cmd_blowup(domain: str, depth: str) -> void {
 // ── build ───────────────────────────────────────────────────────────────
 
 fn cmd_build(project: str) -> void {
-    print("[HTZ] build " + project)
-    let dir = HTZ_HEXA_DIR
-    if project != "hexa-lang" {
-        dir = "~/Dev/" + project
-    }
-    let cmd = "cd " + dir + " && cargo build --release 2>&1 | tail -5"
+    // AI-NATIVE HEXA-ONLY: no cargo/rust. Verify native hexa binary on remote.
+    print("[HTZ] verify native hexa " + project)
+    let cmd = "test -x /usr/local/bin/hexa && /usr/local/bin/hexa --version 2>&1 | tail -5"
     let out = ssh_run(cmd)
-    if out.contains("error") {
-        print("[HTZ] BUILD ERROR:\n" + out)
-        log_event("build_fail", project)
+    if out.contains("error") || len(out) == 0 {
+        print("[HTZ] NATIVE HEXA MISSING:\n" + out)
+        log_event("verify_fail", project)
         return
     }
     print(out)
-    log_event("build_ok", project)
+    log_event("verify_ok", project)
     return
 }
 

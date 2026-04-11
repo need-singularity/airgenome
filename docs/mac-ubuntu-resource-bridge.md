@@ -130,8 +130,8 @@ Host ubu
 ### CPU 오프로드 (원격 실행)
 
 ```bash
-ssh ubu 'cd /tmp && cargo build --release'
-scp ubu:/tmp/target/release/binary ./
+ssh ubu '/usr/local/bin/hexa run /tmp/work.hexa'
+scp ubu:/tmp/output.bin ./
 ```
 
 ### RAM/디스크 확장 (sshfs)
