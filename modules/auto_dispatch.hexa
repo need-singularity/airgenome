@@ -170,6 +170,75 @@ fn fire_htz_blowup(now_s: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Proactive ubu idle check + fire (B2 — 2026-04-11)
+//
+//  ubu GPU util < threshold 시 blowup 을 ubu 로 직접 SSH fire.
+//  ubu CPU baseline 이 64% 정도 (ag3-loop/gate-mesh/harvest/gate daemon) 라
+//  CPU 로는 유휴 판정 불가 → GPU util 기준 (RTX 5070 이 진짜 놀 때만 fire).
+//  blowup 은 CPU 작업이라 GPU util 을 늘리진 못하지만, ubu 전체 busy 는 확보.
+// ═══════════════════════════════════════════════════════════════════════
+
+fn fire_ubu_blowup(now_s: str) -> str {
+    let lock_file = "/tmp/ag_ubu_fire.lock"
+    let cooldown_s = load_cfg_int("offload_ubu_cooldown_s", 300)
+    let mut cooldown_left = 0
+    if file_exists(lock_file) {
+        let mut lock_ts = "0"
+        try { lock_ts = read_file(lock_file).trim() } catch e {}
+        try {
+            let diff = to_int(to_float(now_s)) - to_int(to_float(lock_ts))
+            if diff < cooldown_s { cooldown_left = cooldown_s - diff }
+        } catch e {}
+    }
+    if cooldown_left > 0 {
+        return "throttled(" + to_string(cooldown_left) + "s)"
+    }
+    try { write_file(lock_file, now_s) } catch e {}
+    let ubu_alias = load_cfg("ssh_alias", "ubu")
+    let ubu_hexa = load_cfg("ubu_hexa_bin", "~/Dev/hexa-lang/target/release/hexa")
+    let ubu_blowup = load_cfg("ubu_blowup_script", "~/Dev/nexus/mk2_hexa/native/blowup.hexa")
+    let blowup_domain = load_cfg("offload_ubu_blowup_domain", "airgenome")
+    let blowup_depth = load_cfg("offload_ubu_blowup_depth", "3")
+    // SSH 원격 nohup detach — 로컬은 즉시 리턴, ubu 에서 백그라운드 실행
+    let remote_cmd = "nohup " + ubu_hexa + " " + ubu_blowup + " " + blowup_domain + " " + blowup_depth + " --no-graph >/tmp/ag_ubu_blowup.out 2>&1 & disown"
+    let ssh_cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes " + ubu_alias + " '" + remote_cmd + "' >/tmp/ag_ubu_fire.out 2>&1 & echo $!"
+    let mut pid = "0"
+    try { pid = exec(ssh_cmd).trim() } catch e { return "fire_err" }
+    return "fired(pid=" + pid + ")"
+}
+
+fn proactive_ubu_check(ts: str, epoch: str) -> str {
+    // 1. Fast cooldown check
+    let lock_file = "/tmp/ag_ubu_fire.lock"
+    let cooldown_s = load_cfg_int("offload_ubu_cooldown_s", 300)
+    if file_exists(lock_file) {
+        let mut lock_ts = "0"
+        try { lock_ts = read_file(lock_file).trim() } catch e {}
+        let mut diff_i = 9999
+        try { diff_i = to_int(to_float(epoch)) - to_int(to_float(lock_ts)) } catch e {}
+        if diff_i < cooldown_s {
+            return "cooldown(" + to_string(cooldown_s - diff_i) + "s)"
+        }
+    }
+    // 2. Probe ubu GPU util via ag3_status.json (fresh, 5s 주기)
+    let ag3_path = env("HOME") + "/.airgenome/ag3_status.json"
+    let mut ubu_available = false
+    let mut ubu_gpu_util = 100
+    if file_exists(ag3_path) {
+        let uup = try { exec("python3 -c \"import json; d=json.load(open('" + ag3_path + "')); print(1 if d.get('ubu_up') else 0)\" 2>/dev/null").trim() } catch e { "0" }
+        if uup == "1" {
+            ubu_available = true
+            let gu = try { exec("python3 -c \"import json; d=json.load(open('" + ag3_path + "')); print(d.get('gpu_util', 100))\" 2>/dev/null").trim() } catch e { "100" }
+            try { ubu_gpu_util = to_int(to_float(gu)) } catch e {}
+        }
+    }
+    if ubu_available == false { return "ubu_unavailable" }
+    let idle_gpu = load_cfg_int("offload_ubu_idle_gpu_threshold", 5)
+    if ubu_gpu_util >= idle_gpu { return "not_idle(gpu=" + to_string(ubu_gpu_util) + "%)" }
+    return fire_ubu_blowup(epoch)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Proactive htz idle check (B1 — 2026-04-11)
 //
 //  기존 slice A 는 "ubu busy → htz fallback" 만 발동. 둘 다 idle 이면 영원히 논다.
@@ -233,10 +302,17 @@ fn check_once(state_path: str) -> str {
     let patterns   = load_cfg("offload_patterns", "hexa,python3,node,cargo,gcc,clang")
     let top_n      = load_cfg_int("offload_top_n", 3)
 
-    // ── B1: Proactive htz idle fire (mac/ubu 상태 선행 — 자원 놀지 않도록) ──
+    // ── B1: Proactive htz idle fire ──
     let htz_proactive = proactive_htz_check(ts, epoch)
     if htz_proactive.contains("fired") {
         let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"HTZ_PROACTIVE_FIRE\",\"action\":\"" + htz_proactive + "\"}"
+        try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
+    }
+
+    // ── B2: Proactive ubu idle fire ── (htz 와 병렬 가능)
+    let ubu_proactive = proactive_ubu_check(ts, epoch)
+    if ubu_proactive.contains("fired") {
+        let log_entry = "{\"ts\":\"" + ts + "\",\"epoch\":" + epoch + ",\"type\":\"UBU_PROACTIVE_FIRE\",\"action\":\"" + ubu_proactive + "\"}"
         try { append_file(DISPATCH_LOG, log_entry + "\n") } catch e {}
     }
 
