@@ -597,6 +597,10 @@ fn main() {
         let interval = load_cfg_int("offload_scan_interval", 10)
         println("[OFFLOAD_O1 v" + VERSION + "] watch mode (manual debug only). interval=" + to_string(interval) + "s state=" + state_path)
         while true {
+            // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+            let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+            if parent_alive == "n" { println("[OFFLOAD_O1] parent dead — exiting"); break }
+
             let result = check_once(state_path)
             // 추천이 있을 때만 stdout 출력 (노이즈 감소)
             if result.contains("\"recommend\"") {

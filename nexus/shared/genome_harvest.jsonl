@@ -12,3 +12,6 @@
 {"key":"axis_disk_scale","value":100}
 {"key":"axis_gpu_scale","value":100}
 {"key":"pid_shuffle","value":1}
+{"key":"per_source_ts_file","value":"nexus/shared/per_source_genome_ts.jsonl"}
+{"key":"per_source_rolling_cap","value":100}
+{"key":"per_source_loop_sleep_s","value":60}

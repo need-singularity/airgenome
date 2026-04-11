@@ -285,6 +285,247 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  PER-SOURCE GROUPING (T12) — group index by comm, aggregate 6-axis
+// ═══════════════════════════════════════════════════════════════════════
+
+// Group latest batch from index_file by comm basename → aggregate
+// mean/max per axis → append one timestamped record per source
+// to ts_file (nexus/shared per R8). Rolling buffer pruned externally.
+
+fn source_group_from_index(index_file: str, ts_file: str) -> int {
+    if file_exists(index_file) == false { return 0 }
+
+    // Read index and extract comm + axes per record.
+    let body = read_file(index_file)
+    let lines = body.split("\n")
+
+    // Parallel arrays for source accumulation.
+    let mut src_names: [str] = []
+    let mut src_counts: [int] = []
+    // Per-axis sums stored as pipe-delimited strings (6 values).
+    let mut src_sums: [str] = []
+    let mut src_maxs: [str] = []
+
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            // Extract comm
+            let comm_parts = line.split("\"comm\":\"")
+            let mut comm = ""
+            if len(comm_parts) >= 2 {
+                let ct = comm_parts[1].split("\"")
+                if len(ct) >= 1 { comm = ct[0] }
+            }
+            // Extract axes csv "a,b,c,d,e,f"
+            let axes_parts = line.split("\"axes\":\"")
+            let mut axes_csv = ""
+            if len(axes_parts) >= 2 {
+                let at = axes_parts[1].split("\"")
+                if len(at) >= 1 { axes_csv = at[0] }
+            }
+            if len(comm) > 0 && len(axes_csv) > 0 {
+                // basename
+                let cparts = comm.split("/")
+                let mut name = comm
+                if len(cparts) > 1 {
+                    let last = cparts[len(cparts) - 1]
+                    if len(last) > 0 { name = last }
+                }
+                let vals = axes_csv.split(",")
+                if len(vals) >= 6 {
+                    let mut ax = [0, 0, 0, 0, 0, 0]
+                    let mut k = 0
+                    while k < 6 {
+                        try { ax[k] = to_int(to_float(vals[k])) } catch e {}
+                        k = k + 1
+                    }
+
+                    // Find or insert source.
+                    let mut idx = -1
+                    let mut si = 0
+                    while si < len(src_names) {
+                        if src_names[si] == name { idx = si }
+                        si = si + 1
+                    }
+                    if idx < 0 {
+                        src_names = src_names + [name]
+                        src_counts = src_counts + [1]
+                        let mut s = ""
+                        let mut m = ""
+                        let mut k2 = 0
+                        while k2 < 6 {
+                            if k2 > 0 { s = s + "|"; m = m + "|" }
+                            s = s + to_string(ax[k2])
+                            m = m + to_string(ax[k2])
+                            k2 = k2 + 1
+                        }
+                        src_sums = src_sums + [s]
+                        src_maxs = src_maxs + [m]
+                    } else {
+                        src_counts[idx] = src_counts[idx] + 1
+                        let old_s = src_sums[idx].split("|")
+                        let old_m = src_maxs[idx].split("|")
+                        let mut s = ""
+                        let mut m = ""
+                        let mut k2 = 0
+                        while k2 < 6 {
+                            let mut ps = 0
+                            let mut pm = 0
+                            try { ps = to_int(to_float(old_s[k2])) } catch e {}
+                            try { pm = to_int(to_float(old_m[k2])) } catch e {}
+                            let ns = ps + ax[k2]
+                            let mut nm = pm
+                            if ax[k2] > nm { nm = ax[k2] }
+                            if k2 > 0 { s = s + "|"; m = m + "|" }
+                            s = s + to_string(ns)
+                            m = m + to_string(nm)
+                            k2 = k2 + 1
+                        }
+                        src_sums[idx] = s
+                        src_maxs[idx] = m
+                    }
+                }
+            }
+        }
+        li = li + 1
+    }
+
+    let n_src = len(src_names)
+    if n_src == 0 { return 0 }
+
+    let ts_iso = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+    let axis_names = ["cpu", "ram", "swap", "net", "disk", "gpu"]
+    let mut buf = ""
+    let mut si = 0
+    while si < n_src {
+        let name = src_names[si]
+        let cnt = src_counts[si]
+        let cntf = to_float(to_string(cnt))
+        let sv = src_sums[si].split("|")
+        let mv = src_maxs[si].split("|")
+
+        let mut axes_json = ""
+        let mut k = 0
+        while k < 6 {
+            let mut sum_k = 0
+            let mut max_k = 0
+            try { sum_k = to_int(to_float(sv[k])) } catch e {}
+            try { max_k = to_int(to_float(mv[k])) } catch e {}
+            let mean_k = to_float(to_string(sum_k)) / cntf
+            if k > 0 { axes_json = axes_json + "," }
+            axes_json = axes_json + "\"" + axis_names[k] + "\":{\"mean\":" + to_string(mean_k) + ",\"max\":" + to_string(max_k) + "}"
+            k = k + 1
+        }
+
+        let safe = name.replace("\"", "").replace("\\", "")
+        let rec = "{\"ts\":\"" + ts_iso + "\",\"source\":\"" + safe + "\",\"pid_count\":" + to_string(cnt) + ",\"axes\":{" + axes_json + "}}"
+        buf = buf + rec + "\n"
+        si = si + 1
+    }
+
+    exec("mkdir -p nexus/shared")
+    try { append_file(ts_file, buf) } catch e {
+        println("  ERROR: source_group append failed")
+    }
+    println("  per_source: " + to_string(n_src) + " sources → " + ts_file)
+    return n_src
+}
+
+// Prune time-series file: keep last max_per_source records per source.
+fn prune_source_ts(ts_file: str, max_per_source: int) -> void {
+    if file_exists(ts_file) == false { return }
+    let body = read_file(ts_file).trim()
+    if len(body) == 0 { return }
+    let lines = body.split("\n")
+    let total = len(lines)
+
+    // Count per source.
+    let mut src_names: [str] = []
+    let mut src_counts: [int] = []
+    let mut li = 0
+    while li < total {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let p = line.split("\"source\":\"")
+            if len(p) >= 2 {
+                let t = p[1].split("\"")
+                if len(t) >= 1 {
+                    let name = t[0]
+                    let mut idx = -1
+                    let mut si = 0
+                    while si < len(src_names) {
+                        if src_names[si] == name { idx = si }
+                        si = si + 1
+                    }
+                    if idx < 0 {
+                        src_names = src_names + [name]
+                        src_counts = src_counts + [1]
+                    } else {
+                        src_counts[idx] = src_counts[idx] + 1
+                    }
+                }
+            }
+        }
+        li = li + 1
+    }
+
+    // Check if prune needed.
+    let mut need = false
+    let mut ci = 0
+    while ci < len(src_counts) {
+        if src_counts[ci] > max_per_source { need = true }
+        ci = ci + 1
+    }
+    if need == false { return }
+
+    // Reset counts, walk backwards keeping last N per source.
+    let mut keep = []
+    let mut ki = 0
+    while ki < total { keep = keep + [false]; ki = ki + 1 }
+    let mut ri = 0
+    while ri < len(src_counts) { src_counts[ri] = 0; ri = ri + 1 }
+
+    let mut wi = total - 1
+    while wi >= 0 {
+        let line = lines[wi].trim()
+        if len(line) > 0 {
+            let p = line.split("\"source\":\"")
+            if len(p) >= 2 {
+                let t = p[1].split("\"")
+                if len(t) >= 1 {
+                    let name = t[0]
+                    let mut idx = -1
+                    let mut si = 0
+                    while si < len(src_names) {
+                        if src_names[si] == name { idx = si }
+                        si = si + 1
+                    }
+                    if idx >= 0 && src_counts[idx] < max_per_source {
+                        keep[wi] = true
+                        src_counts[idx] = src_counts[idx] + 1
+                    }
+                }
+            }
+        }
+        wi = wi - 1
+    }
+
+    let mut buf = ""
+    let mut kept = 0
+    let mut oi = 0
+    while oi < total {
+        if keep[oi] {
+            buf = buf + lines[oi] + "\n"
+            kept = kept + 1
+        }
+        oi = oi + 1
+    }
+    try { write_file(ts_file, buf) } catch e {}
+    println("  prune_ts: " + to_string(total) + " → " + to_string(kept))
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  CONSCIOUSNESS — CLI
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -298,6 +539,10 @@ consciousness HarvestRouter {
     let min_pid    = cfg_int("min_pid", 100)
     let pid_shuffle = cfg_int("pid_shuffle", 1)
     let pack_file  = cfg_str("pack_file", "forge/genomes.pack")
+
+    // T12: per_source config (R2)
+    let source_ts_file   = cfg_str("per_source_ts_file", "nexus/shared/per_source_genome_ts.jsonl")
+    let source_cap       = cfg_int("per_source_rolling_cap", 100)
 
     let total_ram_mb = to_int(to_float(exec("sysctl -n hw.memsize").trim()) / 1048576.0)
 
@@ -346,4 +591,11 @@ consciousness HarvestRouter {
     }
 
     println("  done. genomes=" + to_string(have))
+
+    // T12: per_source grouping — group index by comm, append time-series
+    println("  per_source grouping...")
+    let n_src = source_group_from_index(index_file, source_ts_file)
+    if n_src > 0 {
+        prune_source_ts(source_ts_file, source_cap)
+    }
 }

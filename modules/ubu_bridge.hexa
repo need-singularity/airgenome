@@ -98,7 +98,7 @@ fn remote_exec(cmd: str) -> str {
     // offload.hexa::ssh_cmd 패턴: 로컬 임시 스크립트를 stdin 으로 흘려보냄
     write_file("/tmp/_ubu_bridge.sh", cmd)
     try {
-        let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -o BatchMode=yes " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
+        let result = exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -o BatchMode=yes " + REMOTE + " bash /dev/stdin < /tmp/_ubu_bridge.sh 2>&1")
         let s = to_string(result)
         if s.contains("exec error") {
             fallback_local()
@@ -118,7 +118,7 @@ fn remote_exec(cmd: str) -> str {
 fn exec_python(script: str) -> str {
     // 로컬 임시 py 파일 → stdin 으로 원격 python3 에 주입
     write_file("/tmp/_ubu_bridge.py", script)
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " " + UBU_PYTHON + " - < /tmp/_ubu_bridge.py 2>&1")
+    let result = exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " " + UBU_PYTHON + " - < /tmp/_ubu_bridge.py 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()
@@ -269,7 +269,7 @@ fn remote_exec_for(task_type: str, cmd: str) -> str {
     let alias = host_ssh_alias(host_key)
     write_file("/tmp/_ubu_bridge_for.sh", cmd)
     try {
-        let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -o BatchMode=yes " + alias + " bash /dev/stdin < /tmp/_ubu_bridge_for.sh 2>&1")
+        let result = exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -o BatchMode=yes " + alias + " bash /dev/stdin < /tmp/_ubu_bridge_for.sh 2>&1")
         let s = to_string(result)
         if s.contains("exec error") {
             fallback_local()
@@ -292,7 +292,7 @@ fn exec_python_for(task_type: str, script: str) -> str {
     let alias = host_ssh_alias(host_key)
     let py = host_python(host_key)
     write_file("/tmp/_ubu_bridge_for.py", script)
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " " + py + " - < /tmp/_ubu_bridge_for.py 2>&1")
+    let result = exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " " + py + " - < /tmp/_ubu_bridge_for.py 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()
@@ -312,7 +312,7 @@ fn gpu_submit_for(worker: str, args: str) -> str {
     let py = host_python(host_key)
     let wdir = host_worker_dir(host_key)
     let cmd = "cd " + wdir + " && " + py + " " + worker + " " + args
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " \"" + cmd + "\" 2>&1")
+    let result = exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + alias + " \"" + cmd + "\" 2>&1")
     let s = to_string(result)
     if s.contains("exec error") {
         fallback_local()

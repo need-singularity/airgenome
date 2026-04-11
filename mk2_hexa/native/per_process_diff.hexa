@@ -1,10 +1,11 @@
-// airgenome/mk2_hexa/native/per_process_diff.hexa — per-PID signature diff engine
+// airgenome/mk2_hexa/native/per_process_diff.hexa — per-PID 6D signature diff engine
 //
 // Phase 2 step 2 of airgenome-next task#1.
 //
 // Reads current sigs from forge/per_process_sig.jsonl
 // Reads baseline from forge/per_process_sig.baseline.jsonl
 // Computes 6D Euclidean distance for each PID present in both.
+// AG1 axes: CPU / RAM / Swap / Net / Disk / GPU
 // Writes to forge/per_process_diff.jsonl sorted by euclidean desc.
 // After diff: copies current → baseline for next cycle.
 //
@@ -15,7 +16,7 @@
 //
 // Prime directive: observe only, never kill.
 
-let VERSION = "2.0.0"
+let VERSION = "3.0.0"
 let CURRENT_PATH  = "forge/per_process_sig.jsonl"
 let BASELINE_PATH = "forge/per_process_sig.baseline.jsonl"
 let DIFF_OUT      = "forge/per_process_diff.jsonl"
@@ -204,7 +205,7 @@ fn cmd_diff() -> str {
         return "init"
     }
 
-    let axis_names = ["cpu", "rss", "vsize", "threads", "nice", "io"]
+    let axis_names = ["cpu", "ram", "swap", "net", "disk", "gpu"]
 
     // Collect diff records: json line + euclidean (for sort).
     let mut result_lines: [str] = []
@@ -424,7 +425,7 @@ fn diff_help() -> str {
     println("Writes: " + DIFF_OUT)
     println("")
     println("After diff, current is copied to baseline for next cycle.")
-    println("6D Euclidean distance across [cpu, rss, vsize, threads, nice, io].")
+    println("6D Euclidean distance across AG1 axes [cpu, ram, swap, net, disk, gpu].")
     return "ok"
 }
 

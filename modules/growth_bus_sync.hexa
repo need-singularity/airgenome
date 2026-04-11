@@ -177,6 +177,10 @@ fn main() -> void {
     if daemon {
         println("[SYNC] daemon started, interval=" + to_string(INTERVAL) + "s")
         while true {
+            // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+            let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+            if parent_alive == "n" { println("[SYNC] parent dead — exiting"); break }
+
             sync_once()
             sleep(INTERVAL)
         }

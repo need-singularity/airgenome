@@ -1,14 +1,20 @@
-// per_process_anomaly.hexa — per-PID 6-axis anomaly detector
+// per_process_anomaly.hexa — per-PID 6-axis anomaly detector (2-sigma)
 //
 // Phase 2 step 3 of airgenome-next task#1.
-// Loads forge/per_process_sig.jsonl (baseline: axes_mean[6], axes_std[6])
-// → reads each forge/by_pid/<PID>.jsonl latest record as current_axes[6]
-// → computes z-scores, flags axes with |z| > 2.0
-// → writes forge/per_process_anomaly.jsonl (sorted by anomaly_score desc).
 //
-// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_anomaly.hexa [<sig_file>] [<by_pid_dir>]
+// Two input modes:
+//   (a) rolling — reads forge/per_process_sig.jsonl live samples (sig[6]),
+//       maintains rolling mean+stddev per PID in forge/per_process_rolling.jsonl,
+//       flags axes where |z| > 2.0 (2-sigma anomaly detection)
+//   (b) legacy  — reads build-format baseline (axes_mean/axes_std) + by_pid dir
+//
+// AG1 axes: CPU / RAM / Swap / Net / Disk / GPU
+//
+// Output: forge/per_process_anomaly.jsonl (sorted by anomaly_score desc)
+//
+// Run: ~/.hx/bin/hexa mk2_hexa/native/per_process_anomaly.hexa [rolling|legacy] [<sig_file>] [<by_pid_dir>]
 
-let AXIS_NAMES = ["cpu", "ram", "io", "net", "gpu", "wake"]
+let AXIS_NAMES = ["cpu", "ram", "swap", "net", "disk", "gpu"]
 let HOME = env("HOME")
 let CONFIG_PATH = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 
@@ -116,6 +122,119 @@ fn last_axes(path: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  MATH — Newton sqrt for stddev computation
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_newton(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LIVE SIG PARSE — extract "sig":[...] array from live-sample format
+// ═══════════════════════════════════════════════════════════════════════
+
+fn extract_sig_csv(line: str) -> str {
+    let parts = line.split("\"sig\":[")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("]")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ROLLING STATS — per-PID mean + stddev tracked across invocations
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Rolling file format (forge/per_process_rolling.jsonl):
+// {"pid":N,"comm":"name","n":count,"sum":[6],"sum2":[6]}
+//
+// On each invocation: load rolling → update with current sig → compute z-scores.
+
+let ROLLING_PATH = "forge/per_process_rolling.jsonl"
+
+// Parse rolling file into parallel arrays.
+// Returns [pids, comms, ns, sums_flat, sum2s_flat] where flat = pid*6 offset.
+fn load_rolling() -> auto {
+    let mut pids  = []
+    let mut comms = []
+    let mut ns    = []
+    let mut sums  = []  // flat: pid_idx*6 + axis
+    let mut sum2s = []  // flat: pid_idx*6 + axis
+
+    if file_exists(ROLLING_PATH) == false { return [pids, comms, ns, sums, sum2s] }
+    let body = read_file(ROLLING_PATH)
+    let lines = body.split("\n")
+    let mut li = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 2 {
+            let pid = extract_int_field(line, "pid")
+            if pid >= 0 {
+                let comm = extract_str_field(line, "comm")
+                let n = extract_int_field(line, "n")
+                let s  = extract_float_array6(line, "sum")
+                let s2 = extract_float_array6(line, "sum2")
+                pids  = pids + [pid]
+                comms = comms + [comm]
+                ns    = ns + [n]
+                let mut k = 0
+                while k < 6 {
+                    sums  = sums + [s[k]]
+                    sum2s = sum2s + [s2[k]]
+                    k = k + 1
+                }
+            }
+        }
+        li = li + 1
+    }
+    return [pids, comms, ns, sums, sum2s]
+}
+
+// Find index of pid in rolling pids array; -1 if not found.
+fn find_rolling_idx(pids: auto, pid: int) -> int {
+    let mut i = 0
+    while i < len(pids) {
+        if pids[i] == pid { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// Write rolling state back to file.
+fn save_rolling(pids: auto, comms: auto, ns: auto, sums: auto, sum2s: auto) {
+    let mut output = ""
+    let mut i = 0
+    while i < len(pids) {
+        let mut s_parts = ""
+        let mut s2_parts = ""
+        let mut k = 0
+        while k < 6 {
+            if k > 0 { s_parts = s_parts + ","; s2_parts = s2_parts + "," }
+            s_parts = s_parts + to_string(sums[i * 6 + k])
+            s2_parts = s2_parts + to_string(sum2s[i * 6 + k])
+            k = k + 1
+        }
+        let safe_comm = to_string(comms[i]).replace("\"", "").replace("\\", "")
+        let mut line = "{\"pid\":" + to_string(pids[i])
+        line = line + ",\"comm\":\"" + safe_comm + "\""
+        line = line + ",\"n\":" + to_string(ns[i])
+        line = line + ",\"sum\":[" + s_parts + "]"
+        line = line + ",\"sum2\":[" + s2_parts + "]}"
+        output = output + line + "\n"
+        i = i + 1
+    }
+    write_file(ROLLING_PATH, output)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Z-SCORE RECORD BUILDER
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -140,7 +259,7 @@ fn build_record(pid: int, comm: str, mean: auto, std: auto, current_csv: str) ->
     let mut j = 0
     while j < 6 {
         let mut s = std[j]
-        if s < 1.0 { s = 1.0 }
+        if s < 0.001 { s = 0.001 }
         let zj = (cur[j] - mean[j]) / s
         z[j] = zj
         let az = fabs(zj)
@@ -164,59 +283,225 @@ fn build_record(pid: int, comm: str, mean: auto, std: auto, current_csv: str) ->
 
     let mut z_parts = ""
     let mut c_parts = ""
+    let mut m_parts = ""
+    let mut sd_parts = ""
     let mut p = 0
     while p < 6 {
-        if p > 0 { z_parts = z_parts + ","; c_parts = c_parts + "," }
+        if p > 0 { z_parts = z_parts + ","; c_parts = c_parts + ","; m_parts = m_parts + ","; sd_parts = sd_parts + "," }
         z_parts = z_parts + to_string(z[p])
         c_parts = c_parts + to_string(cur[p])
+        m_parts = m_parts + to_string(mean[p])
+        sd_parts = sd_parts + to_string(std[p])
         p = p + 1
     }
 
     let safe_comm = comm.replace("\"", "").replace("\\", "")
-    let mut json = "{\"pid\":" + to_string(pid)
+    let ts = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+    let mut json = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
     json = json + ",\"comm\":\"" + safe_comm + "\""
     json = json + ",\"anomaly_score\":" + to_string(score)
     json = json + ",\"severity\":\"" + sev + "\""
     json = json + ",\"flagged_axes\":[" + flagged + "]"
     json = json + ",\"z_scores\":[" + z_parts + "]"
-    json = json + ",\"current_axes\":[" + c_parts + "]}"
+    json = json + ",\"current_axes\":[" + c_parts + "]"
+    json = json + ",\"baseline_mean\":[" + m_parts + "]"
+    json = json + ",\"baseline_std\":[" + sd_parts + "]}"
     return [json, to_string(score), to_string(sev_code)]
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  CONSCIOUSNESS — CLI entry
+//  SORT + WRITE RESULTS — shared by both modes
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness PerProcessAnomaly {
-    let t0 = exec("date +%s").trim()
+fn sort_and_write(scores: auto, records: auto, out_file: str, ok_count: int, warn_count: int, alert_count: int, t0: str) {
+    let n_rec = len(records)
+    // Selection sort descending by score (n <= ~500, fine).
+    let mut idxs = []
+    let mut ii = 0
+    while ii < n_rec { idxs = idxs + [ii]; ii = ii + 1 }
 
-    // argv parse (skip hexa-bin, take positional slots after .hexa script)
-    let argv = args()
-    let mut sig_file = "forge/per_process_sig.jsonl"
-    let mut by_pid_dir = "forge/by_pid"
-    let mut saw_script = false
-    let mut pos = 0
-    let mut ai = 0
-    while ai < len(argv) {
-        let v = argv[ai]
-        if v.contains(".hexa") { saw_script = true }
-        else {
-            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
-                if pos == 0 { sig_file = v }
-                if pos == 1 { by_pid_dir = v }
-                pos = pos + 1
-            }
+    let mut a = 0
+    while a < n_rec {
+        let mut b = a + 1
+        let mut best = a
+        while b < n_rec {
+            if scores[idxs[b]] > scores[idxs[best]] { best = b }
+            b = b + 1
         }
-        ai = ai + 1
+        if best != a {
+            let tmp = idxs[a]
+            idxs[a] = idxs[best]
+            idxs[best] = tmp
+        }
+        a = a + 1
     }
 
+    // Reset + write output file.
+    write_file(out_file, "")
+    let mut first_line = ""
+    let mut last_line = ""
+    let mut wi = 0
+    while wi < n_rec {
+        let json = records[idxs[wi]]
+        exec("printf '%s\\n' " + "'" + json.replace("'", "") + "'" + " >> " + out_file)
+        if wi == 0 { first_line = json }
+        last_line = json
+        wi = wi + 1
+    }
+
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    println("  severity: ok=" + to_string(ok_count) + " warn=" + to_string(warn_count) + " alert=" + to_string(alert_count))
+    println("  elapsed:  " + to_string(dt) + "s")
+    if len(first_line) > 0 { println("  top:  " + first_line) }
+    if len(last_line) > 0 && n_rec > 1 { println("  last: " + last_line) }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ROLLING MODE — live sig → rolling mean/std → 2-sigma anomaly
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_rolling(sig_file: str) -> str {
+    let t0 = exec("date +%s").trim()
     let out_file = "forge/per_process_anomaly.jsonl"
-    println("  per_process_anomaly — sig=" + sig_file + " dir=" + by_pid_dir)
+
+    println("  per_process_anomaly [rolling] — sig=" + sig_file)
+    println("  rolling=" + ROLLING_PATH + " out=" + out_file)
+
+    if file_exists(sig_file) == false {
+        println("  sig file missing: " + sig_file)
+        return "error"
+    }
+
+    // Load current signatures (live sample format: {"sig":[...]})
+    let body = read_file(sig_file)
+    let sig_lines = body.split("\n")
+    println("  current sig lines: " + to_string(len(sig_lines)))
+
+    // Load rolling state
+    let rolling = load_rolling()
+    let mut r_pids  = rolling[0]
+    let mut r_comms = rolling[1]
+    let mut r_ns    = rolling[2]
+    let mut r_sums  = rolling[3]
+    let mut r_sum2s = rolling[4]
+    println("  rolling PIDs tracked: " + to_string(len(r_pids)))
+
+    let mut scores = []
+    let mut records = []
+    let mut ok_count = 0
+    let mut warn_count = 0
+    let mut alert_count = 0
+
+    let mut si = 0
+    while si < len(sig_lines) {
+        let sline = sig_lines[si].trim()
+        if len(sline) > 2 {
+            let pid = extract_int_field(sline, "pid")
+            if pid >= 0 {
+                let comm = extract_str_field(sline, "comm")
+                // Extract current sig values
+                let sig_csv = extract_sig_csv(sline)
+                if len(sig_csv) > 0 {
+                    let vals = sig_csv.split(",")
+                    let mut cur = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                    let mut k = 0
+                    while k < 6 {
+                        if k < len(vals) {
+                            try { cur[k] = to_float(vals[k].trim()) } catch e {}
+                        }
+                        k = k + 1
+                    }
+
+                    // Find or create rolling entry
+                    let mut ridx = find_rolling_idx(r_pids, pid)
+                    if ridx < 0 {
+                        // New PID — initialize rolling entry
+                        ridx = len(r_pids)
+                        r_pids  = r_pids + [pid]
+                        r_comms = r_comms + [comm]
+                        r_ns    = r_ns + [0]
+                        let mut ki = 0
+                        while ki < 6 {
+                            r_sums  = r_sums + [0.0]
+                            r_sum2s = r_sum2s + [0.0]
+                            ki = ki + 1
+                        }
+                    }
+
+                    // Update rolling sums with current observation
+                    r_ns[ridx] = r_ns[ridx] + 1
+                    r_comms[ridx] = comm
+                    let mut ku = 0
+                    while ku < 6 {
+                        r_sums[ridx * 6 + ku]  = r_sums[ridx * 6 + ku] + cur[ku]
+                        r_sum2s[ridx * 6 + ku] = r_sum2s[ridx * 6 + ku] + cur[ku] * cur[ku]
+                        ku = ku + 1
+                    }
+
+                    // Compute mean + stddev from rolling accumulators
+                    let n_obs = r_ns[ridx]
+                    if n_obs >= 3 {
+                        // Need at least 3 observations for meaningful z-score
+                        let nf = to_float(to_string(n_obs))
+                        let mut mean = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                        let mut std  = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                        let mut km = 0
+                        while km < 6 {
+                            mean[km] = r_sums[ridx * 6 + km] / nf
+                            let variance = (r_sum2s[ridx * 6 + km] / nf) - (mean[km] * mean[km])
+                            let mut var_safe = variance
+                            if var_safe < 0.0 { var_safe = 0.0 }
+                            std[km] = sqrt_newton(var_safe)
+                            km = km + 1
+                        }
+
+                        // Build anomaly record
+                        let rec = build_record(pid, comm, mean, std, sig_csv)
+                        let json = rec[0]
+                        let mut score = 0.0
+                        try { score = to_float(rec[1]) } catch e {}
+                        let mut sev_code = 0
+                        try { sev_code = to_int(to_float(rec[2])) } catch e2 {}
+                        scores = scores + [score]
+                        records = records + [json]
+                        if sev_code == 0 { ok_count = ok_count + 1 }
+                        if sev_code == 1 { warn_count = warn_count + 1 }
+                        if sev_code == 2 { alert_count = alert_count + 1 }
+                    }
+                }
+            }
+        }
+        si = si + 1
+    }
+
+    // Persist updated rolling state
+    save_rolling(r_pids, r_comms, r_ns, r_sums, r_sum2s)
+    println("  rolling PIDs after update: " + to_string(len(r_pids)))
+
+    let n_rec = len(records)
+    println("  anomaly records: " + to_string(n_rec))
+
+    sort_and_write(scores, records, out_file, ok_count, warn_count, alert_count, t0)
+    return "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LEGACY MODE — build-format baseline + by_pid dir
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_legacy(sig_file: str, by_pid_dir: str) -> str {
+    let t0 = exec("date +%s").trim()
+    let out_file = "forge/per_process_anomaly.jsonl"
+
+    println("  per_process_anomaly [legacy] — sig=" + sig_file + " dir=" + by_pid_dir)
     println("  out=" + out_file)
 
     if file_exists(sig_file) == false {
         println("  baseline sig file missing: " + sig_file)
-        exit(1)
+        return "error"
     }
 
     let body = read_file(sig_file)
@@ -224,7 +509,6 @@ consciousness PerProcessAnomaly {
     let n_sig = len(sig_lines)
     println("  baseline lines: " + to_string(n_sig))
 
-    // Build per-PID records, accumulate into parallel arrays for sort.
     let mut scores = []
     let mut records = []
     let mut ok_count = 0
@@ -267,46 +551,55 @@ consciousness PerProcessAnomaly {
     let n_rec = len(records)
     println("  records: " + to_string(n_rec) + "  missing_current: " + to_string(missing_current))
 
-    // Selection sort descending by score (n ≤ ~500, fine).
-    let mut idxs = []
-    let mut ii = 0
-    while ii < n_rec { idxs = idxs + [ii]; ii = ii + 1 }
+    sort_and_write(scores, records, out_file, ok_count, warn_count, alert_count, t0)
+    return "ok"
+}
 
-    let mut a = 0
-    while a < n_rec {
-        let mut b = a + 1
-        let mut best = a
-        while b < n_rec {
-            if scores[idxs[b]] > scores[idxs[best]] { best = b }
-            b = b + 1
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI entry
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PerProcessAnomaly {
+    // argv parse (skip hexa-bin, take positional slots after .hexa script)
+    let argv = args()
+    let mut mode = "rolling"
+    let mut sig_file = "forge/per_process_sig.jsonl"
+    let mut by_pid_dir = "forge/by_pid"
+    let mut saw_script = false
+    let mut pos = 0
+    let mut ai = 0
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        else {
+            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
+                if v == "rolling" || v == "legacy" {
+                    mode = v
+                } else {
+                    if pos == 0 { sig_file = v }
+                    if pos == 1 { by_pid_dir = v }
+                    pos = pos + 1
+                }
+            }
         }
-        if best != a {
-            let tmp = idxs[a]
-            idxs[a] = idxs[best]
-            idxs[best] = tmp
-        }
-        a = a + 1
+        ai = ai + 1
     }
 
-    // Reset + write output file.
-    write_file(out_file, "")
-    let mut first_line = ""
-    let mut last_line = ""
-    let mut wi = 0
-    while wi < n_rec {
-        let json = records[idxs[wi]]
-        exec("printf '%s\\n' " + "'" + json.replace("'", "") + "'" + " >> " + out_file)
-        if wi == 0 { first_line = json }
-        last_line = json
-        wi = wi + 1
+    println("")
+    println("  per_process_anomaly v3.0 — AG1 6-axis 2-sigma detector")
+    println("  mode=" + mode + " threshold=" + to_string(Z_THRESHOLD))
+    println("  axes: " + AXIS_NAMES[0] + "/" + AXIS_NAMES[1] + "/" + AXIS_NAMES[2] + "/" + AXIS_NAMES[3] + "/" + AXIS_NAMES[4] + "/" + AXIS_NAMES[5])
+    println("")
+
+    if mode == "rolling" {
+        cmd_rolling(sig_file)
     }
-
-    let t1 = exec("date +%s").trim()
-    let mut dt = 0
-    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
-
-    println("  severity: ok=" + to_string(ok_count) + " warn=" + to_string(warn_count) + " alert=" + to_string(alert_count))
-    println("  elapsed:  " + to_string(dt) + "s")
-    println("  first: " + first_line)
-    println("  last:  " + last_line)
+    if mode == "legacy" {
+        cmd_legacy(sig_file, by_pid_dir)
+    }
+    if mode != "rolling" {
+        if mode != "legacy" {
+            println("  unknown mode: " + mode + " (use 'rolling' or 'legacy')")
+        }
+    }
 }

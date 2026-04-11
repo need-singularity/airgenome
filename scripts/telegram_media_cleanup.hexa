@@ -35,28 +35,28 @@ fn telegram_running() -> bool {
 fn cache_bytes() -> int {
     if file_exists(MEDIA_DIR + "/cache") == false { return 0 }
     let s = try {
-        exec("find '" + MEDIA_DIR + "/cache' -type f 2>/dev/null | xargs -I{} stat -f %z '{}' 2>/dev/null | awk '{s+=$1}END{print s+0}'").trim()
+        exec("perl -e 'alarm 60; exec @ARGV' /bin/sh -c \"find '" + MEDIA_DIR + "/cache' -type f 2>/dev/null | xargs -I{} stat -f %z '{}' 2>/dev/null | awk '{s+=\\$1}END{print s+0}'\"").trim()
     } catch e { "0" }
     return to_int(s)
 }
 
 // orphan old documents byte 합산 — mtime>30d AND no _partial sibling
 fn orphan_old_bytes() -> int {
-    let cmd = "find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
+    let cmd = "perl -e 'alarm 60; exec @ARGV' /bin/sh -c \"find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
               "-name 'telegram-cloud-document-*' -mtime +30 ! -name '*_partial' 2>/dev/null | " +
               "while IFS= read -r f; do " +
-              "  if [ ! -e \"${f}_partial\" ]; then stat -f %z \"$f\" 2>/dev/null; fi; " +
-              "done | awk '{s+=$1}END{print s+0}'"
+              "  if [ ! -e \\\"\\${f}_partial\\\" ]; then stat -f %z \\\"\\$f\\\" 2>/dev/null; fi; " +
+              "done | awk '{s+=\\$1}END{print s+0}'\""
     let s = try { exec(cmd).trim() } catch e { "0" }
     return to_int(s)
 }
 
 fn orphan_old_count() -> int {
-    let cmd = "find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
+    let cmd = "perl -e 'alarm 60; exec @ARGV' /bin/sh -c \"find '" + MEDIA_DIR + "' -maxdepth 1 -type f " +
               "-name 'telegram-cloud-document-*' -mtime +30 ! -name '*_partial' 2>/dev/null | " +
               "while IFS= read -r f; do " +
-              "  if [ ! -e \"${f}_partial\" ]; then echo 1; fi; " +
-              "done | wc -l"
+              "  if [ ! -e \\\"\\${f}_partial\\\" ]; then echo 1; fi; " +
+              "done | wc -l\""
     let s = try { exec(cmd).trim() } catch e { "0" }
     return to_int(s)
 }

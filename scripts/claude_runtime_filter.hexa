@@ -316,7 +316,8 @@ fn run() {
     if len(b) > 0 { sh = sh + " '" + b + "'" }
     sh = sh + " 2>&1; rm -f '" + tmp + "'"
 
-    let result = try { exec(sh) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large runtime filter
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + sh.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

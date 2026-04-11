@@ -75,6 +75,10 @@ fn safe_exec(cmd: str) -> str {
 }
 
 while true {
+    // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+    let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+    if parent_alive == "n" { println("[ag3_menubar_feed] parent dead — exiting"); break }
+
     let ts_s = safe_exec("date +%s")
     let mut ts = 0
     try { ts = to_int(to_float(ts_s)) } catch e {}

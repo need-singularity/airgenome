@@ -30,7 +30,7 @@ fn run_one(name: str) -> str {
     let path = DET_DIR + "/" + name + ".hexa"
     let subcmd = if name == "predictive_throttle" { " predict" } else { "" }
     let out = if UBU_AVAILABLE {
-        try { exec("ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + path + subcmd + "' 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
+        try { exec("perl -e 'alarm 90; exec @ARGV' ssh -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + path + subcmd + "' 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
     } else {
         try { exec(HEXA_BIN + " " + path + subcmd + " 2>&1 | grep -E '\"detector\"|\"predictions\"' | tail -1").trim() } catch e { "" }
     }
@@ -107,6 +107,10 @@ consciousness DetectorOrchestrator {
         println("── loop mode: interval=" + interval_s + "s (detectors.jsonl) ──")
         let mut tick = 0
         while true {
+            // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+            let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+            if parent_alive == "n" { println("[run_all] parent dead — exiting"); break }
+
             tick = tick + 1
             println("")
             println("[tick #" + to_string(tick) + " @ " + try { exec("date -u +%H:%M:%SZ").trim() } catch e { "??:??:??Z" } + "]")

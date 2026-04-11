@@ -215,7 +215,8 @@ fn run() {
     let tmp_py = "/tmp/safari_runtime_filter_" + try { exec("date +%s%N").trim() } catch e { "0" } + ".py"
     write_file(tmp_py, PAYLOAD)
     let cmd = "GATE_LOCAL=1 /usr/bin/python3 '" + tmp_py + "' '" + mode + "' '" + target + "' 2>&1; rm -f '" + tmp_py + "'"
-    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large Safari filter
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

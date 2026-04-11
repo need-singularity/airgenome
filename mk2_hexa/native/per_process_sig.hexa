@@ -6,18 +6,18 @@
 //   (a) sample — live ps snapshot: top 50 PIDs → 6-axis normalized signatures
 //   (b) build  — batch from forge/by_pid/<PID>.jsonl time-series (legacy)
 //
-// 6 axes: cpu%, rss, vsize, threads, nice, io
+// AG1 6 axes: CPU / RAM / Swap / Net / Disk / GPU
 // Each axis normalized to [0.0, 1.0] relative to sample maximum.
 //
 // Output: forge/per_process_sig.jsonl
-// Format: {"ts":iso,"pid":N,"comm":"name","sig":[c,r,v,t,n,i],"raw":{cpu:X,rss:X,...}}
+// Format: {"ts":iso,"pid":N,"comm":"name","sig":[cpu,ram,swap,net,disk,gpu],"raw":{...}}
 //
 // Usage: ~/.hx/bin/hexa mk2_hexa/native/per_process_sig.hexa [command]
 // Commands: sample, build [<by_pid_dir>], show, help
 //
 // Prime directive: observe only, never kill.
 
-let VERSION = "2.0.0"
+let VERSION = "3.0.0"
 let SIG_PATH = "forge/per_process_sig.jsonl"
 let TOP_N = 50
 
@@ -79,12 +79,13 @@ fn extract_comm(line: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  LIVE SAMPLING: ps snapshot → raw 6-axis extraction for top 50 PIDs
+//  LIVE SAMPLING: ps snapshot → raw AG1 6-axis extraction for top 50 PIDs
+//  Axes: CPU / RAM / Swap / Net / Disk / GPU
 // ═══════════════════════════════════════════════════════════════════════
 
-// Returns array of arrays: [[pid, comm, cpu, rss_kb, vsz_kb, threads, nice, io], ...]
+// Returns array of arrays: [[pid, comm, cpu_pct, rss_kb, swap_proxy, net_proxy, disk_proxy, gpu_proxy], ...]
 fn sample_top_pids() -> auto {
-    let raw = exec("ps -axo pid=,comm=,%cpu=,rss=,vsz=,nice= -r 2>/dev/null | head -" + to_string(TOP_N)).trim()
+    let raw = exec("ps -axo pid=,comm=,%cpu=,rss=,vsz=,nice=,time=,pri= -r 2>/dev/null | head -" + to_string(TOP_N)).trim()
     let lines = raw.split("\n")
 
     let mut result = []
@@ -103,7 +104,7 @@ fn sample_top_pids() -> auto {
                 }
                 p = p + 1
             }
-            // Need at least 6 fields: pid comm cpu rss vsz nice
+            // Need at least 6 fields: pid comm cpu rss vsz nice [time pri]
             if len(clean) >= 6 {
                 let mut pid = 0
                 try { pid = to_int(clean[0]) } catch e { pid = 0 }
@@ -114,32 +115,66 @@ fn sample_top_pids() -> auto {
                         let seg = comm.split("/")
                         comm = seg[len(seg) - 1]
                     }
+                    // Axis 0: CPU — direct %cpu from ps
                     let mut cpu_pct = 0.0
                     try { cpu_pct = to_float(clean[2]) } catch e {}
+
+                    // Axis 1: RAM — rss in KB
                     let mut rss_kb = 0.0
                     try { rss_kb = to_float(clean[3]) } catch e {}
+
+                    // Axis 2: Swap proxy — (vsz - rss) as swap pressure indicator
+                    // macOS doesn't expose per-process swap; vsz-rss approximates
+                    // virtual pages not in physical memory
                     let mut vsz_kb = 0.0
                     try { vsz_kb = to_float(clean[4]) } catch e {}
+                    let mut swap_proxy = vsz_kb - rss_kb
+                    if swap_proxy < 0.0 { swap_proxy = 0.0 }
+
+                    // Axis 3: Net proxy — open socket count via lsof (R17: timeout)
+                    let mut net_proxy = 0.0
+                    try {
+                        let sock_raw = exec("timeout 3 lsof -i -a -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
+                        net_proxy = to_float(sock_raw)
+                        if net_proxy > 0.0 { net_proxy = net_proxy - 1.0 }  // subtract header
+                        if net_proxy < 0.0 { net_proxy = 0.0 }
+                    } catch e { net_proxy = 0.0 }
+
+                    // Axis 4: Disk proxy — open file descriptor count (non-socket)
+                    let mut disk_proxy = 0.0
+                    try {
+                        let fd_raw = exec("timeout 3 lsof -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
+                        disk_proxy = to_float(fd_raw)
+                        if disk_proxy > 0.0 { disk_proxy = disk_proxy - 1.0 }
+                        disk_proxy = disk_proxy - net_proxy  // subtract sockets
+                        if disk_proxy < 0.0 { disk_proxy = 0.0 }
+                    } catch e { disk_proxy = 0.0 }
+
+                    // Axis 5: GPU proxy — cputime * priority blend (matches genome_harvest pattern)
+                    // Processes with GPU usage tend to have high CPU time + elevated priority
                     let mut nice_val = 0.0
                     try { nice_val = to_float(clean[5]) } catch e {}
+                    let mut pri_val = 0.0
+                    if len(clean) >= 8 {
+                        try { pri_val = to_float(clean[7]) } catch e {}
+                    }
+                    // Parse cputime H:MM:SS if available
+                    let mut cputime_s = 0.0
+                    if len(clean) >= 7 {
+                        try {
+                            let tparts = clean[6].split(":")
+                            let mut t = 0.0
+                            let mut ti = 0
+                            while ti < len(tparts) {
+                                t = t * 60.0 + to_float(tparts[ti])
+                                ti = ti + 1
+                            }
+                            cputime_s = t
+                        } catch e {}
+                    }
+                    let gpu_proxy = cputime_s * 2.0 + pri_val * 0.5 + fabs(nice_val)
 
-                    // Thread count via ps -M (macOS: one line per thread, minus header)
-                    let mut thr = 1
-                    try {
-                        let thr_str = exec("ps -M -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
-                        thr = to_int(thr_str)
-                        if thr > 1 { thr = thr - 1 }
-                    } catch e { thr = 1 }
-                    if thr < 1 { thr = 1 }
-
-                    // IO heuristic: open file descriptor count * page size
-                    let mut io_bytes = 0.0
-                    try {
-                        let io_raw = exec("lsof -p " + to_string(pid) + " 2>/dev/null | wc -l").trim()
-                        io_bytes = to_float(io_raw) * 4096.0
-                    } catch e { io_bytes = 0.0 }
-
-                    result = result + [[pid, comm, cpu_pct, rss_kb, vsz_kb, to_float(thr), nice_val, io_bytes]]
+                    result = result + [[pid, comm, cpu_pct, rss_kb, swap_proxy, net_proxy, disk_proxy, gpu_proxy]]
                 }
             }
         }
@@ -149,44 +184,37 @@ fn sample_top_pids() -> auto {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  NORMALIZATION: raw values → 0-1 range per axis
+//  NORMALIZATION: raw values → 0-1 range per axis (AG1: CPU/RAM/Swap/Net/Disk/GPU)
 // ═══════════════════════════════════════════════════════════════════════
 
-// Finds global max for each of the 6 axes across all sampled PIDs
+// Finds global max for each of the 6 AG1 axes across all sampled PIDs
 fn find_axis_maxima(samples: auto) -> auto {
-    let mut max_cpu = 1.0
-    let mut max_rss = 1.0
-    let mut max_vsz = 1.0
-    let mut max_thr = 1.0
-    let max_nice = 40.0    // nice range: -20..+20 → abs max = 40
-    let mut max_io = 1.0
+    let mut max_cpu  = 1.0
+    let mut max_ram  = 1.0
+    let mut max_swap = 1.0
+    let mut max_net  = 1.0
+    let mut max_disk = 1.0
+    let mut max_gpu  = 1.0
 
     let mut i = 0
     while i < len(samples) {
         let s = samples[i]
-        // s = [pid, comm, cpu, rss, vsz, thr, nice, io]
-        if s[2] > max_cpu { max_cpu = s[2] }
-        if s[3] > max_rss { max_rss = s[3] }
-        if s[4] > max_vsz { max_vsz = s[4] }
-        if s[5] > max_thr { max_thr = s[5] }
-        if s[7] > max_io  { max_io = s[7] }
+        // s = [pid, comm, cpu, ram, swap, net, disk, gpu]
+        if s[2] > max_cpu  { max_cpu  = s[2] }
+        if s[3] > max_ram  { max_ram  = s[3] }
+        if s[4] > max_swap { max_swap = s[4] }
+        if s[5] > max_net  { max_net  = s[5] }
+        if s[6] > max_disk { max_disk = s[6] }
+        if s[7] > max_gpu  { max_gpu  = s[7] }
         i = i + 1
     }
 
-    return [max_cpu, max_rss, max_vsz, max_thr, max_nice, max_io]
+    return [max_cpu, max_ram, max_swap, max_net, max_disk, max_gpu]
 }
 
 fn normalize_axis(val: float, axis_max: float) -> float {
     if axis_max <= 0.0 { return 0.0 }
     let mut n = val / axis_max
-    if n > 1.0 { n = 1.0 }
-    if n < 0.0 { n = 0.0 }
-    return n
-}
-
-// Nice normalization: map -20..+20 → 0..1 (nice -20 = 0, nice 0 = 0.5, nice +20 = 1)
-fn normalize_nice(nice_val: float) -> float {
-    let mut n = (nice_val + 20.0) / 40.0
     if n > 1.0 { n = 1.0 }
     if n < 0.0 { n = 0.0 }
     return n
@@ -206,34 +234,34 @@ fn write_live_signatures(samples: auto, maxima: auto) -> int {
         let s = samples[i]
         let pid = to_int(s[0])
         let comm = s[1]
-        let cpu_raw = s[2]
-        let rss_raw = s[3]
-        let vsz_raw = s[4]
-        let thr_raw = s[5]
-        let nice_raw = s[6]
-        let io_raw = s[7]
+        let cpu_raw  = s[2]
+        let ram_raw  = s[3]
+        let swap_raw = s[4]
+        let net_raw  = s[5]
+        let disk_raw = s[6]
+        let gpu_raw  = s[7]
 
-        // Normalize to 6-axis signature [c, r, v, t, n, i]
-        let c = normalize_axis(cpu_raw, maxima[0])
-        let r = normalize_axis(rss_raw, maxima[1])
-        let v = normalize_axis(vsz_raw, maxima[2])
-        let t = normalize_axis(thr_raw, maxima[3])
-        let n = normalize_nice(nice_raw)
-        let io = normalize_axis(io_raw, maxima[5])
+        // Normalize to AG1 6-axis signature [cpu, ram, swap, net, disk, gpu]
+        let n_cpu  = normalize_axis(cpu_raw,  maxima[0])
+        let n_ram  = normalize_axis(ram_raw,  maxima[1])
+        let n_swap = normalize_axis(swap_raw, maxima[2])
+        let n_net  = normalize_axis(net_raw,  maxima[3])
+        let n_disk = normalize_axis(disk_raw, maxima[4])
+        let n_gpu  = normalize_axis(gpu_raw,  maxima[5])
 
         // Round to 4 decimal places via python
-        let sig_str = exec("python3 -c \"print('[' + ','.join(f'{x:.4f}' for x in [" + to_string(c) + "," + to_string(r) + "," + to_string(v) + "," + to_string(t) + "," + to_string(n) + "," + to_string(io) + "]) + ']')\" 2>/dev/null").trim()
+        let sig_str = exec("python3 -c \"print('[' + ','.join(f'{x:.4f}' for x in [" + to_string(n_cpu) + "," + to_string(n_ram) + "," + to_string(n_swap) + "," + to_string(n_net) + "," + to_string(n_disk) + "," + to_string(n_gpu) + "]) + ']')\" 2>/dev/null").trim()
 
         let safe_comm = comm.replace("\"", "").replace("\\", "")
         let mut line = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
         line = line + ",\"comm\":\"" + safe_comm + "\""
         line = line + ",\"sig\":" + sig_str
         line = line + ",\"raw\":{\"cpu\":" + to_string(cpu_raw)
-        line = line + ",\"rss\":" + to_string(rss_raw)
-        line = line + ",\"vsize\":" + to_string(vsz_raw)
-        line = line + ",\"threads\":" + to_string(to_int(thr_raw))
-        line = line + ",\"nice\":" + to_string(to_int(nice_raw))
-        line = line + ",\"io\":" + to_string(io_raw) + "}}"
+        line = line + ",\"ram\":" + to_string(ram_raw)
+        line = line + ",\"swap\":" + to_string(swap_raw)
+        line = line + ",\"net\":" + to_string(net_raw)
+        line = line + ",\"disk\":" + to_string(disk_raw)
+        line = line + ",\"gpu\":" + to_string(gpu_raw) + "}}"
         output = output + line + "\n"
         count = count + 1
         i = i + 1
@@ -399,8 +427,8 @@ fn cmd_sample() -> str {
     try { dt = to_int(t1) - to_int(t0) } catch e {}
 
     println("  sampled " + to_string(count) + " PIDs -> " + SIG_PATH)
-    println("  axis maxima: cpu=" + to_string(maxima[0]) + " rss=" + to_string(maxima[1]) + "KB vsz=" + to_string(maxima[2]) + "KB")
-    println("               thr=" + to_string(to_int(maxima[3])) + " nice_range=40 io=" + to_string(maxima[5]))
+    println("  axis maxima: cpu=" + to_string(maxima[0]) + " ram=" + to_string(maxima[1]) + "KB swap=" + to_string(maxima[2]) + "KB")
+    println("               net=" + to_string(maxima[3]) + " disk=" + to_string(maxima[4]) + " gpu=" + to_string(maxima[5]))
     println("  elapsed: " + to_string(dt) + "s")
     println("")
     return "ok"
@@ -417,7 +445,7 @@ fn cmd_show() -> str {
     println("")
     println("  per-process signatures (last sample)")
     println("  ══════════════════════════════════════════════════════════════")
-    println("  PID     COMM            SIG [cpu,rss,vsz,thr,nice,io]")
+    println("  PID     COMM            SIG [cpu,ram,swap,net,disk,gpu]")
     println("  ──────  ──────────────  ─────────────────────────────────")
 
     let mut i = 0
@@ -461,7 +489,7 @@ fn sig_help() -> str {
     println("  show          — display current signatures from " + SIG_PATH)
     println("  help          — this message")
     println("")
-    println("6 axes: cpu%, rss, vsize, threads, nice, io")
+    println("AG1 6 axes: CPU, RAM, Swap, Net, Disk, GPU")
     println("Each axis normalized to [0.0, 1.0] range relative to sample max.")
     println("")
     println("Output: " + SIG_PATH)

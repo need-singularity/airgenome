@@ -209,7 +209,8 @@ fn run() {
     if len(b) > 0 { cmd = cmd + " '" + b + "'" }
     cmd = cmd + " 2>&1; rm -f '" + tmp + "'"
 
-    let result = try { exec(cmd) } catch e { "exec error: " + to_string(e) }
+    // R17: timeout 120s — prevent hang on large JSONL processing
+    let result = try { exec("perl -e 'alarm 120; exec @ARGV' /bin/sh -c " + "'" + cmd.replace("'", "'\\''") + "'") } catch e { "exec error: " + to_string(e) }
     print(result)
 }
 

@@ -45,7 +45,7 @@ let UBU_OK = try { exec("ssh -o ConnectTimeout=2 -o ServerAliveInterval=10 -o Se
 
 fn run_detectors() -> str {
     if UBU_OK {
-        return try { exec("ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + RUN_ALL + "' 2>&1") } catch e { "" }
+        return try { exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + RUN_ALL + "' 2>&1") } catch e { "" }
     }
     return try { exec(HEXA_BIN + " " + RUN_ALL + " 2>&1") } catch e { "" }
 }
@@ -83,7 +83,7 @@ fn log_event(kind: str, payload: str) {
 fn trigger_blowup() {
     println("  [blowup] airgenome 3 --no-graph")
     if UBU_OK {
-        try { exec("ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
+        try { exec("perl -e 'alarm 120; exec @ARGV' ssh -o ConnectTimeout=30 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && " + UBU_HEXA + " " + BLOWUP + " airgenome 3 --no-graph' 2>&1 | tail -20") } catch e { println("[warn] detector_loop: blowup(ubu) failed — " + e) }
     } else {
         // 2026-04-12 골화: Mac 로컬 blowup 실행 차단 (AG3 strict). degrade 폴백 금지
         println("[BLOCKED] detector_loop: ubu unavailable — blowup disabled (ag3_mode=strict, ubu_first_always=true)")
@@ -148,6 +148,10 @@ consciousness DetectorLoop {
     }
 
     while true {
+        // R17: parent-alive check — exit if parent process is gone (zombie prevention)
+        let parent_alive = try { exec("kill -0 $PPID 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
+        if parent_alive == "n" { println("[detector_loop] parent dead — exiting"); break }
+
         tick = tick + 1
         let ts = try { exec("date +%s").trim() } catch e { "0" }
         let now = to_f(ts)
