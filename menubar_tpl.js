@@ -227,32 +227,45 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         uGpuItem.title = $('  GPU  ' + bar(uGpuUtil, 100, bw) + '  ' + uGpuUtil + '%  VRAM ' + uGpuMem + '%  ' + uGpuName);
         uGpuItem.hidden = false;
 
-        // offload status from dispatch.log
-        var dLines = readDispatchTail(10);
-        var runCount = 0; var drainCount = 0; var errCount = 0; var lastTs = 0;
+        // offload status from dispatch.log (JSONL PROACTIVE_FIRE 파싱, 2026-04-11)
+        // 기존 탭 포맷 파서는 현재 JSON 형식 못 읽어 항상 0 jobs 표시하던 버그 수정
+        var dLines = readDispatchTail(200);
+        var htzCount = 0; var ubuCount = 0; var lastUbu = 0; var lastHtz = 0;
+        var nowSec = Math.round(Date.now() / 1000);
+        var windowSec = 300;  // 최근 5분
         for (var di = 0; di < dLines.length; di++) {
-            var cols = dLines[di].split('\t');
-            var ts = parseInt(cols[0], 10) || 0;
-            var act = cols[1] || '';
-            if (ts > lastTs) lastTs = ts;
-            if (act === 'run') runCount++;
-            else if (act === 'drain') drainCount++;
-            else if (act === 'error' || act === 'fail') errCount++;
+            var line = dLines[di];
+            // JSON 라인만 취급
+            if (line.charAt(0) !== '{') continue;
+            try {
+                var ev = JSON.parse(line);
+                if (!ev.type || !ev.epoch) continue;
+                var ageSec = nowSec - ev.epoch;
+                if (ageSec > windowSec) continue;
+                if (ev.type === 'HTZ_PROACTIVE_FIRE') {
+                    htzCount++;
+                    if (ev.epoch > lastHtz) lastHtz = ev.epoch;
+                } else if (ev.type === 'UBU_PROACTIVE_FIRE') {
+                    ubuCount++;
+                    if (ev.epoch > lastUbu) lastUbu = ev.epoch;
+                }
+            } catch(e) { /* non-JSON line, skip */ }
         }
-        if (dLines.length === 0) {
-            uOffloadItem.title = $('  ⬇ offload  —  no dispatch log');
-        } else if (errCount > 0) {
-            uOffloadItem.title = $('  ⚠ offload  ' + runCount + ' jobs  ' + errCount + ' err');
-        } else {
-            var ago = '';
-            if (lastTs > 0) {
-                var secAgo = Math.round(Date.now() / 1000) - lastTs;
-                if (secAgo < 60) ago = secAgo + 's ago';
-                else if (secAgo < 3600) ago = Math.round(secAgo / 60) + 'm ago';
-                else ago = Math.round(secAgo / 3600) + 'h ago';
-            }
-            uOffloadItem.title = $('  ⬇ offload  ' + runCount + ' jobs' + (drainCount > 0 ? '  drain=' + drainCount : '') + (ago ? '  last ' + ago : ''));
+        var lastFire = Math.max(lastUbu, lastHtz);
+        var agoStr = '';
+        if (lastFire > 0) {
+            var secAgo = nowSec - lastFire;
+            if (secAgo < 60) agoStr = secAgo + 's';
+            else if (secAgo < 3600) agoStr = Math.round(secAgo / 60) + 'm';
+            else agoStr = Math.round(secAgo / 3600) + 'h';
         }
+        // blowup 진행중인지 추정 (최근 ubu fire < 90s, htz fire < 180s)
+        var ubuBusy = lastUbu > 0 && (nowSec - lastUbu) < 90;
+        var htzBusy = lastHtz > 0 && (nowSec - lastHtz) < 180;
+        var busyMark = '';
+        if (ubuBusy && htzBusy) busyMark = ' \u25CF\u25CF';
+        else if (ubuBusy || htzBusy) busyMark = ' \u25CF';
+        uOffloadItem.title = $('  ⬇ blowup  ubu=' + ubuCount + ' htz=' + htzCount + (agoStr ? '  last ' + agoStr : '') + busyMark + '  (5m)');
         uOffloadItem.hidden = false;
     } else {
         ubuHeader.title = $('\u2501\u2501\u2501 Ubuntu \u25CB \u2501\u2501\u2501');
@@ -271,7 +284,7 @@ $.NSTimer.scheduledTimerWithTimeIntervalRepeatsBlock(2.0, true, function() {
         var hzLoad = hz.load || '?';
         var hzThreads = hz.cpu_threads || 0;
         var hzLoadPct = hzThreads > 0 ? Math.round(parseFloat(hzLoad) * 100 / hzThreads) : 0;
-        htzCpuItem.title = $('  CPU  ' + bar(hzLoadPct, 100, bw) + '  load=' + hzLoad + '  ' + hzThreads + 'T');
+        htzCpuItem.title = $('  CPU  ' + bar(hzLoadPct, 100, bw) + '  ' + hzLoadPct + '%  load=' + hzLoad + '/' + hzThreads + 'T');
         htzCpuItem.hidden = false;
         var hzRamUsedG = Math.round((hz.ram_used_mb || 0) / 1024 * 10) / 10;
         var hzRamTotalG = Math.round((hz.ram_total_mb || 0) / 1024 * 10) / 10;
