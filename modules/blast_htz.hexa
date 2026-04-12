@@ -135,7 +135,7 @@ fn blast_once() {
             let cmd = build_cmd(s)
             write_file("/tmp/_blast_htz_" + to_string(n) + ".sh", cmd + "\n")
             // ★ systemd-run cgroup 격리
-            launch = launch + "( cat /tmp/_blast_htz_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config hetzner 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 180 bash -s' > /tmp/_blast_htz_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            launch = launch + "( cat /tmp/_blast_htz_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config hetzner 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 60 bash -s' > /tmp/_blast_htz_out_" + to_string(n) + ".txt 2>&1 ) &\n"
             log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
         }

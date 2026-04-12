@@ -168,3 +168,6 @@
 {"id":"ubu_2026-04-12T14:15:35Z","ts":"2026-04-12T14:15:35Z","task":"blast_ubu_9","host":"ubu","status":"done","bytes":3070,"depth":1}
 {"id":"ubu_2026-04-12T14:16:30Z","ts":"2026-04-12T14:16:30Z","task":"blast_ubu_9","host":"ubu","status":"done","bytes":3070,"depth":1}
 {"id":"ubu_2026-04-12T14:17:53Z","ts":"2026-04-12T14:17:53Z","task":"blast_ubu_10","host":"ubu","status":"done","bytes":3272,"depth":1}
+{"id":"ubu_2026-04-12T14:18:46Z","ts":"2026-04-12T14:18:46Z","task":"blast_ubu_10","host":"ubu","status":"done","bytes":3272,"depth":2}
+{"id":"ubu_2026-04-12T14:20:28Z","ts":"2026-04-12T14:20:28Z","task":"blast_ubu_10","host":"ubu","status":"done","bytes":3288,"depth":2}
+{"id":"ubu_2026-04-12T14:22:38Z","ts":"2026-04-12T14:22:38Z","task":"blast_ubu_10","host":"ubu","status":"done","bytes":3180,"depth":3}
