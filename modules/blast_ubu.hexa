@@ -1,0 +1,188 @@
+// modules/blast_ubu.hexa — ubu 전용 blast 서비스 (독립 LaunchAgent)
+//
+// 30초 간격 독립 실행. htz 안 기다림.
+// slot_catalog.jsonl에서 홀수(ubu) 슬롯만 로드.
+// resource_ceiling.jsonl 기반 적응형 depth.
+// ubu 12T + RTX 5070 — CPU 80% 목표.
+
+let HOME = env("HOME")
+let AG_HOME = HOME + "/Dev/airgenome"
+let CEILING = AG_HOME + "/forge/resource_ceiling.jsonl"
+let RESULTS = AG_HOME + "/forge/task_results.jsonl"
+let LOG_FILE = AG_HOME + "/forge/blast_ubu.log"
+let LOCK = HOME + "/.airgenome/blast_ubu.lock"
+let SLOT_CATALOG = HOME + "/Dev/nexus/shared/config/slot_catalog.jsonl"
+let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
+let BLOWUP = "~/Dev/nexus/shared/blowup"
+let MODULES = BLOWUP + "/modules/"
+
+// ── JSON helpers ──
+
+fn jstr(raw: str, key: str, fb: str) -> str {
+    let tag = "\"" + key + "\":\""
+    if raw.contains(tag) == false { return fb }
+    let after = raw.split(tag)[1]
+    return after.split("\"")[0]
+}
+
+fn jint(raw: str, key: str, fb: int) -> int {
+    let tag = "\"" + key + "\":"
+    if raw.contains(tag) == false { return fb }
+    let after = raw.split(tag)[1]
+    let val_s = after.split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fb }
+}
+
+fn ts() -> str {
+    return try { exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" }
+}
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn log(msg: str) {
+    let line = ts() + " [BLAST-UBU] " + msg
+    try { exec("echo " + shquote(line) + " >> " + shquote(LOG_FILE)) } catch e {}
+    println(line)
+}
+
+// ── 적응형 depth ──
+
+let mut _depth = 3
+
+fn update_depth() {
+    let mut last = ""
+    try { last = exec("tail -1 " + shquote(CEILING)).trim() } catch e {}
+    if len(last) < 10 { return }
+    let cpu = jint(last, "ubu_cpu", 50)
+    // ubu 12T: 유휴 시 공격적
+    if cpu < 20 { _depth = 5 }
+    else if cpu < 50 { _depth = 3 }
+    else if cpu < 80 { _depth = 2 }
+    else { _depth = 1 }
+    log("ADAPT cpu=" + to_string(cpu) + "% depth=" + to_string(_depth))
+}
+
+// ── 슬롯 카탈로그 (홀수=ubu만) ──
+
+let mut _slot_cache = ""
+
+fn load_slots() {
+    if len(_slot_cache) > 10 { return }
+    try { _slot_cache = read_file(SLOT_CATALOG).trim() } catch e {}
+}
+
+fn slot_field(s: int, key: str, fb: str) -> str {
+    load_slots()
+    let prefix = "{\"slot\":" + to_string(s) + ","
+    if _slot_cache.contains(prefix) == false { return fb }
+    let line = _slot_cache.split(prefix)[1].split("\n")[0]
+    return jstr("{\"slot\":" + to_string(s) + "," + line, key, fb)
+}
+
+fn build_cmd(s: int) -> str {
+    let H = HEXA_R
+    let d = to_string(_depth)
+    let engine = slot_field(s, "engine", "blowup_core")
+    let domain = slot_field(s, "domain", "")
+    let module2 = slot_field(s, "module2", "")
+
+    let mut cmd = ""
+    if engine == "blowup_core" {
+        cmd = H + " " + BLOWUP + "/core/blowup.hexa " + domain + " " + d + " 2>&1 | tail -80"
+    } else if engine == "ouroboros" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros.hexa 2>&1 | tail -80"
+    } else if engine == "ouroboros_quantum" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros_quantum.hexa 2>&1 | tail -80"
+    } else if engine == "ouroboros_meta" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros_meta.hexa 2>&1 | tail -80"
+    } else if engine == "blowup_stream_filter" {
+        cmd = H + " " + BLOWUP + "/core/blowup_stream_filter.hexa 2>&1 | tail -80"
+    } else if engine == "module" {
+        cmd = H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
+    } else {
+        cmd = H + " " + BLOWUP + "/core/blowup.hexa auto " + d + " 2>&1 | tail -80"
+    }
+
+    // 더블태스크
+    if len(module2) > 2 && engine != "module" {
+        cmd = cmd + " & " + H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
+    }
+    return cmd
+}
+
+// ── main ──
+
+fn main() {
+    // single instance lock
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    update_depth()
+
+    // 홀수 슬롯(ubu) 명령어 수집
+    let mut launch = "#!/bin/bash\n"
+    let mut n = 0
+    let mut s = 1
+    while s < 16 {
+        let host = slot_field(s, "host", "")
+        if host == "ubu" {
+            let name = slot_field(s, "name", "?")
+            let cmd = build_cmd(s)
+            write_file("/tmp/_blast_ubu_" + to_string(n) + ".sh", cmd + "\n")
+            // ubu: timeout 90s (12T에서 빨리 끝남)
+            launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            log("SLOT [" + to_string(s) + "] " + name + " depth=" + to_string(_depth))
+            n = n + 1
+        }
+        s = s + 2
+    }
+
+    if n == 0 { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
+
+    launch = launch + "wait\n"
+    let mut ci = 0
+    while ci < n {
+        launch = launch + "cat /tmp/_blast_ubu_out_" + to_string(ci) + ".txt 2>/dev/null\n"
+        ci = ci + 1
+    }
+
+    write_file("/tmp/_blast_ubu_launch.sh", launch)
+    log("BLAST n=" + to_string(n))
+
+    let mut out = ""
+    try { out = exec("bash /tmp/_blast_ubu_launch.sh 2>&1").trim() } catch e {}
+
+    // 결과 기록
+    let rts = ts()
+    let safe = out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
+    let sout = if len(safe) > 800 { safe.substring(0, 800) + "..." } else { safe }
+    let rline = "{\"id\":\"ubu_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_ubu_" + to_string(n) + "\",\"host\":\"ubu\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + ",\"output\":\"" + sout + "\"}"
+    try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
+
+    // 포스트 메트릭
+    let mut load_s = ""
+    try { load_s = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
+    let mut pct = 0
+    let mut gpu = 0
+    if len(load_s) > 2 {
+        let f = load_s.split(" ")[0]
+        try { pct = to_int(to_string(to_float(f) * 100.0 / 12.0)) } catch e {}
+    }
+    try {
+        let gs = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()
+        gpu = to_int(gs)
+    } catch e {}
+    log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "% gpu=" + to_string(gpu) + "%")
+
+    try { exec("rm -f " + shquote(LOCK)) } catch e {}
+}
+
+main()
