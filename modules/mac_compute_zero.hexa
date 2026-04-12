@@ -23,7 +23,7 @@
 //    log_rotate, auto_vacuum, mac_compute_zero, ubu_hexa_guard
 //
 //  Blacklist (heavy compute 즉시 차단):
-//    blowup.hexa, mk2_hexa/native, shared/blowup, blowup_engine
+//    blowup.hexa, shared/blowup, blowup_engine, blowup_seed, seed_engine.hexa
 //
 //  Strict 모드 (R-MAC-01): remote 전부 down 시에도 compute 차단 (배터리/열 보호)
 // ═══════════════════════════════════════════════════════════════════════
@@ -80,15 +80,12 @@ let WHITELIST = [
 ]
 
 // ─── Blacklist (heavy compute 즉시 차단) ─────────────────────────────────
-// 2026-04-12 refinement: "mk2_hexa/native" 단독 매칭은 over-broad —
-//   T7/T12/T13 분석 모듈(per_process_sig, per_source_genome, per_source_sigdiff)
-//   + ssh dispatch chain 까지 무차별 죽임. 실제 mk2_hexa/native 디렉토리에는
-//   blowup/seed 파일 0건. 구체적 prefix 두 개로 교체 — defense-in-depth 유지
-//   (미래에 mk2_hexa/native/blowup_*.hexa 추가 시 자동 차단).
+// 2026-04-12: "mk2_hexa/native" 단독 매칭이 T7/T12/T13 분석 모듈
+//   (per_process_sig, per_source_genome, per_source_sigdiff) + ssh dispatch
+//   chain 까지 오탐 → 디렉토리 prefix 전부 제거. blowup/seed 식별은 파일명
+//   substring 으로 충분 (미래 케이스도 blowup_/seed_engine 패턴이 포착).
 let BLACKLIST = [
     "blowup.hexa",
-    "mk2_hexa/native/blowup",
-    "mk2_hexa/native/seed",
     "shared/blowup",
     "blowup_engine",
     "blowup_seed",
