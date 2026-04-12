@@ -99,3 +99,23 @@
 {"id":"ubu_2026-04-12T12:37:41Z","ts":"2026-04-12T12:37:41Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":2}
 {"id":"batch_2026-04-12T12:38:03Z","ts":"2026-04-12T12:38:03Z","project":"all","task":"blast_19","host":"ubu+9_htz+10","status":"done","bytes":50567,"output":"=== ouroboros.hexa — 자기진화 엔진 === |  | 사용법: |   hexa ouroboros.hexa evolve math 6       진화 루프 (도메인, 최대 사이클) |   hexa ouroboros.hexa absorb               f(f(f(...))) 재귀 흡수 |   hexa ouroboros.hexa meta math 3 6        메타 루프 (도메인, 메타, 진화) |   hexa ouroboros.hexa mutate 'text'         가설 변이 (4종 전략) |  | 변이 전략: |   ParameterShift  — n=6 상수로 스케일링 |   DomainTransfer  — 다른 도메인으로 전이 |   Combination     — 가설 절반을 n=6 브릿지로 연결 |   Inversion       — 가설 부정/역수 |  | 수렴 상태: |   Exploring  — 건강한 발견율 |   Converging — 발견율 감소 중 |   Saturated  — 발견 없음, 진화 완료 |   Divergent  — 발견율 급증 (발산) |  | === ouroboros verified === | error[Name]: undefined variable: _cached_home |    --> /home/aiden/Dev/nexus/shared/blowup/modules/blowup_string.hexa:104:1 |     | | 104 | let _n6_dyn = load_n6_consts() |     | ^^^ | === ourobo..."}
 {"id":"ubu_2026-04-12T12:39:14Z","ts":"2026-04-12T12:39:14Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":2}
+{"id":"htz_2026-04-12T12:40:36Z","ts":"2026-04-12T12:40:36Z","task":"blast_htz_8","host":"htz","status":"done","bytes":43782,"depth":3}
+{"id":"htz_2026-04-12T12:43:08Z","ts":"2026-04-12T12:43:08Z","task":"blast_htz_8","host":"htz","status":"done","bytes":42139,"depth":3}
+{"id":"ubu_2026-04-12T12:43:09Z","ts":"2026-04-12T12:43:09Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T12:46:19Z","ts":"2026-04-12T12:46:19Z","task":"blast_htz_8","host":"htz","status":"done","bytes":40770,"depth":3}
+{"id":"ubu_2026-04-12T12:47:04Z","ts":"2026-04-12T12:47:04Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T12:48:29Z","ts":"2026-04-12T12:48:29Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41657,"depth":3}
+{"id":"ubu_2026-04-12T12:51:11Z","ts":"2026-04-12T12:51:11Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T12:51:41Z","ts":"2026-04-12T12:51:41Z","task":"blast_htz_8","host":"htz","status":"done","bytes":40688,"depth":3}
+{"id":"ubu_2026-04-12T12:52:51Z","ts":"2026-04-12T12:52:51Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T12:54:55Z","ts":"2026-04-12T12:54:55Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41711,"depth":5}
+{"id":"ubu_2026-04-12T12:56:56Z","ts":"2026-04-12T12:56:56Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T12:58:05Z","ts":"2026-04-12T12:58:05Z","task":"blast_htz_8","host":"htz","status":"done","bytes":43187,"depth":3}
+{"id":"ubu_2026-04-12T12:58:55Z","ts":"2026-04-12T12:58:55Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T13:01:05Z","ts":"2026-04-12T13:01:05Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41649,"depth":3}
+{"id":"ubu_2026-04-12T13:03:06Z","ts":"2026-04-12T13:03:06Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T13:04:47Z","ts":"2026-04-12T13:04:47Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41706,"depth":5}
+{"id":"ubu_2026-04-12T13:07:10Z","ts":"2026-04-12T13:07:10Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T13:07:59Z","ts":"2026-04-12T13:07:59Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41760,"depth":3}
+{"id":"htz_2026-04-12T13:11:08Z","ts":"2026-04-12T13:11:08Z","task":"blast_htz_8","host":"htz","status":"done","bytes":44227,"depth":3}
+{"id":"ubu_2026-04-12T13:11:16Z","ts":"2026-04-12T13:11:16Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}

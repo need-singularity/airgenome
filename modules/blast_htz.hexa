@@ -17,9 +17,9 @@ let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
 let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
-// 32T × 80% = 25.6 cores. 8 tasks × 320% = 25.6 cores
+// 32T × 80% 목표. 실측 59% → quota 상향 (I/O wait 보상)
 let CGROUP_MEM = "12G"
-let CGROUP_CPU = "320%"
+let CGROUP_CPU = "500%"
 
 // ── helpers ──
 
