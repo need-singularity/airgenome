@@ -215,21 +215,23 @@ menubar에서 Ubuntu CPU/RAM/GPU(nvidia-smi) 실시간 표시. 설정: `nexus/sh
 ## 실행
 
 ```bash
-# 메뉴바 + 샘플러 실행
-hexa run.hexa
+# 메뉴바 + 샘플러 실행 (stage1 CLI: hexa run 접두어)
+hexa run run.hexa
 
 # 설정 패널
-hexa run.hexa --settings
+hexa run run.hexa --settings
 
 # Claude Code 실행 (멀티계정 자동 선택)
 cl
 
 # 리소스 상태
-hexa modules/guard.hexa -- status
-hexa modules/guard.hexa -- watch
+hexa run modules/guard.hexa -- status
+hexa run modules/guard.hexa -- watch
 
 # Usage 조회
-hexa modules/usage.hexa -- refresh
+hexa run modules/usage.hexa -- refresh
+
+# (호환 모드: `hexa <file.hexa>` 직접 호출도 자동 run 위임, python/node 스타일)
 ```
 
 ---
