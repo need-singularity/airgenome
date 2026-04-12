@@ -589,28 +589,26 @@ fn main() {
         write_file("/tmp/_td_htz.sh", "#!/bin/bash\n" + htz_cmds + "\n")
     }
 
-    // 양쪽 동시 실행: htz를 백그라운드, ubu를 포그라운드
-    if htz_n > 0 {
-        if ubu_n > 0 {
-            // 양쪽 동시 — htz 백그라운드 + ubu 포그라운드
-            try { exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner 'timeout 300 bash -s' > /tmp/_td_htz_out.txt 2>&1 &") } catch e {}
+    // 양쪽 동시 발사 — 단일 exec() 안에서 & + wait
+    let mut all_out = ""
+    if ubu_n > 0 {
+        if htz_n > 0 {
+            // 양쪽 동시: htz 백그라운드 + ubu 포그라운드 + wait
+            try {
+                all_out = exec("( cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " > /tmp/_td_htz_out.txt 2>&1 ) & cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1 ; wait ; echo '===HTZ===' ; cat /tmp/_td_htz_out.txt 2>/dev/null").trim()
+            } catch e {}
         } else {
-            try { exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner 'timeout 300 bash -s' > /tmp/_td_htz_out.txt 2>&1 &") } catch e {}
+            try {
+                all_out = exec("cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1").trim()
+            } catch e {}
+        }
+    } else {
+        if htz_n > 0 {
+            try {
+                all_out = exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " 2>&1").trim()
+            } catch e {}
         }
     }
-
-    let mut ubu_out = ""
-    if ubu_n > 0 {
-        try {
-            ubu_out = exec("cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu 'timeout 300 bash -s' 2>&1").trim()
-        } catch e {}
-    }
-
-    // htz 완료 대기 (백그라운드 프로세스)
-    if htz_n > 0 {
-        try { exec("wait 2>/dev/null; sleep 1") } catch e {}
-    }
-    let htz_out = try { exec("cat /tmp/_td_htz_out.txt 2>/dev/null").trim() } catch e { "" }
 
     // 결과 기록
     let all_out = ubu_out + "\n" + htz_out
