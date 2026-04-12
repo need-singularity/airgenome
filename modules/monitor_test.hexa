@@ -1,0 +1,208 @@
+// ⛔ CORE — L0 불변식 (모니터 검증 코어. 수정 전 유저 승인 필수)
+// modules/monitor_test.hexa — 모니터링 정확성 검증 테스트 모드
+// UI 표시데이터를 직접 보여주고 raw data와 비교하여 파싱 버그 검출
+// MAC_ONLY: 오케스트레이션 전용
+//
+// Usage: hexa modules/monitor_test.hexa
+
+let HOME = env("HOME")
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let COORDINATOR_STATE = HOME + "/.airgenome/coordinator_state.json"
+let CEILING_LOG = HOME + "/Dev/airgenome/forge/resource_ceiling.jsonl"
+
+fn extract(block: str, key: str) -> str {
+    let kt = "\"" + key + "\":"
+    if block.contains(kt) == false { return "" }
+    let v = block.split(kt)[1]
+    if len(v) == 0 { return "" }
+    if v[0..1] == "\"" { return v.split("\"")[1] }
+    let digits = "0123456789.-"
+    let mut r = ""
+    let mut ci = 0
+    while ci < len(v) && digits.contains(v[ci..(ci+1)]) {
+        r = r + v[ci..(ci+1)]
+        ci = ci + 1
+    }
+    return r
+}
+
+fn host_block(raw: str, name: str) -> str {
+    let tag = "\"" + name + "\":{"
+    if raw.contains(tag) == false { return "" }
+    return raw.split(tag)[1].split("}")[0] + "}"
+}
+
+fn safe_float(s: str) -> float {
+    if s == "" { return 0.0 }
+    let mut v = 0.0
+    try { v = to_float(s) } catch e {}
+    return v
+}
+
+fn safe_int(s: str) -> int {
+    if s == "" { return 0 }
+    let mut v = 0
+    try { v = to_int(to_float(s)) } catch e {}
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+println("")
+println("═══ monitor_test — 모니터링 정확성 검증 ═══")
+println("")
+
+let mut pass_n = 0
+let mut fail_n = 0
+
+if file_exists(INFRA_STATE) == false {
+    println("  FATAL: " + INFRA_STATE + " 없음")
+    exit(1)
+}
+let raw = read_file(INFRA_STATE)
+let ubu_b = host_block(raw, "ubu")
+let htz_b = host_block(raw, "htz")
+let mac_b = host_block(raw, "mac")
+
+// ── 1. RAW ──
+println("── 1. RAW DATA (infra_state.json) ─────────────────")
+println("  ubu: " + ubu_b)
+println("  htz: " + htz_b)
+println("  mac: " + mac_b)
+println("")
+
+// ── 2. 필드 체크 ──
+println("── 2. 필드 존재 검증 ──────────────────────────────")
+
+fn chk(block: str, host: str, field: str) -> bool {
+    let v = extract(block, field)
+    if v == "" {
+        println("  ✗ " + host + "." + field + " — 없음")
+        return false
+    }
+    println("  ✓ " + host + "." + field + " = " + v)
+    return true
+}
+
+chk(ubu_b, "ubu", "status")
+chk(ubu_b, "ubu", "load")
+let ubu_has_cpu_free = chk(ubu_b, "ubu", "cpu_free")
+chk(ubu_b, "ubu", "ram_total_mb")
+chk(ubu_b, "ubu", "ram_avail_mb")
+chk(ubu_b, "ubu", "gpu_util")
+chk(htz_b, "htz", "status")
+chk(htz_b, "htz", "load")
+chk(htz_b, "htz", "cpu_threads")
+chk(htz_b, "htz", "ram_total_mb")
+chk(htz_b, "htz", "ram_used_mb")
+chk(mac_b, "mac", "status")
+chk(mac_b, "mac", "load")
+println("")
+
+// ── 3. 기존 파싱 버그 ──
+println("── 3. 기존 파싱 버그 체크 ─────────────────────────")
+
+if ubu_has_cpu_free == false {
+    println("  ✗ BUG-1: ubu.cpu_free 없음")
+    println("    → resource_ceiling read_host()가 cpu_free 파싱")
+    println("    → 0 반환 → calc_util(0,12) = 100% (거짓!)")
+    fail_n = fail_n + 1
+} else {
+    pass_n = pass_n + 1
+}
+
+if raw.contains("\"ubu_cpu_used\":") {
+    println("  ✓ ubu_cpu_used 존재")
+    pass_n = pass_n + 1
+} else {
+    println("  ✗ BUG-2: ubu_cpu_used 없음")
+    println("    → coordinator ubu_cpu 항상 0")
+    fail_n = fail_n + 1
+}
+
+if file_exists(CEILING_LOG) {
+    let content = read_file(CEILING_LOG).trim()
+    if len(content) > 0 {
+        println("  ✓ resource_ceiling.jsonl 존재 + 데이터 있음")
+        pass_n = pass_n + 1
+    } else {
+        println("  ✗ BUG-3: resource_ceiling.jsonl 비어있음 (경로 문제)")
+        fail_n = fail_n + 1
+    }
+} else {
+    println("  ✗ BUG-3: resource_ceiling.jsonl 없음")
+    println("    → MAC_ONLY 누락 → Ubuntu 라우팅 → /home/aiden/... 경로 깨짐")
+    fail_n = fail_n + 1
+}
+println("")
+
+// ── 4. 올바른 파싱 ──
+println("── 4. 올바른 파싱 (골화 후 값) ────────────────────")
+
+let ubu_load_f = safe_float(extract(ubu_b, "load"))
+let ubu_cpu_pct = if ubu_load_f > 0.0 { to_int(ubu_load_f * 100.0 / 12.0) } else { 0 }
+let ubu_rt = safe_int(extract(ubu_b, "ram_total_mb"))
+let ubu_ra = safe_int(extract(ubu_b, "ram_avail_mb"))
+let ubu_ram_pct = if ubu_rt > 0 { ((ubu_rt - ubu_ra) * 100) / ubu_rt } else { 0 }
+let ubu_gpu = safe_int(extract(ubu_b, "gpu_util"))
+
+let htz_load_f = safe_float(extract(htz_b, "load"))
+let htz_cpu_pct = if htz_load_f > 0.0 { to_int(htz_load_f * 100.0 / 32.0) } else { 0 }
+let htz_rt = safe_int(extract(htz_b, "ram_total_mb"))
+let htz_ru = safe_int(extract(htz_b, "ram_used_mb"))
+let htz_ram_pct = if htz_rt > 0 { (htz_ru * 100) / htz_rt } else { 0 }
+
+println("  ubu: CPU " + to_string(ubu_cpu_pct) + "% (load " + to_string(ubu_load_f) + " / 12 cores)")
+println("       RAM " + to_string(ubu_ram_pct) + "% (" + to_string(ubu_rt - ubu_ra) + "/" + to_string(ubu_rt) + " MB)")
+println("       GPU " + to_string(ubu_gpu) + "%")
+println("  htz: CPU " + to_string(htz_cpu_pct) + "% (load " + to_string(htz_load_f) + " / 32 threads)")
+println("       RAM " + to_string(htz_ram_pct) + "% (" + to_string(htz_ru) + "/" + to_string(htz_rt) + " MB)")
+println("")
+
+// ── 5. UI 표시 (골화 후) ──
+let total_util = to_int((to_float(ubu_cpu_pct) * 12.0 + to_float(htz_cpu_pct) * 32.0) / 44.0)
+let mac_load_s = extract(mac_b, "load")
+
+println("── 5. UI 표시 데이터 (골화 후) ────────────────────")
+println("  ┌──────────┬────────┬────────┬────────┬──────────┐")
+println("  │ 호스트   │ CPU %  │ GPU %  │ load   │ status   │")
+println("  ├──────────┼────────┼────────┼────────┼──────────┤")
+println("  │ ubu      │ " + to_string(ubu_cpu_pct) + "%\t│ " + to_string(ubu_gpu) + "%\t│ " + to_string(ubu_load_f) + "\t│ " + extract(ubu_b, "status") + "\t│")
+println("  │ htz      │ " + to_string(htz_cpu_pct) + "%\t│ —\t│ " + to_string(htz_load_f) + "\t│ " + extract(htz_b, "status") + "\t│")
+println("  │ mac      │ 0%\t│ —\t│ " + mac_load_s + "\t│ orch\t│")
+println("  └──────────┴────────┴────────┴────────┴──────────┘")
+println("  총 활용: " + to_string(total_util) + "% / 100%")
+println("")
+
+// ── 6. 기존 vs 골화 비교 ──
+println("── 6. 기존 vs 골화 비교 ───────────────────────────")
+println("  호스트\t기존 CPU\t골화 CPU\t오차")
+println("  ubu\t100%\t\t" + to_string(ubu_cpu_pct) + "%\t\t" + to_string(100 - ubu_cpu_pct) + "pp 과대")
+println("  htz\t100%\t\t" + to_string(htz_cpu_pct) + "%\t\t" + to_string(100 - htz_cpu_pct) + "pp 과대")
+println("")
+
+// ── 7. coordinator ──
+println("── 7. coordinator 데이터 ──────────────────────────")
+if file_exists(COORDINATOR_STATE) {
+    let cs = read_file(COORDINATOR_STATE).trim()
+    println("  " + cs)
+    if cs.contains("\"ubu_cpu\":0") {
+        println("  ✗ ubu_cpu=0 (필드 누락 버그)")
+        fail_n = fail_n + 1
+    } else {
+        pass_n = pass_n + 1
+    }
+} else {
+    println("  coordinator_state.json 없음")
+}
+println("")
+
+// ── SUMMARY ──
+println("══════════════════════════════════════════════════════")
+println("  PASS: " + to_string(pass_n) + "  FAIL: " + to_string(fail_n))
+if fail_n > 0 {
+    println("  → 골화 필요: resource_ceiling.hexa + resource_coordinator.hexa")
+}
+if fail_n == 0 {
+    println("  → 모니터링 정확 ✓")
+}
+println("")

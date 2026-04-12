@@ -7,8 +7,9 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/scripts/infra_probe.sh</string>
+        <string>/Users/ghost/Dev/hexa-lang/target/release/hexa</string>
+        <string>/Users/ghost/Dev/airgenome/modules/infra_probe.hexa</string>
+        <string>probe</string>
     </array>
 
     <key>StartInterval</key>

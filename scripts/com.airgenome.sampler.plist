@@ -12,7 +12,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>export AIRGENOME_SAMPLER_ONCE=1 HOME=__HOME__; exec __HOME__/.hx/bin/hexa __HOME__/Dev/airgenome/sampler.hexa __TMPDIR__/airgenome-state.json __HOME__/.airgenome/config.json __RAM_MB__ __NCPU__ __HOME__/Dev/airgenome</string>
+        <string>export AIRGENOME_SAMPLER_ONCE=1 HOME=/Users/ghost; exec /Users/ghost/.hx/bin/hexa /Users/ghost/Dev/airgenome/sampler.hexa /tmp/airgenome-state.json /Users/ghost/.airgenome/config.json 24576 8 /Users/ghost/Dev/airgenome</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -23,11 +23,11 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>__HOME__</string>
+        <string>/Users/ghost</string>
         <key>AIRGENOME_SAMPLER_ONCE</key>
         <string>1</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.cargo/bin:__HOME__/.hx/bin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/tmp/airgenome-sampler.out</string>
