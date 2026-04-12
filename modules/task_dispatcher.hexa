@@ -80,9 +80,9 @@ fn update_adaptive_depth() {
     let htz_cpu = jint(last, "htz_cpu", 50)
     let ubu_cpu = jint(last, "ubu_cpu", 50)
 
-    // htz 32T: 적극적 — 낮으면 depth 올림
-    if htz_cpu < 40 { _htz_depth = 5 }
-    else if htz_cpu < 70 { _htz_depth = 3 }
+    // htz 32T: 적극적 — 목표 80%
+    if htz_cpu < 60 { _htz_depth = 5 }
+    else if htz_cpu < 80 { _htz_depth = 3 }
     else { _htz_depth = 2 }
 
     // ubu 12T: 유휴 시 공격적, 과열 시 보수적
