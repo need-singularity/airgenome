@@ -32,6 +32,27 @@ for _ag_arg in "$@"; do
     esac
 done
 
+# ── L0 Guard — airgenome L0 파일 존재 검증 ──
+_l0_skip=0
+for _la in "$@"; do
+    case "$_la" in *l0_guard.hexa*|*sync_codeowners.hexa*) _l0_skip=1; break;; esac
+done
+if [ "$_l0_skip" -eq 0 ] && [ -f "$HOME/Dev/nexus/shared/lockdown/lockdown.json" ]; then
+    _l0_fail=$(/usr/bin/python3 -c "
+import json,os
+D=json.load(open(os.environ['HOME']+'/Dev/nexus/shared/lockdown/lockdown.json'))
+ag=os.environ.get('AIRGENOME_HOME', os.environ['HOME']+'/Dev/airgenome')
+for e in D.get('projects',{}).get('airgenome',{}).get('L0',[]):
+    if not os.path.exists(ag+'/'+e['path']): print(e['path'])
+" 2>/dev/null)
+    if [ -n "$_l0_fail" ]; then
+        echo "[L0 GUARD] L0 파일 누락:" >&2
+        echo "$_l0_fail" | while read -r _p; do echo "  FAIL  $_p" >&2; done
+        echo "[L0 GUARD] hexa l0_guard.hexa sync 실행 필요" >&2
+        exit 1
+    fi
+fi
+
 # gate_config에서 원격 설정 읽기 (외부 경로 하드코딩 제거)
 _cfg() { grep "\"$1\"" "$CFG" 2>/dev/null | sed 's/.*"value": "//;s/".*//'; }
 UBU_SSH=$(_cfg ssh_alias); [ -z "$UBU_SSH" ] && UBU_SSH="ubu"
