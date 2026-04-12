@@ -499,6 +499,7 @@ fn main() {
     if cmd == "status"  { cmd_status(); return }
     if cmd == "catalog" { cmd_catalog(); return }
     if cmd == "roi"     { cmd_roi(); return }
+    if cmd == "daemon"  { daemon_loop(); return }
 
     if cmd == "feed" {
         idle_feeder()
