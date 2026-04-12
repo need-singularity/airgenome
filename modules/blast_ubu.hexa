@@ -3,7 +3,8 @@
 // 30초 간격 독립 실행. htz 안 기다림.
 // slot_catalog.jsonl에서 홀수(ubu) 슬롯만 로드.
 // resource_ceiling.jsonl 기반 적응형 depth.
-// ubu 12T + RTX 5070 — CPU 80% 목표.
+// ★ systemd-run cgroup 격리 — OOM/과부하 방지
+//   각 작업: MemoryMax=8G, CPUQuota=300% (12T의 25%)
 
 let HOME = env("HOME")
 let AG_HOME = HOME + "/Dev/airgenome"
@@ -16,20 +17,22 @@ let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
 let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
-// ── JSON helpers ──
+// cgroup 리밋
+let CGROUP_MEM = "8G"
+let CGROUP_CPU = "300%"
+
+// ── helpers ──
 
 fn jstr(raw: str, key: str, fb: str) -> str {
     let tag = "\"" + key + "\":\""
     if raw.contains(tag) == false { return fb }
-    let after = raw.split(tag)[1]
-    return after.split("\"")[0]
+    return raw.split(tag)[1].split("\"")[0]
 }
 
 fn jint(raw: str, key: str, fb: int) -> int {
     let tag = "\"" + key + "\":"
     if raw.contains(tag) == false { return fb }
-    let after = raw.split(tag)[1]
-    let val_s = after.split(",")[0].split("}")[0].trim().replace("\"", "")
+    let val_s = raw.split(tag)[1].split(",")[0].split("}")[0].trim().replace("\"", "")
     try { return to_int(to_float(val_s)) } catch e { return fb }
 }
 
@@ -56,7 +59,6 @@ fn update_depth() {
     try { last = exec("tail -1 " + shquote(CEILING)).trim() } catch e {}
     if len(last) < 10 { return }
     let cpu = jint(last, "ubu_cpu", 50)
-    // ubu 12T: 유휴 시 공격적
     if cpu < 20 { _depth = 5 }
     else if cpu < 50 { _depth = 3 }
     else if cpu < 80 { _depth = 2 }
@@ -64,7 +66,7 @@ fn update_depth() {
     log("ADAPT cpu=" + to_string(cpu) + "% depth=" + to_string(_depth))
 }
 
-// ── 슬롯 카탈로그 (홀수=ubu만) ──
+// ── 슬롯 카탈로그 ──
 
 let mut _slot_cache = ""
 
@@ -102,10 +104,10 @@ fn build_cmd(s: int) -> str {
     } else if engine == "module" {
         cmd = H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
     } else {
-        cmd = H + " " + BLOWUP + "/core/blowup.hexa auto " + d + " 2>&1 | tail -80"
+        cmd = "echo unknown:" + engine
     }
 
-    // 더블태스크
+    // 더블태스크 (ouroboros 등에 module2 연결)
     if len(module2) > 2 && engine != "module" {
         cmd = cmd + " & " + H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
     }
@@ -115,8 +117,9 @@ fn build_cmd(s: int) -> str {
 // ── main ──
 
 fn main() {
-    // single instance lock
     try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+
+    // single instance lock
     let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
     if len(prev) > 0 {
         let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
@@ -125,7 +128,7 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
-    // ── 안전 체크: 발사 전 load 확인. 과부하면 스킵 ──
+    // ★ 안전 체크: 발사 전 load 확인
     let mut cur_load = ""
     try { cur_load = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
     if len(cur_load) > 2 {
@@ -133,7 +136,7 @@ fn main() {
         let mut load_pct = 0
         try { load_pct = to_int(to_string(to_float(load_f) * 100.0 / 12.0)) } catch e {}
         if load_pct > 80 {
-            log("SKIP load=" + load_f + " (" + to_string(load_pct) + "%) > 80% — 과부하 방지")
+            log("SKIP load=" + load_f + " (" + to_string(load_pct) + "%) — 과부하 방지")
             try { exec("rm -f " + shquote(LOCK)) } catch e {}
             return
         }
@@ -141,7 +144,7 @@ fn main() {
 
     update_depth()
 
-    // 홀수 슬롯(ubu) 명령어 수집
+    // 홀수 슬롯(ubu) — cgroup 격리된 SSH 명령 수집
     let mut launch = "#!/bin/bash\n"
     let mut n = 0
     let mut s = 1
@@ -151,34 +154,19 @@ fn main() {
             let name = slot_field(s, "name", "?")
             let cmd = build_cmd(s)
             write_file("/tmp/_blast_ubu_" + to_string(n) + ".sh", cmd + "\n")
-            // ubu: timeout 90s (12T에서 빨리 끝남)
-            launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
-            log("SLOT [" + to_string(s) + "] " + name + " depth=" + to_string(_depth))
+            // ★ systemd-run cgroup 격리: MemoryMax + CPUQuota
+            launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
+            // 4개마다 wait (병렬 제한)
+            if n % 4 == 0 {
+                launch = launch + "wait\n"
+            }
         }
         s = s + 2
     }
 
     if n == 0 { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
-
-    // 동시 실행 제한: 4개씩 2웨이브 (12T/30.5G RAM 보호)
-    let max_par = 4
-    let mut wi = 0
-    while wi < n {
-        let wave_end = wi + max_par
-        let we = if wave_end > n { n } else { wave_end }
-        let mut wj = wi
-        while wj < we {
-            launch = launch + ""  // already added above
-            wj = wj + 1
-        }
-        // 웨이브 사이에 wait 삽입
-        if we < n {
-            // 첫 max_par개 후 wait, 나머지 다음 웨이브
-            launch = launch.replace("WAVE_MARKER", "")
-        }
-        wi = we
-    }
 
     launch = launch + "wait\n"
     let mut ci = 0
@@ -188,7 +176,7 @@ fn main() {
     }
 
     write_file("/tmp/_blast_ubu_launch.sh", launch)
-    log("BLAST n=" + to_string(n))
+    log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
 
     let mut out = ""
     try { out = exec("bash /tmp/_blast_ubu_launch.sh 2>&1").trim() } catch e {}
@@ -197,22 +185,17 @@ fn main() {
     let rts = ts()
     let safe = out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
     let sout = if len(safe) > 800 { safe.substring(0, 800) + "..." } else { safe }
-    let rline = "{\"id\":\"ubu_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_ubu_" + to_string(n) + "\",\"host\":\"ubu\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + ",\"output\":\"" + sout + "\"}"
+    let rline = "{\"id\":\"ubu_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_ubu_" + to_string(n) + "\",\"host\":\"ubu\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + "}"
     try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
 
     // 포스트 메트릭
-    let mut load_s = ""
-    try { load_s = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
     let mut pct = 0
     let mut gpu = 0
-    if len(load_s) > 2 {
-        let f = load_s.split(" ")[0]
-        try { pct = to_int(to_string(to_float(f) * 100.0 / 12.0)) } catch e {}
-    }
     try {
-        let gs = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()
-        gpu = to_int(gs)
+        let ls = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim()
+        if len(ls) > 2 { try { pct = to_int(to_string(to_float(ls.split(" ")[0]) * 100.0 / 12.0)) } catch e {} }
     } catch e {}
+    try { gpu = to_int(exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()) } catch e {}
     log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "% gpu=" + to_string(gpu) + "%")
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
