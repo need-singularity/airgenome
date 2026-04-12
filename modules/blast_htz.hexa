@@ -171,7 +171,28 @@ fn blast_once() {
     } catch e {}
     log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "%")
 
-    try { exec("rm -f " + shquote(LOCK)) } catch e {}
+}
+
+fn main() {
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    log("DAEMON START — 연속 blast 루프")
+
+    let mut cycle = 0
+    while true {
+        cycle = cycle + 1
+        _slot_cache = ""
+        blast_once()
+        try { exec("sleep 5") } catch e {}
+    }
 }
 
 main()
