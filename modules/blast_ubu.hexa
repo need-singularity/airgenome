@@ -165,6 +165,11 @@ fn blast_once() {
     write_file("/tmp/_blast_ubu_launch.sh", launch)
     log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
 
+    // dispatch.log에 FIRE 이벤트 (메뉴바 UI 연동)
+    let epoch = try { exec("date +%s").trim() } catch e { "0" }
+    let fire_ev = "{\"type\":\"UBU_PROACTIVE_FIRE\",\"epoch\":" + epoch + ",\"n\":" + to_string(n) + ",\"depth\":" + to_string(_depth) + ",\"source\":\"blast_ubu\"}"
+    try { exec("echo " + shquote(fire_ev) + " >> " + shquote(DISPATCH_LOG)) } catch e {}
+
     let mut out = ""
     try { out = exec("bash /tmp/_blast_ubu_launch.sh 2>&1").trim() } catch e {}
 

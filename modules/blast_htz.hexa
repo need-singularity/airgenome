@@ -10,6 +10,7 @@ let HOME = env("HOME")
 let AG_HOME = HOME + "/Dev/airgenome"
 let CEILING = AG_HOME + "/forge/resource_ceiling.jsonl"
 let RESULTS = AG_HOME + "/forge/task_results.jsonl"
+let DISPATCH_LOG = AG_HOME + "/forge/dispatch.log"
 let LOG_FILE = AG_HOME + "/forge/blast_htz.log"
 let LOCK = HOME + "/.airgenome/blast_htz.lock"
 let SLOT_CATALOG = HOME + "/Dev/nexus/shared/config/slot_catalog.jsonl"
@@ -152,6 +153,11 @@ fn blast_once() {
 
     write_file("/tmp/_blast_htz_launch.sh", launch)
     log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
+
+    // dispatch.log에 FIRE 이벤트 (메뉴바 UI 연동)
+    let epoch = try { exec("date +%s").trim() } catch e { "0" }
+    let fire_ev = "{\"type\":\"HTZ_PROACTIVE_FIRE\",\"epoch\":" + epoch + ",\"n\":" + to_string(n) + ",\"depth\":" + to_string(_depth) + ",\"source\":\"blast_htz\"}"
+    try { exec("echo " + shquote(fire_ev) + " >> " + shquote(DISPATCH_LOG)) } catch e {}
 
     let mut out = ""
     try { out = exec("bash /tmp/_blast_htz_launch.sh 2>&1").trim() } catch e {}
