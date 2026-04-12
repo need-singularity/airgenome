@@ -131,7 +131,7 @@ fn main() {
     // ★ 안전 체크: 발사 전 load 확인 (SSH 실패 = SKIP)
     let mut load_pct = 999  // default: SSH 실패 시 과부하로 간주
     try {
-        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F ~/.ssh/config ubu 'cat /proc/loadavg' 2>/dev/null").trim()
+        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'cat /proc/loadavg' 2>/dev/null").trim()
         if len(cur_load) > 2 {
             let load_f = cur_load.split(" ")[0]
             load_pct = to_int(to_string(to_float(load_f) * 100.0 / 12.0))
@@ -156,7 +156,7 @@ fn main() {
             let cmd = build_cmd(s)
             write_file("/tmp/_blast_ubu_" + to_string(n) + ".sh", cmd + "\n")
             // ★ systemd-run cgroup 격리: MemoryMax + CPUQuota
-            launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F ~/.ssh/config ubu 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
             log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
             // 4개마다 wait (병렬 제한)
@@ -193,10 +193,10 @@ fn main() {
     let mut pct = 0
     let mut gpu = 0
     try {
-        let ls = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim()
+        let ls = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'cat /proc/loadavg' 2>/dev/null").trim()
         if len(ls) > 2 { try { pct = to_int(to_string(to_float(ls.split(" ")[0]) * 100.0 / 12.0)) } catch e {} }
     } catch e {}
-    try { gpu = to_int(exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()) } catch e {}
+    try { gpu = to_int(exec("ssh -o ConnectTimeout=3 -o BatchMode=yes -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()) } catch e {}
     log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "% gpu=" + to_string(gpu) + "%")
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
