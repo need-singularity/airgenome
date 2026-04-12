@@ -44,28 +44,18 @@ fn load_cfg(key: str, fallback: str) -> str {
 // ───────────────────────────────────────────────────────────────────────
 // Main
 // ───────────────────────────────────────────────────────────────────────
-fn run() {
-    let max_bytes = to_int(load_cfg("log_rotate_max_bytes", "10485760"))
-    let max_files = to_int(load_cfg("log_rotate_max_files", "5"))
-    let log_path  = load_cfg("log_rotate_path", env("HOME") + "/Dev/airgenome/forge/dispatch.log")
-    let dry       = args().contains("--dry")
+fn rotate_one(log_path: str, max_bytes: int, max_files: int, dry: bool) {
+    if file_exists(log_path) == false { return }
 
-    // 로그 파일 존재 확인
-    if file_exists(log_path) == false {
-        print("[log_rotate] " + log_path + " not found — skip")
-        return
-    }
-
-    // 현재 크기 조회
     let size_str = try { exec("stat -f%z '" + log_path + "' 2>/dev/null || stat -c%s '" + log_path + "' 2>/dev/null").trim() } catch e { "0" }
     let size = to_int(size_str)
 
-    print("[log_rotate] path=" + log_path + " size=" + str(size) + " max=" + str(max_bytes))
-
     if size < max_bytes {
-        print("[log_rotate] under limit — no rotation needed")
+        print("[log_rotate] " + log_path + " " + str(size) + "B — OK")
         return
     }
+
+    print("[log_rotate] " + log_path + " " + str(size) + "B > " + str(max_bytes) + "B — rotating")
 
     // rotation: .N → .N+1 (역순)
     let gen = max_files
@@ -74,42 +64,65 @@ fn run() {
         let dst = log_path + "." + str(gen + 1)
 
         if gen == max_files {
-            // 최대 세대 삭제
             if file_exists(src) {
-                if dry {
-                    print("[log_rotate][dry] rm " + src)
-                } else {
-                    try { exec("rm -f '" + src + "'") } catch e { println("[warn] log_rotate: rm failed — " + to_string(e)) }
-                    print("[log_rotate] deleted " + src)
-                }
+                if dry { print("[dry] rm " + src) }
+                else { try { exec("rm -f '" + src + "'") } catch e {} }
+            }
+            // .gz 도 정리
+            if file_exists(src + ".gz") {
+                if dry { print("[dry] rm " + src + ".gz") }
+                else { try { exec("rm -f '" + src + ".gz'") } catch e {} }
             }
         } else {
-            // 시프트
-            if file_exists(src) {
-                if dry {
-                    print("[log_rotate][dry] mv " + src + " → " + dst)
-                } else {
-                    try { exec("mv '" + src + "' '" + dst + "'") } catch e { println("[warn] log_rotate: mv failed — " + to_string(e)) }
-                    print("[log_rotate] " + src + " → " + dst)
-                }
+            if file_exists(src + ".gz") {
+                if dry { print("[dry] mv " + src + ".gz → " + dst + ".gz") }
+                else { try { exec("mv '" + src + ".gz' '" + dst + ".gz'") } catch e {} }
+            } else if file_exists(src) {
+                if dry { print("[dry] mv " + src + " → " + dst) }
+                else { try { exec("mv '" + src + "' '" + dst + "'") } catch e {} }
             }
         }
         gen = gen - 1
     }
 
-    // 현재 로그 → .1
+    // 현재 로그 → .1.gz (gzip 압축)
     let dst1 = log_path + ".1"
     if dry {
-        print("[log_rotate][dry] mv " + log_path + " → " + dst1)
-        print("[log_rotate][dry] touch " + log_path)
+        print("[dry] mv+gzip " + log_path + " → " + dst1 + ".gz")
     } else {
-        try { exec("mv '" + log_path + "' '" + dst1 + "'") } catch e { println("[warn] log_rotate: mv to .1 failed — " + to_string(e)) }
-        try { exec("touch '" + log_path + "'") } catch e { println("[warn] log_rotate: touch failed — " + to_string(e)) }
-        print("[log_rotate] " + log_path + " → " + dst1)
-        print("[log_rotate] new empty log created")
+        try { exec("mv '" + log_path + "' '" + dst1 + "'") } catch e {}
+        try { exec("gzip -f '" + dst1 + "'") } catch e {}
+        try { exec("touch '" + log_path + "'") } catch e {}
+        print("[log_rotate] " + log_path + " → " + dst1 + ".gz")
+    }
+}
+
+fn run() {
+    let max_bytes = to_int(load_cfg("log_rotate_max_bytes", "5242880"))
+    let max_files = to_int(load_cfg("log_rotate_max_files", "5"))
+    let dry       = args().contains("--dry")
+    let forge     = env("HOME") + "/Dev/airgenome/forge"
+
+    // 다중 로그 경로 — forge/*.log 전부 대상
+    let logs_raw = try { exec("ls " + forge + "/*.log 2>/dev/null").trim() } catch e { "" }
+    if len(logs_raw) < 5 {
+        print("[log_rotate] no logs found")
+        return
     }
 
-    print("[log_rotate] done")
+    let logs = logs_raw.split("\n")
+    let mut rotated = 0
+    let mut i = 0
+    while i < len(logs) {
+        let p = logs[i].trim()
+        i = i + 1
+        if len(p) < 5 { continue }
+        let sz = try { exec("stat -f%z '" + p + "' 2>/dev/null || stat -c%s '" + p + "' 2>/dev/null").trim() } catch e { "0" }
+        if to_int(sz) >= max_bytes { rotated = rotated + 1 }
+        rotate_one(p, max_bytes, max_files, dry)
+    }
+
+    print("[log_rotate] scanned " + str(len(logs)) + " files, rotated " + str(rotated))
 }
 
 run()
