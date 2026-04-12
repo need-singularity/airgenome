@@ -350,7 +350,7 @@ while true {
     let gate_check = try { exec("nc -z -w 1 " + ubu_host + " " + ubu_port + " 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
     if gate_check == "y" {
         gate = "online"
-        let ubu_status = try { exec("printf 'STATUS\\n' | nc -w 3 " + ubu_host + " " + ubu_port + " 2>/dev/null").trim() } catch e { "" }
+        let ubu_status = try { exec("printf \"STATUS\\n\" | nc -w 3 " + ubu_host + " " + ubu_port + " 2>/dev/null").trim() } catch e { "" }
         if len(ubu_status) > 0 {
             let ul = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'load=[^ ]*' | cut -d= -f2 | awk '{print $1}'").trim() } catch e { "" }
             if len(ul) > 0 { ubu_load = ul }
