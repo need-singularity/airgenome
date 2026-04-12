@@ -124,12 +124,59 @@ if echo "$OUTPUT" | grep -q "$METRIC_TAG"; then
   echo "{\"ts\":\"$mts\",\"load\":\"$LOAD\",\"mem_total\":$MEM_TOTAL,\"mem_used\":$MEM_USED,\"mem_avail\":$MEM_AVAIL}" > "${MFILE}.tmp" 2>/dev/null
   mv -f "${MFILE}.tmp" "$MFILE" 2>/dev/null
 
-  # 이상 감지 — 자동 경고
+  # ═════════════════════════════════════════════════════════════
+  #  REINTERPRET FILTER — safari_gate 패턴: 관찰→재해석→액션
+  #  매 SSH 호출마다 자원 상태 재해석 + 개선 액션 자동 트리거
+  # ═════════════════════════════════════════════════════════════
+
   LOAD_INT=$(echo "$LOAD" | awk '{printf "%d", $1}')
+  SIGNALS="$METRICS_DIR/${HOST}_signals.json"
+  CORES=12; [ "$HOST" = "htz" ] && CORES=32
+  CPU_PCT=$((LOAD_INT * 100 / CORES))
+  RAM_PCT=0
+  [ "$MEM_TOTAL" -gt 0 ] 2>/dev/null && RAM_PCT=$((MEM_USED * 100 / MEM_TOTAL))
+
+  # 재해석 1: CPU 유휴 → 작업 투입 시그널
+  if [ "$CPU_PCT" -lt 20 ] 2>/dev/null; then
+    echo "{\"ts\":\"$mts\",\"host\":\"$HOST\",\"signal\":\"cpu_idle\",\"cpu_pct\":$CPU_PCT,\"action\":\"fill_cpu\"}" > "$SIGNALS"
+    # 즉시 개선: 보류 중인 blowup/BT 작업 있으면 투입
+    FILL_QUEUE="$HOME/.airgenome/fill_queue_${HOST}"
+    if [ -f "$FILL_QUEUE" ]; then
+      FILL_CMD=$(head -1 "$FILL_QUEUE")
+      if [ -n "$FILL_CMD" ]; then
+        ssh $SSH_OPTS "$ALIAS" "nohup nice -n 15 $FILL_CMD > /dev/null 2>&1 &" 2>/dev/null
+        sed -i '' '1d' "$FILL_QUEUE" 2>/dev/null || sed -i '1d' "$FILL_QUEUE" 2>/dev/null
+        echo "$mts [SSH-GATE] AUTO-FILL $HOST cmd=$FILL_CMD" >> "$LOG"
+      fi
+    fi
+  fi
+
+  # 재해석 2: RAM 위험 → 페이지캐시 정리 트리거
   if [ -n "$MEM_AVAIL" ] && [ "$MEM_AVAIL" -lt 500 ] 2>/dev/null; then
+    echo "{\"ts\":\"$mts\",\"host\":\"$HOST\",\"signal\":\"ram_critical\",\"avail_mb\":$MEM_AVAIL,\"action\":\"drop_cache\"}" > "$SIGNALS"
+    ssh $SSH_OPTS "$ALIAS" "sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null 2>&1" 2>/dev/null &
+    echo "$mts [SSH-GATE] AUTO-FIX $HOST drop_caches (avail=${MEM_AVAIL}MB)" >> "$LOG"
+  fi
+
+  # 재해석 3: CPU 과부하 → nice 안 된 heavy 프로세스 자동 renice
+  if [ "$CPU_PCT" -gt 90 ] 2>/dev/null; then
+    echo "{\"ts\":\"$mts\",\"host\":\"$HOST\",\"signal\":\"cpu_overload\",\"cpu_pct\":$CPU_PCT,\"action\":\"renice_heavy\"}" > "$SIGNALS"
+    ssh $SSH_OPTS "$ALIAS" "ps -eo pid,ni,pcpu --sort=-pcpu --no-headers | awk '\$2==0 && \$3>50 {print \$1}' | head -3 | xargs -r renice 10 2>/dev/null" 2>/dev/null &
+    echo "$mts [SSH-GATE] AUTO-FIX $HOST renice_heavy (cpu=${CPU_PCT}%)" >> "$LOG"
+  fi
+
+  # 재해석 4: 정상 — 시그널 클리어
+  if [ "$CPU_PCT" -ge 20 ] && [ "$CPU_PCT" -le 90 ] 2>/dev/null; then
+    if [ -n "$MEM_AVAIL" ] && [ "$MEM_AVAIL" -ge 500 ] 2>/dev/null; then
+      echo "{\"ts\":\"$mts\",\"host\":\"$HOST\",\"signal\":\"ok\",\"cpu_pct\":$CPU_PCT,\"ram_avail\":$MEM_AVAIL}" > "$SIGNALS"
+    fi
+  fi
+
+  # 로그: 이상 시에만
+  if [ "$MEM_AVAIL" -lt 500 ] 2>/dev/null; then
     echo "$mts [SSH-GATE] ALERT $HOST RAM_LOW avail=${MEM_AVAIL}MB" >> "$LOG"
   fi
-  if [ -n "$LOAD_INT" ] && [ "$LOAD_INT" -gt 50 ] 2>/dev/null; then
+  if [ "$LOAD_INT" -gt 50 ] 2>/dev/null; then
     echo "$mts [SSH-GATE] ALERT $HOST LOAD_HIGH load=$LOAD" >> "$LOG"
   fi
 
