@@ -1,0 +1,118 @@
+// monit_bars.hexa — 실시간 ASCII 가로 그래프 (mac / ubu / htz)
+//
+// 데이터: dispatch_state.json (ubu/htz free_*) + infra_state.json (mac used)
+// 출력: 3줄/tick (mac, ubu, htz) — Monitor 200ms batch로 묶임
+// 호출: hexa modules/monit_bars.hexa [once|loop]  (기본 once)
+
+let HOME = env("HOME")
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let BAR_W = 12
+
+fn repeat(s: str, n: int) -> str {
+    let out = ""
+    let i = 0
+    while i < n {
+        out = out + s
+        i = i + 1
+    }
+    return out
+}
+
+fn bar(pct: int) -> str {
+    let p = pct
+    if p < 0 { p = 0 }
+    if p > 100 { p = 100 }
+    let fill = (p * BAR_W) / 100
+    let empty = BAR_W - fill
+    return repeat("▓", fill) + repeat("░", empty)
+}
+
+fn pad3(n: int) -> str {
+    let s = to_string(n)
+    let L = len(s)
+    if L == 1 { return "  " + s }
+    if L == 2 { return " " + s }
+    return s
+}
+
+fn read_json_int(raw: str, key: str, fb: int) -> int {
+    let tag = "\"" + key + "\""
+    if raw.contains(tag) == false { return fb }
+    let after = raw.split(tag)[1]
+    let val_s = after.split(":")[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fb }
+}
+
+fn extract_block(raw: str, host: str) -> str {
+    let tag = "\"" + host + "\""
+    if raw.contains(tag) == false { return "" }
+    let after = raw.split(tag)[1]
+    if after.contains("{") == false { return "" }
+    let inner = after.split("{")[1].split("}")[0]
+    return "{" + inner + "}"
+}
+
+fn ts_hms() -> str {
+    return try { exec("date '+%H:%M:%S'").trim() } catch e { "??:??:??" }
+}
+
+fn read_file(path: str) -> str {
+    return try { exec("cat '" + path + "' 2>/dev/null").trim() } catch e { "" }
+}
+
+fn render_line(name: str, cpu: int, ram: int, gpu: int, has_gpu: bool, note: str) {
+    let g_seg = ""
+    if has_gpu {
+        g_seg = " g" + bar(gpu) + " " + pad3(gpu) + "%"
+    } else {
+        g_seg = " g" + repeat("·", BAR_W) + "  --"
+    }
+    println("  " + name + " c" + bar(cpu) + " " + pad3(cpu) + "%"
+            + " r" + bar(ram) + " " + pad3(ram) + "%"
+            + g_seg + note)
+}
+
+fn tick() {
+    let infra = read_file(INFRA_STATE)
+    let disp  = read_file(DISPATCH_STATE)
+
+    // mac — used percentages from infra_state
+    let mac_block = extract_block(infra, "mac")
+    let mac_cpu = read_json_int(mac_block, "cpu", 0)
+    let mac_ram = read_json_int(mac_block, "ram_pct", 0)
+    let mac_gpu = read_json_int(mac_block, "gpu", 0)
+
+    // ubu — 100 - free_* from dispatch_state
+    let ubu_d = extract_block(disp, "ubu")
+    let ubu_cpu = 100 - read_json_int(ubu_d, "free_cpu", 100)
+    let ubu_ram = 100 - read_json_int(ubu_d, "free_ram", 100)
+    let ubu_gpu = 100 - read_json_int(ubu_d, "free_gpu", 100)
+
+    // htz — no GPU
+    let htz_d = extract_block(disp, "htz")
+    let htz_cpu = 100 - read_json_int(htz_d, "free_cpu", 100)
+    let htz_ram = 100 - read_json_int(htz_d, "free_ram", 100)
+
+    println(ts_hms() + " ─────────────────────────────────────────────")
+    render_line("mac", mac_cpu, mac_ram, mac_gpu, true,  "  [AG6 zero]")
+    render_line("ubu", ubu_cpu, ubu_ram, ubu_gpu, true,  "")
+    render_line("htz", htz_cpu, htz_ram, 0,       false, "")
+}
+
+fn main() {
+    let av = args()
+    let mode = "once"
+    if len(av) >= 3 { mode = av[2] }
+
+    if mode == "loop" {
+        while true {
+            tick()
+            try { exec("sleep 30") } catch e {}
+        }
+    } else {
+        tick()
+    }
+}
+
+main()

@@ -71,7 +71,7 @@ trap 'rm -f "$LOG"' EXIT
 
 rc=$?
 if [ $rc -ne 0 ]; then
-    python3 - "$LOG" <<'PY' 2>/dev/null || { echo "[auto-ship FAILED]" >&2; tail -50 "$LOG" >&2; }
+    python3 - "$LOG" <<'PY' || { echo "[auto-ship FAILED]" >&2; tail -50 "$LOG" >&2; }
 import sys, json
 with open(sys.argv[1]) as f:
     log = f.read()[-2000:]
