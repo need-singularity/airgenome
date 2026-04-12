@@ -195,36 +195,41 @@ fn catalog_type(s: int) -> str {
 }
 
 fn catalog_cmd(s: int) -> str {
-    // P0 anima — engine on ubu (GPU)
-    if s == 0  { return "HEXA=" + HEXA_R + " && cd ~/Dev/anima && $HEXA " + ENGINE_DIR + "/engine_anima.hexa 2>&1 | tail -50" }
-    // P1 nexus — engine on htz
-    if s == 1  { return "HEXA=" + HEXA_R + " && cd ~/Dev/nexus && $HEXA " + ENGINE_DIR + "/engine_nexus.hexa 2>&1 | tail -50" }
+    // engine: cd 제거 — engine은 nexus/shared/engine 에서 독립 실행
+    // ubu: airgenome, hexa-lang, nexus 만 있음
+    // htz: anima, airgenome, hexa-lang, n6-architecture, nexus 있음
+    let H = HEXA_R
+    let E = ENGINE_DIR
+    // P0 anima — engine (htz에만 anima 있음 → cpu_heavy로 htz 전송)
+    if s == 0  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
+    // P1 nexus — engine
+    if s == 1  { return H + " " + E + "/engine_nexus.hexa 2>&1 | tail -50" }
     // P2 hexa-lang — cargo test
     if s == 2  { return "cd ~/Dev/hexa-lang && cargo test 2>&1 | tail -30" }
     // P1 nexus — blowup BT discovery
-    if s == 3  { return "HEXA=" + HEXA_R + " && $HEXA ~/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa 3 2>&1 | tail -30" }
-    // P0 anima — engine repeat (P0 weight)
-    if s == 4  { return "HEXA=" + HEXA_R + " && cd ~/Dev/anima && $HEXA " + ENGINE_DIR + "/engine_anima.hexa 2>&1 | tail -50" }
+    if s == 3  { return H + " ~/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa 3 2>&1 | tail -30" }
+    // P0 anima — engine repeat
+    if s == 4  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
     // P1 airgenome — engine
-    if s == 5  { return "HEXA=" + HEXA_R + " && cd ~/Dev/airgenome && $HEXA " + ENGINE_DIR + "/engine_airgenome.hexa 2>&1 | tail -50" }
+    if s == 5  { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
     // P2 hexa-lang — cargo build release
     if s == 6  { return "cd ~/Dev/hexa-lang && cargo build --release 2>&1 | tail -10" }
     // P1 nexus — todo scan
-    if s == 7  { return "HEXA=" + HEXA_R + " && $HEXA ~/Dev/nexus/shared/blowup/todo.hexa nexus 2>&1 | tail -50" }
-    // P0 anima — engine repeat (P0 weight)
-    if s == 8  { return "HEXA=" + HEXA_R + " && cd ~/Dev/anima && $HEXA " + ENGINE_DIR + "/engine_anima.hexa 2>&1 | tail -50" }
-    // P2 papers — engine
-    if s == 9  { return "HEXA=" + HEXA_R + " && cd ~/Dev/papers && $HEXA " + ENGINE_DIR + "/engine_papers.hexa 2>&1 | tail -50" }
-    // maint — repo sync all
-    if s == 10 { return "for d in nexus anima hexa-lang airgenome n6-architecture papers; do echo == $d == && cd ~/Dev/$d 2>/dev/null && git pull --ff-only 2>&1 | tail -2; done" }
+    if s == 7  { return H + " ~/Dev/nexus/shared/blowup/todo.hexa nexus 2>&1 | tail -50" }
+    // P0 anima — engine repeat
+    if s == 8  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
+    // P2 papers — engine (repo 없어도 engine 독립 실행)
+    if s == 9  { return H + " " + E + "/engine_papers.hexa 2>&1 | tail -50" }
+    // maint — repo sync (존재하는 디렉만)
+    if s == 10 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) == && cd $d && git pull --ff-only 2>&1 | tail -2; done" }
     // P1 airgenome — engine repeat
-    if s == 11 { return "HEXA=" + HEXA_R + " && cd ~/Dev/airgenome && $HEXA " + ENGINE_DIR + "/engine_airgenome.hexa 2>&1 | tail -50" }
+    if s == 11 { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
     // P2 hexa-lang — bench
     if s == 12 { return "cd ~/Dev/hexa-lang && cargo bench 2>&1 | tail -30" }
     // P2 n6-architecture — engine
-    if s == 13 { return "HEXA=" + HEXA_R + " && cd ~/Dev/n6-architecture && $HEXA " + ENGINE_DIR + "/engine_n6_architecture.hexa 2>&1 | tail -50" }
-    // maint — git gc
-    if s == 14 { return "for d in nexus anima hexa-lang airgenome n6-architecture papers; do echo == $d gc && cd ~/Dev/$d 2>/dev/null && git gc --auto 2>&1; done" }
+    if s == 13 { return H + " " + E + "/engine_n6_architecture.hexa 2>&1 | tail -50" }
+    // maint — git gc (존재하는 디렉만)
+    if s == 14 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) gc && cd $d && git gc --auto 2>&1; done" }
     // P2 hexa-lang — clippy
     if s == 15 { return "cd ~/Dev/hexa-lang && cargo clippy 2>&1 | tail -30" }
     return "echo noop"
@@ -592,20 +597,31 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
-    // 1. Check pending queue (user tasks first, priority DESC)
+    // 1. 큐 확인 (user tasks first)
     let mut pending = read_pending()
 
-    // 2. Empty → auto-generate from ROI-weighted catalog
+    // 2. Empty → 양 호스트 동시 feed (gpu + cpu 각 1개)
     if len(pending) == 0 {
         idle_feeder()
         pending = read_pending()
     }
 
-    // 3. Execute on best host
+    // 3. 양 호스트 동시 실행: 최대 2개 task (ubu + htz)
     if len(pending) > 0 {
         execute_task(pending)
-    } else {
-        log("NOOP no tasks")
+    }
+
+    // 4. 두 번째 task 실행 (다른 호스트 대상)
+    let pending2 = read_pending()
+    if len(pending2) > 0 {
+        let t2_type = jstr(pending2, "type", "cpu_heavy")
+        let t1_type = jstr(pending, "type", "?")
+        let h1 = best_host(t1_type)
+        let h2 = best_host(t2_type)
+        // 같은 호스트면 스킵 (다음 사이클에 실행)
+        if h1 != h2 {
+            execute_task(pending2)
+        }
     }
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
