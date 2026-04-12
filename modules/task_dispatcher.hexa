@@ -46,6 +46,11 @@ let ROI_DIR = HOME + "/Dev/nexus/shared/config/roi"
 // remote hexa binary (~/  expands on each host)
 let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
 let ENGINE_DIR = "~/Dev/nexus/shared/engine"
+let CEILING = AG_HOME + "/forge/resource_ceiling.jsonl"
+
+// ── 적응형 depth (blast 시 resource_ceiling 기반 동적 결정) ──
+let mut _htz_depth = 3
+let mut _ubu_depth = 3
 
 fn ts() -> str {
     return try { exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" }
