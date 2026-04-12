@@ -110,110 +110,88 @@ fn ssh_alias(host: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  16-slot 교대 카탈로그 — 짝수=htz(cpu), 홀수=ubu(gpu)
-//  → 매 사이클 양 호스트 동시 실행 보장
+//  16-slot HEAVY 카탈로그 — 짝수=htz(32T), 홀수=ubu(12T+GPU)
+//  자원을 실제로 쓰는 작업만: blowup, cargo, ouroboros, bench
 //
-//  Slot  Name              Project         Type       Host   Timeout
-//  ────  ────────────────  ──────────────  ─────────  ─────  ───────
-//   0    anima_engine      anima           cpu_heavy  htz    600s
-//   1    nexus_engine_u    nexus           gpu_heavy  ubu    600s
-//   2    nexus_todo        nexus           cpu_heavy  htz    300s
-//   3    airgenome_eng_u   airgenome       gpu_heavy  ubu    600s
-//   4    hexa_test         hexa-lang       cpu_heavy  htz    300s
-//   5    anima_eng_u       anima           gpu_heavy  ubu    600s
-//   6    anima_engine2     anima           cpu_heavy  htz    600s
-//   7    papers_eng_u      papers          gpu_heavy  ubu    600s
-//   8    hexa_build        hexa-lang       cpu_heavy  htz    600s
-//   9    n6_eng_u          n6-architecture gpu_heavy  ubu    600s
-//  10    repo_sync         infra           cpu_heavy  htz    120s
-//  11    hexa_eng_u        hexa-lang       gpu_heavy  ubu    600s
-//  12    nexus_blowup      nexus           cpu_heavy  htz    300s
-//  13    airgenome_eng2_u  airgenome       gpu_heavy  ubu    600s
-//  14    git_gc            infra           cpu_heavy  htz    120s
-//  15    nexus_eng2_u      nexus           gpu_heavy  ubu    600s
-//
-//  8 cycles × 30s = 4분 풀 루프. 양 호스트 100% 가동.
+//  htz: cargo test/build/bench/clippy + blowup core + engine
+//  ubu: blowup core + ouroboros + engine + cargo test
 // ═══════════════════════════════════════════════════════════════════════
 
 let CATALOG_SIZE = 16
 
 fn catalog_name(s: int) -> str {
-    if s == 0  { return "anima_engine" }
-    if s == 1  { return "nexus_engine" }
-    if s == 2  { return "nexus_todo" }
-    if s == 3  { return "airgenome_engine" }
-    if s == 4  { return "hexa_test" }
-    if s == 5  { return "anima_engine" }
-    if s == 6  { return "anima_engine" }
-    if s == 7  { return "papers_engine" }
-    if s == 8  { return "hexa_build" }
-    if s == 9  { return "n6_engine" }
-    if s == 10 { return "repo_sync" }
-    if s == 11 { return "hexa_engine" }
-    if s == 12 { return "nexus_blowup" }
-    if s == 13 { return "airgenome_engine" }
-    if s == 14 { return "git_gc" }
-    if s == 15 { return "nexus_engine" }
+    if s == 0  { return "blowup_math" }
+    if s == 1  { return "blowup_physics" }
+    if s == 2  { return "cargo_test" }
+    if s == 3  { return "ouroboros" }
+    if s == 4  { return "blowup_cs" }
+    if s == 5  { return "cargo_test_u" }
+    if s == 6  { return "cargo_build" }
+    if s == 7  { return "ouroboros_quantum" }
+    if s == 8  { return "blowup_bio" }
+    if s == 9  { return "blowup_math_u" }
+    if s == 10 { return "cargo_bench" }
+    if s == 11 { return "ouroboros_meta" }
+    if s == 12 { return "blowup_econ" }
+    if s == 13 { return "blowup_physics_u" }
+    if s == 14 { return "cargo_clippy" }
+    if s == 15 { return "blowup_stream" }
     return "noop"
 }
 
 fn catalog_project(s: int) -> str {
-    if s == 0  { return "anima" }
+    if s == 0  { return "nexus" }
     if s == 1  { return "nexus" }
-    if s == 2  { return "nexus" }
-    if s == 3  { return "airgenome" }
-    if s == 4  { return "hexa-lang" }
-    if s == 5  { return "anima" }
-    if s == 6  { return "anima" }
-    if s == 7  { return "papers" }
-    if s == 8  { return "hexa-lang" }
-    if s == 9  { return "n6-architecture" }
-    if s == 10 { return "infra" }
-    if s == 11 { return "hexa-lang" }
+    if s == 2  { return "hexa-lang" }
+    if s == 3  { return "nexus" }
+    if s == 4  { return "nexus" }
+    if s == 5  { return "hexa-lang" }
+    if s == 6  { return "hexa-lang" }
+    if s == 7  { return "nexus" }
+    if s == 8  { return "nexus" }
+    if s == 9  { return "nexus" }
+    if s == 10 { return "hexa-lang" }
+    if s == 11 { return "nexus" }
     if s == 12 { return "nexus" }
-    if s == 13 { return "airgenome" }
-    if s == 14 { return "infra" }
+    if s == 13 { return "nexus" }
+    if s == 14 { return "hexa-lang" }
     if s == 15 { return "nexus" }
-    return "infra"
+    return "nexus"
 }
 
 fn catalog_type(s: int) -> str {
-    // 짝수 = cpu_heavy → htz, 홀수 = gpu_heavy → ubu
     if s % 2 == 0 { return "cpu_heavy" }
     return "gpu_heavy"
 }
 
 fn catalog_cmd(s: int) -> str {
     let H = HEXA_R
-    let E = ENGINE_DIR
-    // 짝수: htz (32T, cargo, anima/n6 repo 있음)
-    // 홀수: ubu (GPU, 12T, engine 독립 실행)
-    if s == 0  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    if s == 1  { return H + " " + E + "/engine_nexus.hexa 2>&1 | tail -50" }
-    if s == 2  { return H + " ~/Dev/nexus/shared/blowup/todo.hexa nexus 2>&1 | tail -50" }
-    if s == 3  { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
-    if s == 4  { return "export PATH=$HOME/.cargo/bin:$PATH && cd ~/Dev/hexa-lang && cargo test 2>&1 | tail -30" }
-    if s == 5  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    if s == 6  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    if s == 7  { return H + " " + E + "/engine_papers.hexa 2>&1 | tail -50" }
-    if s == 8  { return "export PATH=$HOME/.cargo/bin:$PATH && cd ~/Dev/hexa-lang && cargo build --release 2>&1 | tail -10" }
-    if s == 9  { return H + " " + E + "/engine_n6_architecture.hexa 2>&1 | tail -50" }
-    if s == 10 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) == && cd $d && git pull --ff-only 2>&1 | tail -2; done" }
-    if s == 11 { return H + " " + E + "/engine_hexa_lang.hexa 2>&1 | tail -50" }
-    if s == 12 { return H + " ~/Dev/nexus/shared/blowup/commands.hexa scan 2>&1 | tail -30" }
-    if s == 13 { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
-    if s == 14 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) gc && cd $d && git gc --auto 2>&1; done" }
-    if s == 15 { return H + " " + E + "/engine_nexus.hexa 2>&1 | tail -50" }
+    let B = "~/Dev/nexus/shared/blowup"
+    let CP = "export PATH=$HOME/.cargo/bin:$PATH && cd ~/Dev/hexa-lang"
+    // ── htz (짝수): blowup 3depth + cargo ──
+    if s == 0  { return H + " " + B + "/core/blowup.hexa math 3 2>&1 | tail -80" }
+    if s == 2  { return CP + " && cargo test 2>&1 | tail -50" }
+    if s == 4  { return H + " " + B + "/core/blowup.hexa cs 3 2>&1 | tail -80" }
+    if s == 6  { return CP + " && cargo build --release 2>&1 | tail -20" }
+    if s == 8  { return H + " " + B + "/core/blowup.hexa biology 3 2>&1 | tail -80" }
+    if s == 10 { return CP + " && cargo bench 2>&1 | tail -50" }
+    if s == 12 { return H + " " + B + "/core/blowup.hexa economics 3 2>&1 | tail -80" }
+    if s == 14 { return CP + " && cargo clippy -- -W clippy::all 2>&1 | tail -50" }
+    // ── ubu (홀수): blowup + ouroboros + cargo test ──
+    if s == 1  { return H + " " + B + "/core/blowup.hexa physics 3 2>&1 | tail -80" }
+    if s == 3  { return H + " " + B + "/ouroboros/ouroboros.hexa 2>&1 | tail -80" }
+    if s == 5  { return CP + " && cargo test 2>&1 | tail -50" }
+    if s == 7  { return H + " " + B + "/ouroboros/ouroboros_quantum.hexa 2>&1 | tail -80" }
+    if s == 9  { return H + " " + B + "/core/blowup.hexa math 3 2>&1 | tail -80" }
+    if s == 11 { return H + " " + B + "/ouroboros/ouroboros_meta.hexa 2>&1 | tail -80" }
+    if s == 13 { return H + " " + B + "/core/blowup.hexa physics 3 2>&1 | tail -80" }
+    if s == 15 { return H + " " + B + "/core/blowup_stream_filter.hexa 2>&1 | tail -80" }
     return "echo noop"
 }
 
 fn catalog_timeout(s: int) -> int {
-    if s == 2  { return 300 }
-    if s == 4  { return 300 }
-    if s == 10 { return 120 }
-    if s == 12 { return 300 }
-    if s == 14 { return 120 }
-    return 600
+    // blowup depth 3: ~60-120s, cargo: ~60-300s, ouroboros: ~30-60s
+    return 300
 }
 
 // ═══════════════════════════════════════════════════════════════════════
