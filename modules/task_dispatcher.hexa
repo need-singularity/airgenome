@@ -611,7 +611,6 @@ fn main() {
     }
 
     // 결과 기록
-    let all_out = ubu_out + "\n" + htz_out
     let rts = ts()
     let safe_all = all_out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
     if len(safe_all) > 1000 {
@@ -622,9 +621,92 @@ fn main() {
         try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
     }
 
-    log("CYCLE blast=" + to_string(ubu_n + htz_n) + " ubu=" + to_string(len(ubu_out)) + "B htz=" + to_string(len(htz_out)) + "B")
+    log("CYCLE blast=" + to_string(ubu_n + htz_n) + " " + to_string(len(all_out)) + "B")
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
+}
+
+fn daemon_loop() {
+    log("DAEMON START — 무한 blast 루프")
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    let mut cycle = 0
+    while true {
+        cycle = cycle + 1
+
+        // 16슬롯 feed
+        idle_feeder()
+
+        // blast 분배 + 실행
+        let mut ubu_cmds = ""
+        let mut htz_cmds = ""
+        let mut ubu_n = 0
+        let mut htz_n = 0
+
+        if file_exists(QUEUE) {
+            let qc = read_file(QUEUE).trim()
+            if len(qc) > 4 {
+                let ql = qc.split("\n")
+                let mut qi = 0
+                while qi < len(ql) {
+                    let l = ql[qi].trim()
+                    qi = qi + 1
+                    if len(l) < 5 { continue }
+                    if l.contains("\"pending\"") == false { continue }
+                    let tid = jstr(l, "id", "?")
+                    let tname = jstr(l, "task", "noop")
+                    let ttype = jstr(l, "type", "cpu_heavy")
+                    let cmd = resolve_cmd(tname)
+                    let host = best_host(ttype)
+                    if host == "ubu" {
+                        ubu_cmds = ubu_cmds + cmd + " ; "
+                        ubu_n = ubu_n + 1
+                    } else {
+                        htz_cmds = htz_cmds + cmd + " ; "
+                        htz_n = htz_n + 1
+                    }
+                }
+            }
+        }
+        write_file(QUEUE, "")
+
+        if ubu_n + htz_n == 0 {
+            // 큐 비었으면 3초 대기 후 재시도
+            try { exec("sleep 3") } catch e {}
+            continue
+        }
+
+        // 배치 파일 작성
+        if ubu_n > 0 { write_file("/tmp/_td_ubu.sh", "#!/bin/bash\n" + ubu_cmds + "\n") }
+        if htz_n > 0 { write_file("/tmp/_td_htz.sh", "#!/bin/bash\n" + htz_cmds + "\n") }
+
+        // 양쪽 동시 발사
+        let mut out = ""
+        try {
+            if ubu_n > 0 {
+                if htz_n > 0 {
+                    out = exec("( cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " > /tmp/_td_htz_out.txt 2>&1 ) & cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1 ; wait ; cat /tmp/_td_htz_out.txt 2>/dev/null").trim()
+                } else {
+                    out = exec("cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1").trim()
+                }
+            } else {
+                out = exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " 2>&1").trim()
+            }
+        } catch e {}
+
+        // 결과 기록
+        let rts = ts()
+        let safe = out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
+        let sout = if len(safe) > 800 { safe.substring(0, 800) + "..." } else { safe }
+        let rline = "{\"id\":\"c" + to_string(cycle) + "_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_" + to_string(ubu_n + htz_n) + "\",\"host\":\"u" + to_string(ubu_n) + "+h" + to_string(htz_n) + "\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"output\":\"" + sout + "\"}"
+        try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
+
+        log("C" + to_string(cycle) + " blast=" + to_string(ubu_n + htz_n) + " " + to_string(len(out)) + "B → next")
+
+        // 즉시 다음 사이클 (sleep 0 — 유휴 없음)
+    }
 }
 
 main()
