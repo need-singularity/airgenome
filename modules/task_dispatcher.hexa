@@ -322,28 +322,58 @@ fn queue_count() -> int {
 //  Idle feeder — ROI 가중 round-robin
 // ═══════════════════════════════════════════════════════════════════════
 
+fn slot_priority(project: str) -> int {
+    if project == "anima" { return 3 }
+    if project == "nexus" { return 2 }
+    if project == "airgenome" { return 2 }
+    return 1
+}
+
+fn feed_one_slot(count: int) {
+    let slot = count % CATALOG_SIZE
+    let name = catalog_name(slot)
+    let project = catalog_project(slot)
+    let ttype = catalog_type(slot)
+    let timeout = catalog_timeout(slot)
+    let priority = slot_priority(project)
+
+    queue_add(name, project, ttype, priority, timeout)
+    log("FEED [" + to_string(slot) + "/" + to_string(CATALOG_SIZE) + "] " + name + " (" + project + ") pri=" + to_string(priority))
+}
+
 fn idle_feeder() {
     let mut count = 0
     if file_exists(COUNTER_FILE) {
         try { count = to_int(read_file(COUNTER_FILE).trim()) } catch e {}
     }
-    let slot = count % CATALOG_SIZE
 
-    let name = catalog_name(slot)
-    let project = catalog_project(slot)
-    let ttype = catalog_type(slot)
-    let timeout = catalog_timeout(slot)
+    // 양 호스트 동시 가동: gpu 1개 + cpu 1개 동시 feed
+    // → 매 사이클 ubu(gpu) + htz(cpu) 병렬 실행
+    feed_one_slot(count)
 
-    // Priority: P0=3, P1=2, P2/maint=1
-    let mut priority = 1
-    if project == "anima" { priority = 3 }
-    if project == "nexus" { priority = 2 }
-    if project == "airgenome" { priority = 2 }
-
-    queue_add(name, project, ttype, priority, timeout)
-    log("FEED [" + to_string(slot) + "/" + to_string(CATALOG_SIZE) + "] " + name + " (" + project + ") pri=" + to_string(priority))
-
-    try { write_file(COUNTER_FILE, to_string(count + 1)) } catch e {}
+    // 두 번째 슬롯: 다른 호스트 타입 찾기
+    let first_type = catalog_type(count % CATALOG_SIZE)
+    let mut second = count + 1
+    let mut found = false
+    let mut attempts = 0
+    while found == false {
+        if attempts >= CATALOG_SIZE { break }
+        let st = catalog_type(second % CATALOG_SIZE)
+        // 첫 번째가 gpu면 cpu/io 찾고, cpu/io면 gpu 찾기
+        if first_type == "gpu_heavy" {
+            if st != "gpu_heavy" { found = true; break }
+        } else {
+            if st == "gpu_heavy" { found = true; break }
+        }
+        second = second + 1
+        attempts = attempts + 1
+    }
+    if found {
+        feed_one_slot(second)
+        try { write_file(COUNTER_FILE, to_string(second + 1)) } catch e {}
+    } else {
+        try { write_file(COUNTER_FILE, to_string(count + 1)) } catch e {}
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -363,13 +393,7 @@ fn resolve_cmd(task_name: str) -> str {
 //  Execute — SSH to best host
 // ═══════════════════════════════════════════════════════════════════════
 
-fn execute_task(line: str) {
-    let task_id = jstr(line, "id", "?")
-    let task_name = jstr(line, "task", "noop")
-    let project = jstr(line, "project", "?")
-    let task_type = jstr(line, "type", "cpu_heavy")
-    let timeout = jint(line, "timeout", 120)
-
+fn execute_one(task_id: str, task_name: str, project: str, task_type: str, timeout: int) {
     let host = best_host(task_type)
     let alias = ssh_alias(host)
     let cmd = resolve_cmd(task_name)
@@ -379,13 +403,13 @@ fn execute_task(line: str) {
     // Remove from pending queue
     remove_task(task_id)
 
-    // Write raw command to temp file → pipe via stdin (no quoting issues)
-    write_file("/tmp/_td_exec.sh", cmd + "\n")
+    // ssh_gate 에 직접 명령 전달 (stdin 파이프 제거 — 69B 문제 해결)
+    let wrapped = "timeout " + to_string(timeout) + " bash -c " + shquote(cmd)
 
     let mut result = ""
     let mut status = "done"
     try {
-        result = exec(SSH_GATE + " " + alias + " 'timeout " + to_string(timeout) + " bash /dev/stdin' < /tmp/_td_exec.sh 2>&1").trim()
+        result = exec(SSH_GATE + " " + alias + " " + shquote(wrapped) + " 2>&1").trim()
         if len(result) > 500 {
             result = result.substring(len(result) - 500, len(result))
         }
@@ -397,11 +421,20 @@ fn execute_task(line: str) {
     // Sanitize for JSON
     let safe = result.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
 
-    // Append result
+    // Append result (exec echo 폴백 — append_file 0-byte 버그 방지)
     let rline = "{\"id\":\"" + task_id + "\",\"ts\":\"" + ts() + "\",\"project\":\"" + project + "\",\"task\":\"" + task_name + "\",\"host\":\"" + host + "\",\"status\":\"" + status + "\",\"bytes\":" + to_string(len(result)) + ",\"output\":\"" + safe + "\"}"
-    append_file(RESULTS, rline + "\n")
+    try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
 
     log(status + " " + task_id + " -> " + host + " [" + to_string(len(result)) + "B]")
+}
+
+fn execute_task(line: str) {
+    let task_id = jstr(line, "id", "?")
+    let task_name = jstr(line, "task", "noop")
+    let project = jstr(line, "project", "?")
+    let task_type = jstr(line, "type", "cpu_heavy")
+    let timeout = jint(line, "timeout", 120)
+    execute_one(task_id, task_name, project, task_type, timeout)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
