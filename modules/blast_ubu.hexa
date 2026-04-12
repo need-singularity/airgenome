@@ -10,6 +10,7 @@ let HOME = env("HOME")
 let AG_HOME = HOME + "/Dev/airgenome"
 let CEILING = AG_HOME + "/forge/resource_ceiling.jsonl"
 let RESULTS = AG_HOME + "/forge/task_results.jsonl"
+let DISPATCH_LOG = AG_HOME + "/forge/dispatch.log"
 let LOG_FILE = AG_HOME + "/forge/blast_ubu.log"
 let LOCK = HOME + "/.airgenome/blast_ubu.lock"
 let SLOT_CATALOG = HOME + "/Dev/nexus/shared/config/slot_catalog.jsonl"
