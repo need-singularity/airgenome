@@ -71,6 +71,11 @@
           {
             "type": "command",
             "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-edit.hexa"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/Dev/airgenome/.claude/hooks/auto-ship",
+            "timeout": 60
           }
         ]
       }

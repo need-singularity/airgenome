@@ -1,46 +1,78 @@
 #!/bin/bash
-# auto-ship: Stop hook for the airgenome project.
-# After every Claude turn, if any tracked *.hexa source (root or modules/)
-# or the Airgenome.app bundle has changed, run the full ship cycle:
-#     git add -> commit -> push -> rsync Airgenome.app -> smoke-check applet
-# Silent on success. On failure, emits a Claude `systemMessage` JSON
-# blob so the user sees the error in the transcript.
+# auto-ship: PostToolUse hook for the airgenome project.
+# After every Write/Edit, if any tracked source changed, run the full ship cycle:
+#     git add -> commit -> push -> build .app -> rsync -> restart
+# Silent on success. On failure, emits a Claude systemMessage JSON blob.
 #
 # Extensionless filename intentional: HEXA-FIRST rule blocks new .sh/.py/.rs
-# files, but tooling scripts in .claude/hooks/ are still needed.
-#
-# Pattern mirrored from ~/Dev/void/.claude/hooks/auto-ship.
 set -uo pipefail
 
-# Claude Code hooks run with a sparse PATH that may not include /usr/bin,
-# so `git`, `rsync`, etc. fail with "command not found". Set PATH explicitly.
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-cd ~/Dev/airgenome 2>/dev/null || exit 0
+DIR="$HOME/Dev/airgenome"
+cd "$DIR" 2>/dev/null || exit 0
 
-# Bail out fast if no source changes (untracked + modified + staged).
-# Watch: root *.hexa, modules/*.hexa, and the Airgenome.app bundle.
-if [ -z "$(git status --porcelain -- '*.hexa' 'modules/*.hexa' 'Airgenome.app' 2>/dev/null)" ]; then
-    exit 0
+# ── Cooldown: skip if last ship was < 30s ago ──
+COOLDOWN="/tmp/.auto-ship-cooldown"
+NOW=$(date +%s)
+if [ -f "$COOLDOWN" ]; then
+    PREV=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+    [ $((NOW - PREV)) -lt 30 ] && exit 0
 fi
+
+# ── Bail if no tracked changes ──
+DIRTY=$(git status --porcelain 2>/dev/null | grep -v '^??' || true)
+[ -z "$DIRTY" ] && exit 0
+
+echo "$NOW" > "$COOLDOWN"
 
 LOG=$(mktemp -t auto-ship.XXXXXX)
 trap 'rm -f "$LOG"' EXIT
 
 (
     set -e
-    git add -- '*.hexa' 'modules/*.hexa' 'Airgenome.app'
+
+    # ── 1. Commit ──
+    git add -A
     git commit -m "auto-ship: $(date +%H:%M)"
+
+    # ── 2. Push ──
     git push
-    # Sync bundle to /Applications (noop if identical, no sudo needed — ghost:admin)
-    rsync -a --delete Airgenome.app/ /Applications/Airgenome.app/
-    # Smoke: applet binary must exist and be executable
+
+    # ── 3. Build .app (recompile JXA → main.scpt) ──
+    if git diff HEAD~1 --name-only | grep -qE '(menubar_tpl\.js|settings\.js)'; then
+        TMPJS=$(mktemp -t airgenome-menubar.XXXXXX.js)
+        trap 'rm -f "$TMPJS" "$LOG"' EXIT
+        STATE="/tmp/airgenome-state.json"
+        CONFIG="$HOME/.airgenome/config.json"
+        sed -e "s|__STATE__|${STATE}|g" \
+            -e "s|__CONFIG__|${CONFIG}|g" \
+            -e "s|__DIR__|${DIR}|g" \
+            "$DIR/menubar_tpl.js" > "$TMPJS"
+        TMPAPP=$(mktemp -d -t airgenome-build.XXXXXX)
+        osacompile -l JavaScript -o "$TMPAPP/Airgenome.app" "$TMPJS"
+        cp "$TMPAPP/Airgenome.app/Contents/Resources/Scripts/main.scpt" \
+           "$DIR/Airgenome.app/Contents/Resources/Scripts/main.scpt"
+        rm -rf "$TMPAPP" "$TMPJS"
+        # Commit rebuilt bundle
+        git add Airgenome.app/Contents/Resources/Scripts/main.scpt
+        git commit -m "auto-ship: rebuild main.scpt $(date +%H:%M)" || true
+        git push
+    fi
+
+    # ── 4. Copy to /Applications ──
+    rsync -a --delete "$DIR/Airgenome.app/" /Applications/Airgenome.app/
     test -x /Applications/Airgenome.app/Contents/MacOS/applet
+
+    # ── 5. Restart ──
+    pkill -f 'Airgenome.app/Contents/MacOS/applet' 2>/dev/null || true
+    sleep 1
+    open /Applications/Airgenome.app
+
 ) > "$LOG" 2>&1
 
 rc=$?
 if [ $rc -ne 0 ]; then
-    # Emit a systemMessage so the failure surfaces in the Claude UI.
     python3 - "$LOG" <<'PY' 2>/dev/null || { echo "[auto-ship FAILED]" >&2; tail -50 "$LOG" >&2; }
 import sys, json
 with open(sys.argv[1]) as f:
