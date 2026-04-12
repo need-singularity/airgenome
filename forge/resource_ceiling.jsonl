@@ -911,3 +911,5 @@
 {"ts":"2026-04-12T13:32:38Z","ubu_cpu":30,"ubu_gpu":0,"htz_cpu":67,"total":56,"gap":44}
 {"ts":"2026-04-12T13:33:09Z","ubu_cpu":30,"ubu_gpu":0,"htz_cpu":67,"total":56,"gap":44}
 {"ts":"2026-04-12T13:33:39Z","ubu_cpu":30,"ubu_gpu":0,"htz_cpu":67,"total":56,"gap":44}
+{"ts":"2026-04-12T13:34:10Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":63,"total":73,"gap":27}
+{"ts":"2026-04-12T13:34:40Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":63,"total":73,"gap":27}

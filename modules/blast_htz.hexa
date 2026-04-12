@@ -128,7 +128,7 @@ fn blast_once() {
     let mut launch = "#!/bin/bash\n"
     let mut n = 0
     let mut s = 0
-    while s < 16 {
+    while s < 20 {
         let host = slot_field(s, "host", "")
         if host == "htz" {
             let name = slot_field(s, "name", "?")
