@@ -8,7 +8,8 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/ghost/Dev/hexa-lang/hexa</string>
-        <string>/Users/ghost/Dev/airgenome/modules/blast_htz.hexa</string>
+        <string>/Users/ghost/Dev/airgenome/modules/blast_common.hexa</string>
+        <string>htz</string>
     </array>
 
     <key>RunAtLoad</key>
