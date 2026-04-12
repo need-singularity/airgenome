@@ -367,6 +367,14 @@ while true {
                 ubu_gpu_mem = try { to_int(ag3j["ubu_gpu_mem"]) } catch e { 0 }
                 ubu_gpu_name = try { to_string(ag3j["ubu_gpu_name"]) } catch e { "" }
             } catch e {}
+            // CPU 오버라이드: gate_handler 델타 방식 (100-idle, 실시간)
+            if gate == "online" {
+                let cpu_line = try { exec("echo STATUS | nc -w 1 192.168.50.119 9900 2>/dev/null").trim() } catch e { "" }
+                if cpu_line.contains("cpu=") {
+                    let cv = cpu_line.split("cpu=")[1].split(" ")[0].trim()
+                    try { ubu_cpu = to_int(to_float(cv)) } catch e {}
+                }
+            }
         }
     }
 
