@@ -85,9 +85,60 @@ trap "rm -f '$LOCK'" EXIT
 ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 echo "$ts [SSH-GATE] EXEC $HOST [$((CUR+1))/$MAX] cmd=$CMD" >> "$LOG" 2>/dev/null
 
-# SSH 실행
-ssh $SSH_OPTS "$ALIAS" "$CMD" 2>/dev/null
+# ═══════════════════════════════════════════════════════════════
+#  PASSIVE METRIC FILTER — 매 SSH 호출에 메트릭 피기백
+#  원리: 원래 명령 + loadavg 를 함께 실행, 메트릭만 분리 저장
+#  비용: cat /proc/loadavg 1회 = <1ms, 거의 0 오버헤드
+# ═══════════════════════════════════════════════════════════════
+
+METRICS_DIR="$HOME/.airgenome/ssh_metrics"
+mkdir -p "$METRICS_DIR" 2>/dev/null
+
+# 메트릭 피기백 명령 (원래 출력과 구분자로 분리)
+METRIC_TAG="__SSHGATE_METRICS__"
+PIGGYBACKED="{ $CMD ; } && echo '$METRIC_TAG' && cat /proc/loadavg && awk '/MemTotal/{t=int(\$2/1024)} /MemAvailable/{a=int(\$2/1024)} END{print t,t-a,a}' /proc/meminfo 2>/dev/null"
+
+# SSH 실행 (메트릭 포함)
+OUTPUT=$(ssh $SSH_OPTS "$ALIAS" "$PIGGYBACKED" 2>/dev/null)
 rc=$?
+
+if echo "$OUTPUT" | grep -q "$METRIC_TAG"; then
+  # 메트릭 분리
+  USER_OUTPUT=$(echo "$OUTPUT" | sed "/$METRIC_TAG/,\$d")
+  METRICS=$(echo "$OUTPUT" | sed -n "/$METRIC_TAG/,\$p" | tail -n +2)
+
+  # 메트릭 파싱 + 저장
+  LOAD=$(echo "$METRICS" | head -1 | awk '{print $1}')
+  MEM_LINE=$(echo "$METRICS" | sed -n '2p')
+  MEM_TOTAL=$(echo "$MEM_LINE" | awk '{print $1}')
+  MEM_USED=$(echo "$MEM_LINE" | awk '{print $2}')
+  MEM_AVAIL=$(echo "$MEM_LINE" | awk '{print $3}')
+  # meminfo 파싱 실패 시 0으로 폴백
+  [ -z "$MEM_TOTAL" ] && MEM_TOTAL=0
+  [ -z "$MEM_USED" ] && MEM_USED=0
+  [ -z "$MEM_AVAIL" ] && MEM_AVAIL=0
+
+  # 메트릭 파일 업데이트 (호스트별, 원자적 쓰기)
+  MFILE="$METRICS_DIR/${HOST}.json"
+  mts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  echo "{\"ts\":\"$mts\",\"load\":\"$LOAD\",\"mem_total\":$MEM_TOTAL,\"mem_used\":$MEM_USED,\"mem_avail\":$MEM_AVAIL}" > "${MFILE}.tmp" 2>/dev/null
+  mv -f "${MFILE}.tmp" "$MFILE" 2>/dev/null
+
+  # 이상 감지 — 자동 경고
+  LOAD_INT=$(echo "$LOAD" | awk '{printf "%d", $1}')
+  if [ -n "$MEM_AVAIL" ] && [ "$MEM_AVAIL" -lt 500 ] 2>/dev/null; then
+    echo "$mts [SSH-GATE] ALERT $HOST RAM_LOW avail=${MEM_AVAIL}MB" >> "$LOG"
+  fi
+  if [ -n "$LOAD_INT" ] && [ "$LOAD_INT" -gt 50 ] 2>/dev/null; then
+    echo "$mts [SSH-GATE] ALERT $HOST LOAD_HIGH load=$LOAD" >> "$LOG"
+  fi
+
+  # 원래 출력만 반환
+  echo "$USER_OUTPUT"
+else
+  # 메트릭 분리 실패 — 원본 그대로 반환
+  echo "$OUTPUT"
+fi
 
 rm -f "$LOCK"
 trap - EXIT
