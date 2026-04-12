@@ -19,9 +19,9 @@ let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
 // cgroup 리밋
-// 12T I/O bound 보상. 9 tasks × 200% — cgroup이 실 사용량 제한
+// 12T 80% 목표. 9 tasks × 110% = 9.9 cores = 82.5%
 let CGROUP_MEM = "6G"
-let CGROUP_CPU = "200%"
+let CGROUP_CPU = "110%"
 
 // ── helpers ──
 

@@ -134,3 +134,4 @@
 {"id":"ubu_2026-04-12T13:33:07Z","ts":"2026-04-12T13:33:07Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
 {"id":"htz_2026-04-12T13:34:07Z","ts":"2026-04-12T13:34:07Z","task":"blast_htz_8","host":"htz","status":"done","bytes":41593,"depth":3}
 {"id":"ubu_2026-04-12T13:36:42Z","ts":"2026-04-12T13:36:42Z","task":"blast_ubu_9","host":"ubu","status":"done","bytes":3070,"depth":2}
+{"id":"htz_2026-04-12T13:38:41Z","ts":"2026-04-12T13:38:41Z","task":"blast_htz_17","host":"htz","status":"done","bytes":87769,"depth":2}
