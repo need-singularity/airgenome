@@ -410,11 +410,12 @@ fn execute_one(task_id: str, task_name: str, project: str, task_type: str, timeo
     // Remove from pending queue
     remove_task(task_id)
 
-    // ssh_gate 에 명령 직접 전달 — shquote 1겹만
+    // ssh_gate 에 명령 직접 전달 — 임시 스크립트 → bash -s (stdin)
+    write_file("/tmp/_td_cmd.sh", "#!/bin/bash\n" + cmd + "\n")
     let mut result = ""
     let mut status = "done"
     try {
-        result = exec(SSH_GATE + " " + alias + " " + shquote("timeout " + to_string(timeout) + " sh -c " + "'" + cmd.replace("'", "'\"'\"'") + "'") + " 2>&1").trim()
+        result = exec("cat /tmp/_td_cmd.sh | " + SSH_GATE + " " + alias + " " + shquote("timeout " + to_string(timeout) + " bash -s") + " 2>&1").trim()
         if len(result) > 500 {
             result = result.substring(len(result) - 500, len(result))
         }

@@ -225,6 +225,99 @@ fn iter_recent(remote: str, path: str, n: int) -> auto {
     return out
 }
 
+// ── LOCAL RING: init + append for harvest pipeline (ROI-2) ─────────────
+// These functions operate on a local ring file without ssh_gate overhead.
+// Used by genome_harvest.hexa to write genomes directly to a ring buffer
+// instead of 7K+ individual .genome files.
+
+fn init_local_ring(path: str, slot_count: int) -> bool {
+    let dir = path
+    let slash = path.rfind("/")
+    if slash > 0 { dir = path.substring(0, slash) }
+    exec("mkdir -p " + dir)
+    let sc = slot_count
+    let ss = SLOT_SIZE
+    let py = "python3 -c 'import struct,os,sys; p=sys.argv[1]; sc=int(sys.argv[2]); ss=int(sys.argv[3]); " +
+        "hdr=struct.pack(\"<4sHHIII44x\",b\"AG3R\",1,ss,sc,0,0); " +
+        "f=open(p,\"wb\"); f.write(hdr); f.write(b\"\\x00\"*(sc*ss)); f.close(); " +
+        "print(\"ok\")' " + path + " " + to_string(sc) + " " + to_string(ss)
+    let out = exec(py).trim()
+    return out == "ok"
+}
+
+// Batch-append multiple genomes in a single python3 call.
+// entries: newline-separated "pid|name|genome_hex|cluster_id|flags" per line.
+// Returns number of records appended.
+fn append_local_batch(path: str, entries: str) -> int {
+    if len(entries) == 0 { return 0 }
+    // Write entries to temp file to avoid shell quoting issues
+    let tmp = "/tmp/_ag_ring_batch_" + exec("date +%s%N 2>/dev/null || date +%s").trim() + ".txt"
+    try { write_file(tmp, entries) } catch e { return 0 }
+    let py = "python3 -c '" +
+        "import struct,os,sys,time,zlib\n" +
+        "ring_path=sys.argv[1]; tmp=sys.argv[2]\n" +
+        "HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"\n" +
+        "f=open(ring_path,\"r+b\")\n" +
+        "hdr=f.read(64)\n" +
+        "_,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr)\n" +
+        "count=0\n" +
+        "with open(tmp) as t:\n" +
+        "  for line in t:\n" +
+        "    line=line.strip()\n" +
+        "    if not line: continue\n" +
+        "    parts=line.split(\"|\")\n" +
+        "    if len(parts)<5: continue\n" +
+        "    pid=int(parts[0]); name=parts[1]; gh=parts[2]; cid=int(parts[3]); fl=int(parts[4])\n" +
+        "    if len(gh)!=120: continue\n" +
+        "    try: g=bytes.fromhex(gh)\n" +
+        "    except: continue\n" +
+        "    if len(g)!=60: continue\n" +
+        "    idx=wi%sc; off=64+idx*ss\n" +
+        "    nh=zlib.crc32(name.encode(\"utf-8\"))&0xffffffff\n" +
+        "    f.seek(off); f.write(struct.pack(SLOT,time.time(),pid,nh,g,cid,fl))\n" +
+        "    wi=wi+1\n" +
+        "    if wi%sc==0: wc+=1\n" +
+        "    count+=1\n" +
+        "f.seek(0); f.write(struct.pack(HDR,b\"AG3R\",ver,ss,sc,wi%sc,wc))\n" +
+        "f.flush(); os.fsync(f.fileno()); f.close()\n" +
+        "os.remove(tmp)\n" +
+        "print(count)' " + path + " " + tmp
+    let out = exec(py).trim()
+    let mut n = 0
+    try { n = to_int(to_float(out)) } catch e {}
+    return n
+}
+
+// Read all valid records from a local ring as JSONL lines (for pack rebuild).
+// Returns newline-separated JSON: {"ts":..,"pid":..,"name_hash":..,"genome":".."}
+fn dump_local_ring(path: str) -> str {
+    if file_exists(path) == false { return "" }
+    let py = "python3 -c '" +
+        "import struct,os,sys,json\n" +
+        "p=sys.argv[1]\n" +
+        "HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"\n" +
+        "f=open(p,\"rb\")\n" +
+        "hdr=f.read(64)\n" +
+        "_,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr)\n" +
+        "total=wc*sc+wi\n" +
+        "if total>sc: total=sc\n" +
+        "out=[]\n" +
+        "for i in range(total):\n" +
+        "  idx=(wi-1-i)%sc\n" +
+        "  if idx<0: idx+=sc\n" +
+        "  off=64+idx*ss\n" +
+        "  f.seek(off); raw=f.read(ss)\n" +
+        "  if len(raw)<ss: continue\n" +
+        "  ts,pid,nh=struct.unpack_from(\"<diI\",raw,0)\n" +
+        "  g=raw[16:76]\n" +
+        "  cid,fl=struct.unpack_from(\"<iI\",raw,76)\n" +
+        "  if ts==0.0 and pid==0: continue\n" +
+        "  out.append(json.dumps({\"ts\":ts,\"pid\":pid,\"name_hash\":nh,\"genome\":g.hex(),\"cluster_id\":cid,\"flags\":fl}))\n" +
+        "f.close()\n" +
+        "print(chr(10).join(out))' " + path
+    return exec(py).trim()
+}
+
 // ── CLI ─────────────────────────────────────────────────────────────────
 fn parse_flags(argv: auto) -> auto {
     // returns { cmd, n, remote, path }

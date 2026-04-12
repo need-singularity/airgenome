@@ -74,15 +74,38 @@ fn log2_x16_clip(v: int) -> int {
     return o
 }
 
+// parse_time_to_sec — parse "H:MM:SS" or "MM:SS" to seconds, pure hexa (no exec)
+fn parse_time_to_sec(t: str) -> int {
+    if len(t) == 0 { return 0 }
+    let parts = t.split(":")
+    let n = len(parts)
+    let mut sec = 0
+    let mut pi = 0
+    while pi < n {
+        let mut v = 0
+        try { v = to_int(to_float(parts[pi])) } catch e {}
+        sec = sec * 60 + v
+        pi = pi + 1
+    }
+    return sec
+}
+
 // sample_proc_from_row — parse pre-fetched row: "%cpu rss vsz H:MM:SS pri nice ppid"
-// Single awk call merges all 7 field extractions into one.
+// ROI-1: pure hexa internal parsing — zero exec() calls per PID.
+// Row fields are space-separated; split + to_int replaces awk fork.
 fn sample_proc_from_row(pid: str, row: str, total_ram_mb: int) -> str {
     if len(row) == 0 { return "" }
-    // One awk: emit "cpu_x10 rss vsz time_s pri nice ppid" space-separated
-    let safe = row.replace("'", "")
-    let parsed = exec("echo '" + safe + "' | awk '{cpu=int(($1+0)*10); rss=int($2+0); vsz=int($3+0); n=split($4,a,\":\"); s=0; for(i=1;i<=n;i++) s=s*60+a[i]; printf \"%d %d %d %d %d %d %d\", cpu, rss, vsz, int(s+0), int($5+0), int($6+0), int($7+0)}'").trim()
-    let f = parsed.split(" ")
-    if len(f) < 7 { return "" }
+    // Split row on whitespace; fields: %cpu rss vsz time pri nice ppid
+    let f = row.trim().split(" ")
+    // Compact: remove empty tokens from multiple spaces
+    let mut fields: [str] = []
+    let mut fi = 0
+    while fi < len(f) {
+        let tok = f[fi].trim()
+        if len(tok) > 0 { fields = fields + [tok] }
+        fi = fi + 1
+    }
+    if len(fields) < 7 { return "" }
 
     let mut cpu_raw = 0
     let mut rss_raw = 0
@@ -91,13 +114,13 @@ fn sample_proc_from_row(pid: str, row: str, total_ram_mb: int) -> str {
     let mut pri_raw = 0
     let mut nice_raw = 0
     let mut ppid_raw = 0
-    try { cpu_raw  = to_int(to_float(f[0])) } catch e {}
-    try { rss_raw  = to_int(to_float(f[1])) } catch e {}
-    try { vsz_raw  = to_int(to_float(f[2])) } catch e {}
-    try { tim_raw  = to_int(to_float(f[3])) } catch e {}
-    try { pri_raw  = to_int(to_float(f[4])) } catch e {}
-    try { nice_raw = to_int(to_float(f[5])) } catch e {}
-    try { ppid_raw = to_int(to_float(f[6])) } catch e {}
+    try { cpu_raw  = to_int(to_float(fields[0]) * 10.0) } catch e {}
+    try { rss_raw  = to_int(to_float(fields[1])) } catch e {}
+    try { vsz_raw  = to_int(to_float(fields[2])) } catch e {}
+    tim_raw = parse_time_to_sec(fields[3])
+    try { pri_raw  = to_int(to_float(fields[4])) } catch e {}
+    try { nice_raw = to_int(to_float(fields[5])) } catch e {}
+    try { ppid_raw = to_int(to_float(fields[6])) } catch e {}
 
     // CPU: blend 순간 cpu% + 누적 cputime + rss 바닥값 → 0% 집중 해소
     // cpu_raw*256: 순간 CPU 비중 최대, tim_raw: 누적 cputime 보정,
