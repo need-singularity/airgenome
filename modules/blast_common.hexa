@@ -1,0 +1,245 @@
+// modules/blast_common.hexa — 통합 blast 서비스 (CPU+RAM+GPU 공통 로직)
+//
+// 사용: hexa blast_common.hexa <ubu|htz>
+// resource_target.jsonl에서 호스트별 설정 자동 로드.
+// slot_catalog.jsonl에서 해당 호스트 슬롯만 실행.
+// cgroup 격리 + 적응형 depth + GPU bench 자동 감지.
+
+let HOME = env("HOME")
+let AG_HOME = HOME + "/Dev/airgenome"
+let CEILING = AG_HOME + "/forge/resource_ceiling.jsonl"
+let RESULTS = AG_HOME + "/forge/task_results.jsonl"
+let DISPATCH_LOG = AG_HOME + "/forge/dispatch.log"
+let SLOT_CATALOG = HOME + "/Dev/nexus/shared/config/slot_catalog.jsonl"
+let TARGET_CFG = HOME + "/Dev/nexus/shared/config/resource_target.jsonl"
+let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
+let BLOWUP = "~/Dev/nexus/shared/blowup"
+let MODULES = BLOWUP + "/modules/"
+
+// ── helpers ──
+
+fn jstr(raw: str, key: str, fb: str) -> str {
+    let tag = "\"" + key + "\":\""
+    if raw.contains(tag) == false { return fb }
+    return raw.split(tag)[1].split("\"")[0]
+}
+
+fn jint(raw: str, key: str, fb: int) -> int {
+    let tag = "\"" + key + "\":"
+    if raw.contains(tag) == false { return fb }
+    let val_s = raw.split(tag)[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fb }
+}
+
+fn ts() -> str { return try { exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" } }
+fn shquote(s: str) -> str { return "'" + s.replace("'", "'\\''") + "'" }
+
+// ── 호스트 설정 로드 ──
+
+let mut HOST = "ubu"
+let mut SSH_HOST = "ubu"
+let mut CORES = 12
+let mut CGROUP_CPU = "180%"
+let mut CGROUP_MEM = "6G"
+let mut HAS_GPU = false
+let mut SKIP_THRESHOLD = 150
+let mut TIMEOUT = 90
+
+fn load_host_config(host: str) {
+    HOST = host
+    if host == "htz" { SSH_HOST = "hetzner" }
+    if file_exists(TARGET_CFG) {
+        let lines = read_file(TARGET_CFG).trim().split("\n")
+        let mut i = 0
+        while i < len(lines) {
+            let l = lines[i].trim()
+            i = i + 1
+            if l.contains("\"host\":\"" + host + "\"") == false { continue }
+            CORES = jint(l, "cores", CORES)
+            CGROUP_CPU = jstr(l, "cgroup_cpu", CGROUP_CPU)
+            CGROUP_MEM = jstr(l, "cgroup_mem", CGROUP_MEM)
+            let gpu = jstr(l, "gpu", "none")
+            HAS_GPU = gpu != "none"
+            break
+        }
+    }
+    if host == "htz" { SKIP_THRESHOLD = 90; TIMEOUT = 60 }
+}
+
+// ── 로그 ──
+
+fn log(msg: str) {
+    let tag = if HOST == "htz" { "BLAST-HTZ" } else { "BLAST-UBU" }
+    let line = ts() + " [" + tag + "] " + msg
+    let log_file = AG_HOME + "/forge/blast_" + HOST + ".log"
+    try { exec("echo " + shquote(line) + " >> " + shquote(log_file)) } catch e {}
+    println(line)
+}
+
+// ── 적응형 depth ──
+
+let mut _depth = 3
+
+fn update_depth() {
+    let mut last = ""
+    try { last = exec("tail -1 " + shquote(CEILING)).trim() } catch e {}
+    if len(last) < 10 { return }
+    let cpu_key = HOST + "_cpu"
+    let cpu = jint(last, cpu_key, 50)
+    if HOST == "htz" {
+        if cpu < 60 { _depth = 5 }
+        else if cpu < 80 { _depth = 3 }
+        else { _depth = 2 }
+    } else {
+        if cpu < 20 { _depth = 5 }
+        else if cpu < 50 { _depth = 3 }
+        else if cpu < 80 { _depth = 2 }
+        else { _depth = 1 }
+    }
+    log("ADAPT cpu=" + to_string(cpu) + "% depth=" + to_string(_depth))
+}
+
+// ── 슬롯 카탈로그 ──
+
+let mut _slot_cache = ""
+
+fn load_slots() {
+    if len(_slot_cache) > 10 { return }
+    try { _slot_cache = read_file(SLOT_CATALOG).trim() } catch e {}
+}
+
+fn slot_field(s: int, key: str, fb: str) -> str {
+    load_slots()
+    let prefix = "{\"slot\":" + to_string(s) + ","
+    if _slot_cache.contains(prefix) == false { return fb }
+    let line = _slot_cache.split(prefix)[1].split("\n")[0]
+    return jstr("{\"slot\":" + to_string(s) + "," + line, key, fb)
+}
+
+fn build_cmd(s: int) -> str {
+    let H = HEXA_R
+    let d = to_string(_depth)
+    let engine = slot_field(s, "engine", "blowup_core")
+    let domain = slot_field(s, "domain", "")
+    let module2 = slot_field(s, "module2", "")
+
+    let mut cmd = ""
+    if engine == "blowup_core" {
+        cmd = H + " " + BLOWUP + "/core/blowup.hexa " + domain + " " + d + " 2>&1 | tail -80"
+    } else if engine == "ouroboros" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros.hexa 2>&1 | tail -80"
+    } else if engine == "ouroboros_quantum" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros_quantum.hexa 2>&1 | tail -80"
+    } else if engine == "ouroboros_meta" {
+        cmd = H + " " + BLOWUP + "/ouroboros/ouroboros_meta.hexa 2>&1 | tail -80"
+    } else if engine == "blowup_stream_filter" {
+        cmd = H + " " + BLOWUP + "/core/blowup_stream_filter.hexa 2>&1 | tail -80"
+    } else if engine == "module" {
+        cmd = H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
+    } else if engine == "gpu_bench" {
+        cmd = "python3 ~/Dev/nexus/shared/blowup/modules/gpu_bench.py 8192 60 2>&1 | tail -5"
+    } else {
+        cmd = "echo unknown:" + engine
+    }
+
+    if len(module2) > 2 && engine != "module" && engine != "gpu_bench" {
+        cmd = cmd + " & " + H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
+    }
+    return cmd
+}
+
+// ── blast_once ──
+
+fn blast_once() {
+    // ceiling 기반 안전 체크
+    let mut load_pct = 50
+    try {
+        let last = exec("tail -1 " + shquote(CEILING)).trim()
+        if len(last) > 10 {
+            let cpu_key = HOST + "_cpu"
+            load_pct = jint(last, cpu_key, 50)
+        }
+    } catch e {}
+    if load_pct > SKIP_THRESHOLD {
+        log("SKIP cpu=" + to_string(load_pct) + "% > " + to_string(SKIP_THRESHOLD) + "%")
+        return
+    }
+
+    update_depth()
+
+    // 해당 호스트 슬롯 수집
+    let mut launch = "#!/bin/bash\n"
+    let mut n = 0
+    let mut s = 0
+    while s < 29 {
+        let host = slot_field(s, "host", "")
+        if host == HOST {
+            let name = slot_field(s, "name", "?")
+            let cmd = build_cmd(s)
+            write_file("/tmp/_blast_" + HOST + "_" + to_string(n) + ".sh", cmd + "\n")
+            launch = launch + "( cat /tmp/_blast_" + HOST + "_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config " + SSH_HOST + " 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout " + to_string(TIMEOUT) + " bash -s' > /tmp/_blast_" + HOST + "_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
+            n = n + 1
+        }
+        s = s + 1
+    }
+
+    if n == 0 { log("NOOP"); return }
+
+    launch = launch + "wait\n"
+    let mut ci = 0
+    while ci < n {
+        launch = launch + "cat /tmp/_blast_" + HOST + "_out_" + to_string(ci) + ".txt 2>/dev/null\n"
+        ci = ci + 1
+    }
+
+    write_file("/tmp/_blast_" + HOST + "_launch.sh", launch)
+    log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
+
+    // dispatch.log FIRE 이벤트
+    let fire_type = if HOST == "htz" { "HTZ_PROACTIVE_FIRE" } else { "UBU_PROACTIVE_FIRE" }
+    let epoch = try { exec("date +%s").trim() } catch e { "0" }
+    let fire_ev = "{\"type\":\"" + fire_type + "\",\"epoch\":" + epoch + ",\"n\":" + to_string(n) + ",\"depth\":" + to_string(_depth) + ",\"source\":\"blast_common\"}"
+    try { exec("echo " + shquote(fire_ev) + " >> " + shquote(DISPATCH_LOG)) } catch e {}
+
+    let mut out = ""
+    try { out = exec("bash /tmp/_blast_" + HOST + "_launch.sh 2>&1").trim() } catch e {}
+
+    // 결과 기록
+    let rts = ts()
+    let rline = "{\"id\":\"" + HOST + "_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_" + HOST + "_" + to_string(n) + "\",\"host\":\"" + HOST + "\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + "}"
+    try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
+
+    log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B")
+}
+
+// ── main ──
+
+fn main() {
+    let argv = args()
+    let mut host_arg = "ubu"
+    if len(argv) > 3 { host_arg = argv[3] }
+
+    load_host_config(host_arg)
+
+    let LOCK = HOME + "/.airgenome/blast_" + HOST + ".lock"
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    log("DAEMON START — " + HOST + " (cores=" + to_string(CORES) + " gpu=" + to_string(HAS_GPU) + ")")
+
+    while true {
+        _slot_cache = ""
+        blast_once()
+        try { exec("sleep 1") } catch e {}
+    }
+}
+
+main()
