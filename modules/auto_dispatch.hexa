@@ -31,6 +31,7 @@
 
 let VERSION = "0.2.0"
 let HOME = env("HOME")
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let DIR = HOME + "/Dev/airgenome"
 let CONFIG_PATH = DIR + "/nexus/shared/gate_config.jsonl"
 let DISPATCH_LOG = DIR + "/forge/dispatch.log"
@@ -198,7 +199,7 @@ fn fire_htz_blowup(now_s: str) -> str {
     }
     // 스택킹 방지: 기존 blowup.hexa 또는 bt_shell 실행 중이면 skip
     let probe_cmd = "pgrep -c -f 'blowup\\.hexa|bt_shell_discover' 2>/dev/null"
-    let probe = try { exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes hetzner \"" + probe_cmd + "\" 2>/dev/null").trim() } catch e { "0" }
+    let probe = try { exec(SSH_GATE + " htz '\"" + probe_cmd + "\"' 2>/dev/null").trim() } catch e { "0" }
     let mut running_n = 0
     try { running_n = to_int(to_float(probe)) } catch e {}
     if running_n > 0 {
@@ -209,7 +210,7 @@ fn fire_htz_blowup(now_s: str) -> str {
     let blowup_domain = load_cfg("offload_htz_blowup_domain", "airgenome")
     let bt_count = load_cfg("offload_htz_bt_count", load_cfg("offload_htz_blowup_depth", "3"))
     let remote_cmd = bt_shell + " " + blowup_domain + " " + bt_count + " >>/tmp/ag_htz_blowup.out 2>&1"
-    let fire_cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes hetzner '" + remote_cmd + "' >/tmp/ag_htz_fire.out 2>&1 & echo $!"
+    let fire_cmd = SSH_GATE + " htz '" + remote_cmd + "' >/tmp/ag_htz_fire.out 2>&1 & echo $!"
     let mut pid = "0"
     try { pid = exec(fire_cmd).trim() } catch e { return "fire_err" }
     return "fired(pid=" + pid + ")"
@@ -246,7 +247,7 @@ fn fire_ubu_blowup(now_s: str) -> str {
     // 스택킹 방지: 기존 blowup.hexa 프로세스 또는 bt_shell 락이 있으면 skip
     let ubu_alias_probe = load_cfg("ssh_alias", "ubu")
     let probe_cmd = "pgrep -c -f 'blowup\\.hexa|bt_shell_discover' 2>/dev/null"
-    let probe = try { exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + ubu_alias_probe + " \"" + probe_cmd + "\" 2>/dev/null").trim() } catch e { "0" }
+    let probe = try { exec(SSH_GATE + " " + ubu_alias_probe + " '\"" + probe_cmd + "\"' 2>/dev/null").trim() } catch e { "0" }
     let mut running_n = 0
     try { running_n = to_int(to_float(probe)) } catch e {}
     if running_n > 0 {
@@ -260,7 +261,7 @@ fn fire_ubu_blowup(now_s: str) -> str {
     // bt_shell_discover.sh: 순수 shell/awk, prlimit/nice 불필요. <500ms 런타임.
     // SSH 원격 실행. 결과는 /tmp/ag_ubu_blowup.out 에 append 형태로 기록.
     let remote_cmd = bt_shell + " " + blowup_domain + " " + bt_count + " >>/tmp/ag_ubu_blowup.out 2>&1"
-    let ssh_cmd = "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + ubu_alias + " '" + remote_cmd + "' >/tmp/ag_ubu_fire.out 2>&1 & echo $!"
+    let ssh_cmd = SSH_GATE + " " + ubu_alias + " '" + remote_cmd + "' >/tmp/ag_ubu_fire.out 2>&1 & echo $!"
     let mut pid = "0"
     try { pid = exec(ssh_cmd).trim() } catch e { return "fire_err" }
     return "fired(pid=" + pid + ")"
@@ -413,7 +414,7 @@ fn check_once(state_path: str) -> str {
         // ubu_first: gate daemon 미응답이어도 SSH 직접 접속 시도
         if ubu_first == "true" {
             let ubu_ssh = load_cfg("ssh_alias", "ubu")
-            let ssh_ok = try { exec("ssh -o ConnectTimeout=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + ubu_ssh + " 'echo ok' 2>/dev/null").trim() } catch e { "" }
+            let ssh_ok = try { exec(SSH_GATE + " " + ubu_ssh + " 'echo ok' 2>/dev/null").trim() } catch e { "" }
             if ssh_ok == "ok" {
                 // SSH OK — gate daemon bypass, ubu fire 직접 진행
                 let ubu_fire = fire_ubu_blowup(epoch)
@@ -450,7 +451,7 @@ fn check_once(state_path: str) -> str {
 
         // infra_state 없거나 stale → SSH probe fallback (정정: /proc/stat NR==1 올바른 수식)
         if htz_status == "unknown" {
-            let probe = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes hetzner \"awk 'NR==1{idle=\\$5; total=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8+\\$9; if(total>0) printf \\\"%d\\\", (total-idle)*100/total; else print 100}' /proc/stat 2>/dev/null || echo 100\" 2>/dev/null").trim()
+            let probe = exec(SSH_GATE + " htz \"awk 'NR==1{idle=\\$5; total=\\$2+\\$3+\\$4+\\$5+\\$6+\\$7+\\$8+\\$9; if(total>0) printf \\\"%d\\\", (total-idle)*100/total; else print 100}' /proc/stat 2>/dev/null || echo 100\" 2>/dev/null").trim()
             try {
                 htz_cpu = to_int(to_float(probe))
                 if htz_cpu >= 0 && htz_cpu <= 100 { htz_status = "active" }

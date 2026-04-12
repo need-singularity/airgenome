@@ -11,6 +11,7 @@
 //       hexa resource_ceiling.hexa monitor   (launchd 호환 ONCE)
 
 let HOME = env("HOME")
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
 let DISPATCH_PATH = HOME + "/Dev/nexus/shared/dispatch_state.json"
 let LOG_PATH = env("HOME") + "/Dev/airgenome/forge/resource_ceiling.jsonl"
@@ -115,11 +116,11 @@ fn read_host(raw: str, name: str) -> [str] {
 fn trigger_ubu_fill() {
     // ubu auto_fill systemd 확인 + 시작
     try {
-        let status = exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + UBU_ALIAS + " 'systemctl is-active airgenome-fill 2>/dev/null'").trim()
+        let status = exec(SSH_GATE + " " + UBU_ALIAS + " 'systemctl is-active airgenome-fill 2>/dev/null'").trim()
         if status != "active" {
             println("  [CEIL] ubu auto_fill inactive → restart")
             try {
-                exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + UBU_ALIAS + " 'sudo systemctl start airgenome-fill 2>&1'")
+                exec(SSH_GATE + " " + UBU_ALIAS + " 'sudo systemctl start airgenome-fill 2>&1'")
                 println("  [CEIL] ubu auto_fill restarted ✓")
             } catch e2 {
                 println("  [CEIL] ubu auto_fill restart FAIL: " + to_string(e2))
@@ -138,7 +139,7 @@ fn trigger_htz_fill(load_s: str) {
         println("  [CEIL] htz load " + load_s + " < 16 → fill 여지 있음")
         // htz 에서 blowup/gap_finder 1개 발사
         try {
-            exec("ssh -o ConnectTimeout=" + SSH_TIMEOUT + " " + HTZ_ALIAS + " 'cd ~/Dev/nexus && nohup /root/Dev/nexus/shared/bin/hexa shared/blowup/core/blowup.hexa math 3 --fast > /dev/null 2>&1 &'")
+            exec(SSH_GATE + " " + HTZ_ALIAS + " 'cd ~/Dev/nexus && nohup /root/Dev/nexus/shared/bin/hexa shared/blowup/core/blowup.hexa math 3 --fast > /dev/null 2>&1 &'")
             println("  [CEIL] htz blowup dispatched ✓")
         } catch e {
             println("  [CEIL] htz dispatch fail: " + to_string(e))

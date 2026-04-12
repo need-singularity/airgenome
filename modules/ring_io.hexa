@@ -20,7 +20,8 @@
 //   hexa run modules/ring_io.hexa init
 //   hexa run modules/ring_io.hexa stats --local /tmp/test.ring
 
-let VERSION = "0.1.0"
+let VERSION = "0.1.1"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 fn load_env_or(key: str, fallback: str) -> str {
     let v = exec("printenv " + key + " 2>/dev/null || true").trim()
@@ -53,9 +54,9 @@ let DEFAULT_PATH = load_env_or("AG3_RING", load_cfg("ubu_ring_path", ""))
 // ── EXEC: 로컬/원격 명령 실행 ────────────────────────────────────────────
 fn run_at(remote: str, cmd: str) -> str {
     if len(remote) == 0 { return exec(cmd) }
-    // ssh 경유. 인용 안전을 위해 single-quote wrap.
+    // ssh_gate 경유. 인용 안전을 위해 single-quote wrap.
     let esc = cmd.replace("'", "'\\''")
-    return exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + remote + " '" + esc + "'")
+    return exec(SSH_GATE + " " + remote + " '" + esc + "'")
 }
 
 fn file_exists_at(remote: str, path: str) -> bool {

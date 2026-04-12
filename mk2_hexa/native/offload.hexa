@@ -7,6 +7,7 @@
 // Commands: status, exec, bench, genome-remote, sync, help
 
 let VERSION = "1.1.0"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let LOG_FILE = "offload.log"
 
@@ -34,18 +35,16 @@ let UBU_HOST = load_cfg("remote_host", "")
 //  SSH helpers
 // ═══════════════════════════════════════════════════════════════════════
 
-let SSH_OPTS = "-o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes"
-
 fn ssh_cmd(cmd: str) -> str {
     write_file("/tmp/_ag_ssh.sh", cmd)
-    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>&1")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_ag_ssh.sh' 2>&1")
     if to_string(result).contains("exec error") { return to_string(result) }
     return result.trim()
 }
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ag_ssh.sh", cmd)
-    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ag_ssh.sh 2>/dev/null")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_ag_ssh.sh' 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }
@@ -259,10 +258,10 @@ fn sync_results() -> str {
     ssh_quiet("mkdir -p " + REMOTE_DIR)
 
     println("  [sync] MacBook → Ubuntu: genomes.log")
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 genomes.log " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/genomes.log' < genomes.log 2>/dev/null")
 
     println("  [sync] Ubuntu → MacBook: results")
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + REMOTE + ":" + REMOTE_DIR + "/*.log . 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat " + REMOTE_DIR + "/*.log' > /tmp/_offload_results.log 2>/dev/null")
 
     println("  [sync] done")
     return "ok"
@@ -285,12 +284,12 @@ fn remote_hexa(script_args: str) -> str {
     let parts = script_args.split(" ")
     let script = parts[0]
     println("  [offload] syncing " + script + " → Ubuntu")
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/" + script + "' < " + script + " 2>/dev/null")
 
     // Sync hexa.toml and dependencies
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
-    exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 $HOME/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/hexa.toml' < hexa.toml 2>/dev/null")
+    exec(SSH_GATE + " ubu 'mkdir -p " + REMOTE_DIR + "/nexus/shared' 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/nexus/shared/airgenome_gates.jsonl' < $HOME/Dev/nexus/shared/airgenome_gates.jsonl 2>/dev/null")
 
     // Extract just the filename
     let fname = script
@@ -330,8 +329,8 @@ fn remote_python(script_args: str) -> str {
 
     // Sync script
     println("  [offload] syncing " + script + " → Ubuntu")
-    exec("ssh " + SSH_OPTS + " " + REMOTE + " 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
-    exec("scp -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'mkdir -p " + REMOTE_DIR + "' 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/" + script + "' < " + script + " 2>/dev/null")
 
     let fname = script
     if script.contains("/") {

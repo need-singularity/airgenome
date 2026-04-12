@@ -58,3 +58,6 @@
 {"key": "offload_ubu_idle_gpu_threshold", "value": "100", "desc": "ubu gpu threshold — pgrep 의존, 무제한"}
 {"key": "offload_htz_blowup_depth", "value": "2", "desc": "htz blowup depth: 128GB RAM + 32T 이라 depth=2 감내 (depth=3 은 83GB 괴물). 중간 깊이, 2-3min 지속"}
 {"key": "offload_ubu_blowup_depth", "value": "1", "desc": "ubu blowup depth: 30GB RAM 제한으로 depth=1 강제. 가볍고 빨리 (30s). 자주 발사"}
+{"key": "ssh_gate_max_ubu", "value": "4", "desc": "ubu 동시 SSH 접속 한계 (ssh_gate 세마포어)"}
+{"key": "ssh_gate_max_htz", "value": "4", "desc": "htz 동시 SSH 접속 한계 (ssh_gate 세마포어)"}
+{"key": "ssh_gate_timeout", "value": "8", "desc": "ssh_gate ConnectTimeout (초)"}

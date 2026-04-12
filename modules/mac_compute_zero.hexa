@@ -29,9 +29,9 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 let SCRIPT  = "mac_compute_zero"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let LOG     = env("HOME") + "/Dev/airgenome/forge/mac_compute_zero.log"
 let LOCK    = env("HOME") + "/.airgenome/mac_compute_zero.lock"
-let SSH_OPT = "-o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=1 -o BatchMode=yes"
 
 // ─── Whitelist (orchestration/UI/monitor) ────────────────────────────────
 // wrapper MAC_ONLY 리스트와 1:1 대응 (drift 방지)
@@ -132,7 +132,7 @@ fn log(msg: str) {
 
 fn check_remote(host: str) -> bool {
     let r = try {
-        exec("ssh " + SSH_OPT + " " + host + " echo ag6_ok 2>&1").trim()
+        exec(SSH_GATE + " " + host + " 'echo ag6_ok' 2>&1").trim()
     } catch e { "" }
     if r.contains("ag6_ok") { return true }
     return false
@@ -141,7 +141,6 @@ fn check_remote(host: str) -> bool {
 fn any_remote_alive() -> bool {
     if check_remote("ubu") { return true }
     if check_remote("htz") { return true }
-    if check_remote("hetzner") { return true }
     return false
 }
 

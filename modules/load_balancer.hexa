@@ -1,3 +1,4 @@
+// ⛔ CORE — L0 불변식 (로드밸런서 코어. 수정 전 유저 승인 필수)
 // airgenome/modules/load_balancer.hexa — 실시간 자원 로드밸런서 (AG7, L0 골화)
 //
 // ═══════════════════════════════════════════════════════════════════════
@@ -147,6 +148,8 @@ fn score(task: str, cpu: int, ram: int, gpu: int, lan: bool) -> int {
     // htz 는 GPU 없으므로 gpu_heavy/realtime_gpu 에 선택되면 안 됨.
     if task == "gpu_heavy" { if gpu == 0 { return -9999 } }
     if task == "realtime_gpu" { if gpu == 0 { return -9999 } }
+    // 골화 2026-04-12: RAM < 3% → 호스트 포화, 대부분 task 탈락 (OOM 위험)
+    if ram < 3 { if task != "io_heavy" { return -8888 } }
     let mut w_cpu = 1
     let mut w_ram = 1
     let mut w_gpu = 1
@@ -296,13 +299,21 @@ fn main() {
         log("ERROR write " + DISPATCH_STATE + ": " + to_string(e))
     }
 
+    // 포화 경고
+    let mut warnings = ""
+    if ubu_ram < 3 { warnings = warnings + " ubu_RAM_SATURATED" }
+    if htz_ram < 3 { warnings = warnings + " htz_RAM_SATURATED" }
+    if ubu_cpu < 5 { warnings = warnings + " ubu_CPU_SATURATED" }
+    if htz_cpu < 5 { warnings = warnings + " htz_CPU_SATURATED" }
+
     // heartbeat (1 line / 30s)
     log("TICK gpu=" + gpu_parts[0] + "(" + gpu_parts[1] + ")" +
         " cpu=" + cpu_parts[0] + "(" + cpu_parts[1] + ")" +
         " rt=" + rt_parts[0] + "(" + rt_parts[1] + ")" +
         " io=" + io_parts[0] + "(" + io_parts[1] + ")" +
         " | ubu[c" + to_string(ubu_cpu) + " r" + to_string(ubu_ram) + " g" + to_string(ubu_gpu) + "]" +
-        " htz[c" + to_string(htz_cpu) + " r" + to_string(htz_ram) + "]")
+        " htz[c" + to_string(htz_cpu) + " r" + to_string(htz_ram) + "]" +
+        (if len(warnings) > 0 { " ⚠" + warnings } else { "" }))
 
     try { exec("rm -f " + LOCK) } catch e {}
 }

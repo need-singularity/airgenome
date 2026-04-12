@@ -10,6 +10,7 @@
 // Prime directive: observe only, never kill
 
 let VERSION = "1.0.0"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let OFFLOAD_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_offload.jsonl"
 let LOG_FILE = env("HOME") + "/Dev/airgenome/forge/dispatch.log"
@@ -129,19 +130,19 @@ fn is_mac_only(name: str) -> bool {
 
 fn ssh_cmd(cmd: str) -> str {
     write_file("/tmp/_dispatch_ssh.sh", cmd)
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>&1")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_dispatch_ssh.sh' 2>&1")
     return result.trim()
 }
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_dispatch_ssh.sh", cmd)
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_dispatch_ssh.sh 2>/dev/null")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_dispatch_ssh.sh' 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }
 
 fn ubu_reachable() -> bool {
-    let ping = exec("ssh -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " echo ok 2>/dev/null").trim()
+    let ping = exec(SSH_GATE + " ubu 'echo ok' 2>/dev/null").trim()
     return ping == "ok"
 }
 
@@ -190,16 +191,16 @@ fn sync_to_ubu(script: str) -> bool {
     ssh_quiet("mkdir -p " + REMOTE_DIR + " " + REMOTE_DIR + "/nexus/shared " + REMOTE_DIR + "/mk2_hexa/native " + REMOTE_DIR + "/modules " + REMOTE_DIR + "/src")
 
     // Sync the script
-    let scp_result = exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>&1").trim()
+    let scp_result = exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/" + script + "' < " + script + " 2>&1").trim()
 
     // Sync hexa.toml
     let home = env("HOME")
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + home + "/Dev/airgenome/hexa.toml " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/hexa.toml' < " + home + "/Dev/airgenome/hexa.toml 2>/dev/null")
 
     // Sync shared config
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + home + "/Dev/nexus/shared/airgenome_gates.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + home + "/Dev/airgenome/nexus/shared/gate_config.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + home + "/Dev/airgenome/nexus/shared/gate_offload.jsonl " + REMOTE + ":" + REMOTE_DIR + "/nexus/shared/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/nexus/shared/airgenome_gates.jsonl' < " + home + "/Dev/nexus/shared/airgenome_gates.jsonl 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/nexus/shared/gate_config.jsonl' < " + home + "/Dev/airgenome/nexus/shared/gate_config.jsonl 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/nexus/shared/gate_offload.jsonl' < " + home + "/Dev/airgenome/nexus/shared/gate_offload.jsonl 2>/dev/null")
 
     return scp_result.contains("error") == false
 }
@@ -286,7 +287,7 @@ fn dispatch_gpu(script_args: str) -> str {
 
     // Sync script
     ssh_quiet("mkdir -p " + REMOTE_DIR)
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 -q " + script + " " + REMOTE + ":" + REMOTE_DIR + "/ 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/" + script + "' < " + script + " 2>/dev/null")
 
     let fname = script
     if script.contains("/") {
@@ -356,7 +357,7 @@ fn genome_roll_baseline() -> void {
 
     // Mirror baseline to Ubuntu so per_process_diff finds it there.
     if ubu_reachable() {
-        exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + abs_base + " " + REMOTE + ":" + REMOTE_DIR + "/" + baseline_path + " 2>/dev/null")
+        exec(SSH_GATE + " ubu 'cat > " + REMOTE_DIR + "/" + baseline_path + "' < " + abs_base + " 2>/dev/null")
     }
 
     let ts = exec("date +%s").trim()
@@ -423,10 +424,10 @@ fn genome_fanout() -> str {
     let out_diff = load_cfg("per_process_diff_out", "forge/per_process_diff.jsonl")
     let out_anom = load_cfg("per_process_anomaly_out", "forge/per_process_anomaly.jsonl")
     let out_src  = load_cfg("per_source_genome_out",  "forge/per_source_genome.jsonl")
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_diff + " " + env("HOME") + "/Dev/airgenome/" + out_diff + " 2>/dev/null")
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_anom + " " + env("HOME") + "/Dev/airgenome/" + out_anom + " 2>/dev/null")
-    // per_source_genome appends — merge by scp + cat.
-    exec("scp -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -q " + REMOTE + ":" + REMOTE_DIR + "/" + out_src + " /tmp/_genome_src_remote.jsonl 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat " + REMOTE_DIR + "/" + out_diff + "' > " + env("HOME") + "/Dev/airgenome/" + out_diff + " 2>/dev/null")
+    exec(SSH_GATE + " ubu 'cat " + REMOTE_DIR + "/" + out_anom + "' > " + env("HOME") + "/Dev/airgenome/" + out_anom + " 2>/dev/null")
+    // per_source_genome appends — merge by ssh_gate cat.
+    exec(SSH_GATE + " ubu 'cat " + REMOTE_DIR + "/" + out_src + "' > /tmp/_genome_src_remote.jsonl 2>/dev/null")
     exec("cat /tmp/_genome_src_remote.jsonl >> " + env("HOME") + "/Dev/airgenome/" + out_src + " 2>/dev/null")
 
     append_file(LOG_FILE, ts_start + "\tgenome\tfanout\tubu\t" + to_string(elapsed) + "s\n")

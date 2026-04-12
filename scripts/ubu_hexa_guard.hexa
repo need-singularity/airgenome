@@ -11,6 +11,7 @@
 //   5. 30분 내 OOM-kill 임계 초과 → cooldown (fill/launcher-cap disable)
 //   6. 모든 조치는 멱등. cooldown_flag 로 재발화 노이즈 차단.
 
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let HOST = "ubu"
 let SAMPLER_MAX = 32
 let LOAD_MAX = 24
@@ -62,7 +63,7 @@ fn probe_remote() -> str {
                 "echo OOM_30M=$OOM_30M; echo FILL=${FILL:-unknown}; echo CAP=${CAP:-unknown}; " +
                 "echo CAP_TIMER=${CAP_TIMER:-unknown}"
     return try {
-        exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote(probe) + " 2>/dev/null")
+        exec(SSH_GATE + " ubu " + shquote(probe) + " 2>/dev/null")
     } catch e { "" }
 }
 
@@ -99,7 +100,7 @@ fn execute_actions(actions: list, oom_active: int) {
 
     if len(remote) == 0 { return }
     let result = try {
-        exec("ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " " + shquote(remote) + " 2>&1")
+        exec(SSH_GATE + " ubu " + shquote(remote) + " 2>&1")
     } catch e { "" }
     let rlines = result.split("\n")
     let j = 0
