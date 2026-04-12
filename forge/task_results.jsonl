@@ -122,3 +122,7 @@
 {"id":"ubu_2026-04-12T13:14:15Z","ts":"2026-04-12T13:14:15Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
 {"id":"htz_2026-04-12T13:14:19Z","ts":"2026-04-12T13:14:19Z","task":"blast_htz_8","host":"htz","status":"done","bytes":42680,"depth":3}
 {"id":"ubu_2026-04-12T13:17:59Z","ts":"2026-04-12T13:17:59Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":2}
+{"id":"htz_2026-04-12T13:20:15Z","ts":"2026-04-12T13:20:15Z","task":"blast_htz_8","host":"htz","status":"done","bytes":40692,"depth":5}
+{"id":"ubu_2026-04-12T13:21:54Z","ts":"2026-04-12T13:21:54Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"ubu_2026-04-12T13:23:52Z","ts":"2026-04-12T13:23:52Z","task":"blast_ubu_8","host":"ubu","status":"done","bytes":2960,"depth":3}
+{"id":"htz_2026-04-12T13:24:37Z","ts":"2026-04-12T13:24:37Z","task":"blast_htz_8","host":"htz","status":"done","bytes":40766,"depth":5}
