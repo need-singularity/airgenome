@@ -52,15 +52,13 @@ esac
 
 ORIG_DIR="$(pwd)"
 AIRGENOME=~/Dev/airgenome
-# HEXA resolver — shared/bin/hexa 우선 (외부 의존 없음, R5 SSOT)
-HEXA=""
-for _p in \
-    "$AIRGENOME/nexus/shared/bin/hexa" \
-    "$HOME/.hx/bin/hexa" ; do
-    if [ -x "$_p" ]; then HEXA="$_p"; break; fi
-done
-if [ -z "$HEXA" ]; then
-    echo "ERROR(cl): hexa 바이너리 없음. shared/bin/hexa 또는 ~/.hx/bin/hexa 필요" >&2
+# HEXA resolver — cl.hexa 전용으로 vendored hexa.real 직접 사용
+# (골화 2026-04-13): shared/bin/hexa 는 hexa-lang 신규 stage1 dispatcher 로 교체되어
+# run 서브커맨드가 argv 미전달 → cl.hexa 호환 불가. 구 Rust 인터프리터 번들된
+# hexa.real (args() 정상 동작) 만 사용하여 외부 변동 차단.
+HEXA="$AIRGENOME/nexus/shared/bin/hexa.real"
+if [ ! -x "$HEXA" ]; then
+    echo "ERROR(cl): vendored hexa.real 누락 — $HEXA" >&2
     exit 127
 fi
 ACCOUNTS_FILE=~/.airgenome/accounts.json
