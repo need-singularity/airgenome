@@ -28,11 +28,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/block-forbidden-ext.hexa"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/block-forbidden-ext.hexa",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/absolute-rules-loader.hexa"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/absolute-rules-loader.hexa",
+            "timeout": 5
           }
         ]
       },
@@ -41,7 +43,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa guard"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa guard",
+            "timeout": 5
           }
         ]
       }
@@ -52,11 +55,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-bash.hexa"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-bash.hexa",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa",
+            "timeout": 10
           },
           {
             "type": "command",
@@ -70,7 +75,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-edit.hexa"
+            "command": "hexa ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-edit.hexa",
+            "timeout": 10
           },
           {
             "type": "command",
