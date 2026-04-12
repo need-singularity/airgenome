@@ -946,3 +946,5 @@
 {"ts":"2026-04-12T13:50:38Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":69,"total":77,"gap":23}
 {"ts":"2026-04-12T13:51:09Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":82,"total":86,"gap":14}
 {"ts":"2026-04-12T13:51:39Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":82,"total":86,"gap":14}
+{"ts":"2026-04-12T13:52:10Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":82,"total":86,"gap":14}
+{"ts":"2026-04-12T13:52:37Z","ubu_cpu":100,"ubu_gpu":0,"htz_cpu":68,"total":76,"gap":24}
