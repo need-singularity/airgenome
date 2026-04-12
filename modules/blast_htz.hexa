@@ -121,7 +121,7 @@ fn main() {
     // ★ 안전 체크: 발사 전 load 확인 (SSH 실패 = SKIP)
     let mut load_pct = 999
     try {
-        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config hetzner 'cat /proc/loadavg' 2>/dev/null").trim()
+        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config hetzner 'cat /proc/loadavg' 2>&1 | head -1").trim()
         if len(cur_load) > 2 {
             let load_f = cur_load.split(" ")[0]
             load_pct = to_int(to_string(to_float(load_f) * 100.0 / 32.0))

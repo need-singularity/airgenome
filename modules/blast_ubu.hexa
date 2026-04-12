@@ -128,17 +128,16 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
-    // ★ 안전 체크: 발사 전 load 확인 (SSH 실패 = SKIP)
-    let mut load_pct = 999  // default: SSH 실패 시 과부하로 간주
+    // ★ 안전 체크: resource_ceiling.jsonl에서 최신 ubu_cpu 읽기
+    let mut load_pct = 50  // default: ceiling 못 읽으면 진행
     try {
-        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config ubu 'cat /proc/loadavg' 2>&1 | head -1").trim()
-        if len(cur_load) > 2 {
-            let load_f = cur_load.split(" ")[0]
-            load_pct = to_int(to_string(to_float(load_f) * 100.0 / 12.0))
+        let last = exec("tail -1 " + shquote(CEILING)).trim()
+        if len(last) > 10 {
+            load_pct = jint(last, "ubu_cpu", 50)
         }
     } catch e {}
     if load_pct > 80 {
-        log("SKIP load=" + to_string(load_pct) + "% > 80% — 과부하 방지")
+        log("SKIP cpu=" + to_string(load_pct) + "% > 80% — 과부하 방지")
         try { exec("rm -f " + shquote(LOCK)) } catch e {}
         return
     }
