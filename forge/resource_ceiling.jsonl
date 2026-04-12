@@ -702,3 +702,5 @@
 {"ts":"2026-04-12T11:45:42Z","ubu_cpu":8,"ubu_gpu":0,"htz_cpu":69,"total":52,"gap":48}
 {"ts":"2026-04-12T11:46:13Z","ubu_cpu":19,"ubu_gpu":0,"htz_cpu":67,"total":53,"gap":47}
 {"ts":"2026-04-12T11:46:44Z","ubu_cpu":19,"ubu_gpu":0,"htz_cpu":67,"total":53,"gap":47}
+{"ts":"2026-04-12T11:47:14Z","ubu_cpu":9,"ubu_gpu":0,"htz_cpu":63,"total":48,"gap":52}
+{"ts":"2026-04-12T11:47:46Z","ubu_cpu":9,"ubu_gpu":0,"htz_cpu":63,"total":48,"gap":52}
