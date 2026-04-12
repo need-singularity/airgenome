@@ -53,6 +53,10 @@ let WHITELIST = [
     "growth_bus",
     "genome_harvest",
     "genome_pack",
+    "per_process_sig",
+    "per_process_anomaly",
+    "per_source_genome",
+    "per_source_sigdiff",
     "session_snapshot",
     "session_resume",
     "usage.hexa",
@@ -76,13 +80,38 @@ let WHITELIST = [
 ]
 
 // ─── Blacklist (heavy compute 즉시 차단) ─────────────────────────────────
+// 2026-04-12 refinement: "mk2_hexa/native" 단독 매칭은 over-broad —
+//   T7/T12/T13 분석 모듈(per_process_sig, per_source_genome, per_source_sigdiff)
+//   + ssh dispatch chain 까지 무차별 죽임. 실제 mk2_hexa/native 디렉토리에는
+//   blowup/seed 파일 0건. 구체적 prefix 두 개로 교체 — defense-in-depth 유지
+//   (미래에 mk2_hexa/native/blowup_*.hexa 추가 시 자동 차단).
 let BLACKLIST = [
     "blowup.hexa",
-    "mk2_hexa/native",
+    "mk2_hexa/native/blowup",
+    "mk2_hexa/native/seed",
     "shared/blowup",
     "blowup_engine",
     "blowup_seed",
     "seed_engine.hexa"
+]
+
+// ─── Global Blacklist (언어 무관, heavy build 툴) ────────────────────────
+// 2026-04-12 추가: next build --webpack (RSS 1.9GB, CPU 117%) 가
+//   CoreGraphics 글리프 해제 경로에서 힙 손상 유발 → Terminal.app SIGABRT.
+// hexa 필터 밖에 있는 Node/Rust/Bundler 빌드도 탐지해야 AG6 실효.
+// 2026-04-12 사용자 "fix" 지시로 LOG ONLY → ENFORCE 전환 (TERM 3s → KILL).
+let BLACKLIST_GLOBAL = [
+    " next build",
+    "/next build",
+    "webpack --mode production",
+    "webpack --mode=production",
+    " vite build",
+    "/vite build",
+    "cargo build --release",
+    "turbo run build",
+    " nx build ",
+    "rollup -c",
+    "rollup --config"
 ]
 
 // ─── 유틸 ────────────────────────────────────────────────────────────────
@@ -139,6 +168,15 @@ fn is_blacklisted(line: str) -> bool {
     return false
 }
 
+fn is_blacklisted_global(line: str) -> bool {
+    let i = 0
+    while i < len(BLACKLIST_GLOBAL) {
+        if line.contains(BLACKLIST_GLOBAL[i]) { return true }
+        i = i + 1
+    }
+    return false
+}
+
 fn list_violators() -> list {
     // macOS BSD pgrep 은 -a (cmdline 표시) 미지원 → ps 사용
     let raw = try {
@@ -167,7 +205,7 @@ fn list_violators() -> list {
         if line.contains("mac_compute_zero") { i = i + 1; continue }
         // Blacklist 우선 — 경로 무관 (nexus/shared/blowup 등도 잡음, defense-in-depth)
         if is_blacklisted(line) {
-            violators.push(line)
+            violators = violators + [line]
             i = i + 1; continue
         }
         // 경로 필터: /Dev/airgenome/ 바깥 hexa 프로세스는 airgenome 관할 외 → skip
@@ -180,6 +218,72 @@ fn list_violators() -> list {
         i = i + 1
     }
     return violators
+}
+
+// ─── 2b. Global violators (언어 무관, heavy build 툴) ───────────────────
+
+fn list_global_warns() -> list {
+    // hexa 필터 없이 전체 프로세스 대상으로 BLACKLIST_GLOBAL 매칭
+    let raw = try {
+        exec("ps -axo pid=,command= 2>/dev/null")
+    } catch e { "" }
+    let lines = raw.split("\n")
+    let mut warns = []
+    let i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if len(line) == 0 { i = i + 1; continue }
+        // false positive 방지: 자기 자신 / IDE / 세션 제외
+        if line.contains("mac_compute_zero") { i = i + 1; continue }
+        if line.contains(".claude") { i = i + 1; continue }
+        if line.contains("Cursor") { i = i + 1; continue }
+        if line.contains("Code Helper") { i = i + 1; continue }
+        if line.contains("VSCode") { i = i + 1; continue }
+        if is_blacklisted_global(line) {
+            warns = warns + [line]
+        }
+        i = i + 1
+    }
+    return warns
+}
+
+// ─── 2c. Terminal.app 8h+ 가동 경고 ─────────────────────────────────────
+//
+// 배경 (2026-04-12): Terminal.app 이 8h 35m 누적 + 무거운 로컬 빌드 동시
+// 진행 중, CoreGraphics 글리프 표시 리스트 해제 (`CG::DisplayListEntryGlyphs
+// ::~DisplayListEntryGlyphs`) 시점에 libsystem_malloc tiny-zone free list
+// checksum 손상 (`free_list_checksum_botch`) → SIGABRT. 부하가 슬로우다운
+// 대신 크래시로 발현되는 임계가 8h 부근으로 관측됨. kill 아님 — 경고 only.
+
+fn check_terminal_age() {
+    // macOS pgrep -f Terminal.app 이 매칭 실패 → ps | grep 로 PID 추출
+    let pids_raw = try {
+        exec("ps -axo pid=,command= 2>/dev/null | grep -F '/Terminal.app/Contents/MacOS/Terminal' | grep -v grep | awk '{print $1}'").trim()
+    } catch e { "" }
+    if len(pids_raw) == 0 { return }
+    let pids = pids_raw.split("\n")
+    let state_path = env("HOME") + "/.airgenome/terminal_age_last.txt"
+    let i = 0
+    while i < len(pids) {
+        let pid = pids[i].trim()
+        if len(pid) == 0 { i = i + 1; continue }
+        // etime → hours (awk 파싱: MM:SS / HH:MM:SS / d-HH:MM:SS)
+        let hrs = try {
+            exec("ps -o etime= -p " + pid + " 2>/dev/null | awk '{ n=split($1, a, \"[-:]\"); if (n==4) s=a[1]*86400+a[2]*3600+a[3]*60+a[4]; else if (n==3) s=a[1]*3600+a[2]*60+a[3]; else if (n==2) s=a[1]*60+a[2]; else s=0; print int(s/3600) }'").trim()
+        } catch e { "0" }
+        if len(hrs) == 0 { i = i + 1; continue }
+        let over = try {
+            exec("[ " + hrs + " -ge 8 ] 2>/dev/null && echo Y || echo N").trim()
+        } catch e { "N" }
+        if over != "Y" { i = i + 1; continue }
+        // 시간당 1회 rate-limit (pid:hours 키)
+        let key = pid + ":" + hrs
+        let prev = try { exec("cat " + state_path + " 2>/dev/null").trim() } catch e { "" }
+        if prev == key { i = i + 1; continue }
+        log("TERMINAL_AGE pid=" + pid + " hours=" + hrs + " — 8h+ + 부하 중첩 시 CoreGraphics 힙 손상 SIGABRT 위험 (전례 2026-04-12). 재기동 권장.")
+        try { exec("echo " + shquote(key) + " > " + state_path) } catch e {}
+        i = i + 1
+    }
 }
 
 // ─── 3. Enforce: TERM 3s → KILL ─────────────────────────────────────────
@@ -241,10 +345,22 @@ fn main() {
 
     let alive = any_remote_alive()
     let v = list_violators()
+    let gw = list_global_warns()
 
     // heartbeat — 1 line / 30s (로그 rotate 관리 대상)
     let alive_s = if alive { "Y" } else { "N" }
-    log("TICK remote_alive=" + alive_s + " violators=" + to_string(len(v)))
+    log("TICK remote_alive=" + alive_s + " violators=" + to_string(len(v)) + " global_warns=" + to_string(len(gw)))
+
+    // 전역 BLACKLIST 매칭 — ENFORCE (언어 무관 heavy build → TERM 3s → KILL)
+    if len(gw) > 0 {
+        let k = 0
+        while k < len(gw) {
+            log("GLOBAL_VIOLATION " + gw[k].substring(0, 150))
+            k = k + 1
+        }
+        enforce(gw)
+        log("DONE global_killed=" + to_string(len(gw)))
+    }
 
     if alive {
         if len(v) > 0 {
@@ -258,6 +374,9 @@ fn main() {
             enforce(v)
         }
     }
+
+    // Terminal.app 8h+ 가동 경고 (log only)
+    check_terminal_age()
 
     try { exec("rm -f " + LOCK) } catch e {}
 }
