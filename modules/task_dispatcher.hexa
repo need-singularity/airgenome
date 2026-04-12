@@ -141,36 +141,41 @@ fn ssh_alias(host: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  16-slot HEAVY 카탈로그 — 짝수=htz(32T), 홀수=ubu(12T+GPU)
-//  자원을 실제로 쓰는 작업만: blowup, cargo, ouroboros, bench
-//
-//  htz: cargo test/build/bench/clippy + blowup core + engine
-//  ubu: blowup core + ouroboros + engine + cargo test
+//  16-slot HEAVY 카탈로그 — JSONL 동적 로드 (R2 준수)
+//  config: nexus/shared/config/slot_catalog.jsonl
+//  짝수=htz(32T), 홀수=ubu(12T+GPU)
 // ═══════════════════════════════════════════════════════════════════════
 
 let CATALOG_SIZE = 16
+let SLOT_CATALOG = HOME + "/Dev/nexus/shared/config/slot_catalog.jsonl"
+
+// 슬롯 캐시 (파일 1회 읽고 메모리에 보관)
+let mut _slot_cache = ""
+fn _load_slots() {
+    if len(_slot_cache) > 10 { return }
+    try { _slot_cache = read_file(SLOT_CATALOG).trim() } catch e {}
+}
+
+fn _slot_field(s: int, key: str, fb: str) -> str {
+    _load_slots()
+    let prefix = "{\"slot\":" + to_string(s) + ","
+    if _slot_cache.contains(prefix) == false { return fb }
+    let line = _slot_cache.split(prefix)[1].split("\n")[0]
+    return jstr("{\"slot\":" + to_string(s) + "," + line, key, fb)
+}
 
 fn catalog_name(s: int) -> str {
-    if s == 0  { return "blowup_math" }
-    if s == 1  { return "blowup_physics" }
-    if s == 2  { return "cargo_test" }
-    if s == 3  { return "ouroboros" }
-    if s == 4  { return "blowup_cs" }
-    if s == 5  { return "cargo_test_u" }
-    if s == 6  { return "cargo_build" }
-    if s == 7  { return "ouroboros_quantum" }
-    if s == 8  { return "blowup_bio" }
-    if s == 9  { return "blowup_math_u" }
-    if s == 10 { return "cargo_bench" }
-    if s == 11 { return "ouroboros_meta" }
-    if s == 12 { return "blowup_econ" }
-    if s == 13 { return "blowup_physics_u" }
-    if s == 14 { return "cargo_clippy" }
-    if s == 15 { return "blowup_stream" }
-    return "noop"
+    return _slot_field(s, "name", "noop")
 }
 
 fn catalog_project(s: int) -> str {
+    return _slot_field(s, "project", "nexus")
+}
+
+// 아래 catalog_project 하드코딩 블록은 JSONL 동적 로드로 대체됨
+// (catalog_project 함수 위에서 이미 정의)
+
+fn _catalog_project_legacy(s: int) -> str {
     if s == 0  { return "nexus" }
     if s == 1  { return "nexus" }
     if s == 2  { return "hexa-lang" }
