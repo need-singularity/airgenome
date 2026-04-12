@@ -18,8 +18,9 @@ let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
 // cgroup 리밋
+// 12T × 80% = 9.6 cores. 8 tasks × 120% = 9.6 cores
 let CGROUP_MEM = "6G"
-let CGROUP_CPU = "250%"
+let CGROUP_CPU = "120%"
 
 // ── helpers ──
 
