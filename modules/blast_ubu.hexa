@@ -125,6 +125,20 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
+    // ── 안전 체크: 발사 전 load 확인. 과부하면 스킵 ──
+    let mut cur_load = ""
+    try { cur_load = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
+    if len(cur_load) > 2 {
+        let load_f = cur_load.split(" ")[0]
+        let mut load_pct = 0
+        try { load_pct = to_int(to_string(to_float(load_f) * 100.0 / 12.0)) } catch e {}
+        if load_pct > 80 {
+            log("SKIP load=" + load_f + " (" + to_string(load_pct) + "%) > 80% — 과부하 방지")
+            try { exec("rm -f " + shquote(LOCK)) } catch e {}
+            return
+        }
+    }
+
     update_depth()
 
     // 홀수 슬롯(ubu) 명령어 수집
