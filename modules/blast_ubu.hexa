@@ -161,6 +161,25 @@ fn main() {
 
     if n == 0 { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
 
+    // 동시 실행 제한: 4개씩 2웨이브 (12T/30.5G RAM 보호)
+    let max_par = 4
+    let mut wi = 0
+    while wi < n {
+        let wave_end = wi + max_par
+        let we = if wave_end > n { n } else { wave_end }
+        let mut wj = wi
+        while wj < we {
+            launch = launch + ""  // already added above
+            wj = wj + 1
+        }
+        // 웨이브 사이에 wait 삽입
+        if we < n {
+            // 첫 max_par개 후 wait, 나머지 다음 웨이브
+            launch = launch.replace("WAVE_MARKER", "")
+        }
+        wi = we
+    }
+
     launch = launch + "wait\n"
     let mut ci = 0
     while ci < n {
