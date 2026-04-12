@@ -138,6 +138,9 @@ fn build_cmd(s: int) -> str {
         cmd = H + " " + MODULES + module2 + ".hexa 2>&1 | tail -80"
     } else if engine == "gpu_bench" {
         cmd = "python3 ~/Dev/nexus/shared/blowup/modules/gpu_bench.py 8192 60 2>&1 | tail -5"
+    } else if engine == "cpu_stress" {
+        // CPU filler: 8코어 60초 순수 연산 (I/O bound gap 보상)
+        cmd = "python3 ~/Dev/nexus/shared/blowup/modules/cpu_stress.py 60 8 2>&1 | tail -5"
     } else {
         cmd = "echo unknown:" + engine
     }
@@ -171,7 +174,7 @@ fn blast_once() {
     let mut launch = "#!/bin/bash\n"
     let mut n = 0
     let mut s = 0
-    while s < 29 {
+    while s < 31 {
         let host = slot_field(s, "host", "")
         if host == HOST {
             let name = slot_field(s, "name", "?")
