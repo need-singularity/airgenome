@@ -573,3 +573,8 @@
 {"ts":"2026-04-12T10:34:54Z","ubu_cpu":5,"ubu_gpu":0,"htz_cpu":29,"total":22,"gap":78}
 {"ts":"2026-04-12T10:35:27Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":32,"total":24,"gap":76}
 {"ts":"2026-04-12T10:36:00Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":32,"total":24,"gap":76}
+{"ts":"2026-04-12T10:36:33Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":34,"total":25,"gap":75}
+{"ts":"2026-04-12T10:37:05Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":34,"total":25,"gap":75}
+{"ts":"2026-04-12T10:37:36Z","ubu_cpu":2,"ubu_gpu":0,"htz_cpu":33,"total":24,"gap":76}
+{"ts":"2026-04-12T10:38:08Z","ubu_cpu":2,"ubu_gpu":0,"htz_cpu":33,"total":24,"gap":76}
+{"ts":"2026-04-12T10:38:39Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":39,"total":29,"gap":71}
