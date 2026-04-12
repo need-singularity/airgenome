@@ -193,3 +193,11 @@
 {"id":"ubu_2026-04-12T14:32:19Z","ts":"2026-04-12T14:32:19Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":1114,"depth":1}
 {"id":"ubu_2026-04-12T14:32:26Z","ts":"2026-04-12T14:32:26Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":1114,"depth":1}
 {"id":"ubu_2026-04-12T14:32:33Z","ts":"2026-04-12T14:32:33Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":1114,"depth":1}
+{"id":"ubu_2026-04-12T14:33:02Z","ts":"2026-04-12T14:33:02Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":2313,"depth":1}
+{"id":"ubu_2026-04-12T14:35:01Z","ts":"2026-04-12T14:35:01Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}
+{"id":"htz_2026-04-12T14:36:03Z","ts":"2026-04-12T14:36:03Z","task":"blast_htz_19","host":"htz","status":"done","bytes":56129,"depth":5}
+{"id":"ubu_2026-04-12T14:36:57Z","ts":"2026-04-12T14:36:57Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}
+{"id":"ubu_2026-04-12T14:38:53Z","ts":"2026-04-12T14:38:53Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}
+{"id":"ubu_2026-04-12T14:39:04Z","ts":"2026-04-12T14:39:04Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}
+{"id":"ubu_2026-04-12T14:41:00Z","ts":"2026-04-12T14:41:00Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}
+{"id":"ubu_2026-04-12T14:41:13Z","ts":"2026-04-12T14:41:13Z","task":"blast_ubu_12","host":"ubu","status":"done","bytes":3400,"depth":1}

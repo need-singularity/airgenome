@@ -170,8 +170,8 @@ fn blast_once() {
 
     update_depth()
 
-    // 해당 호스트 슬롯 수집
-    let mut launch = "#!/bin/bash\n"
+    // 해당 호스트 슬롯 수집 → 단일 SSH + 내부 병렬 (SSH 경쟁 제거)
+    let mut remote_script = "#!/bin/bash\n"
     let mut n = 0
     let mut s = 0
     while s < 31 {
@@ -179,8 +179,8 @@ fn blast_once() {
         if host == HOST {
             let name = slot_field(s, "name", "?")
             let cmd = build_cmd(s)
-            write_file("/tmp/_blast_" + HOST + "_" + to_string(n) + ".sh", cmd + "\n")
-            launch = launch + "( cat /tmp/_blast_" + HOST + "_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config " + SSH_HOST + " 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout " + to_string(TIMEOUT) + " bash -s' > /tmp/_blast_" + HOST + "_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            // 원격에서 cgroup 격리 + 백그라운드
+            remote_script = remote_script + "( systemd-run --user --scope -q -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout " + to_string(TIMEOUT) + " bash -c '" + cmd.replace("'", "'\\''") + "' > /tmp/_blast_out_" + to_string(n) + ".txt 2>&1 ) &\n"
             log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
         }
@@ -189,13 +189,16 @@ fn blast_once() {
 
     if n == 0 { log("NOOP"); return }
 
-    launch = launch + "wait\n"
+    remote_script = remote_script + "wait\n"
     let mut ci = 0
     while ci < n {
-        launch = launch + "cat /tmp/_blast_" + HOST + "_out_" + to_string(ci) + ".txt 2>/dev/null\n"
+        remote_script = remote_script + "cat /tmp/_blast_out_" + to_string(ci) + ".txt 2>/dev/null\n"
         ci = ci + 1
     }
 
+    // 단일 SSH로 전체 배치 전송 (SSH 경쟁 제거)
+    write_file("/tmp/_blast_" + HOST + "_remote.sh", remote_script)
+    let launch = "#!/bin/bash\ncat /tmp/_blast_" + HOST + "_remote.sh | ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config " + SSH_HOST + " 'timeout " + to_string(TIMEOUT + 30) + " bash -s' 2>&1\n"
     write_file("/tmp/_blast_" + HOST + "_launch.sh", launch)
     log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
 
