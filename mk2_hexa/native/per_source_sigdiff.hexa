@@ -1,0 +1,582 @@
+// per_source_sigdiff.hexa — T13 per-source pairwise signature distance + clustering
+//
+// PIPELINE:
+//   per_process_sig.jsonl  ──[T7]──>  per_source_genome_ts.jsonl  ──[T13]──>  per_source_sigdiff.jsonl
+//
+// READS:
+//   nexus/shared/per_source_genome_ts.jsonl  (rolling buffer; last entry per source = latest)
+//   format: {"ts":"...","source":"X","pid_count":N,
+//            "axes":{"cpu":{"mean":..,"max":..},"ram":{...},"swap":{...},
+//                    "net":{...},"disk":{...},"gpu":{...}}}
+//
+// WRITES:
+//   nexus/shared/per_source_sigdiff.jsonl  (R14 SSOT, append per run)
+//   record kinds:
+//     {"ts":"...","kind":"summary","n_sources":N,"n_pairs":P,"top_k":K,
+//      "min_pid":M,"thresh":T,"cluster_count":C,"elapsed_s":S}
+//     {"ts":"...","kind":"top_similar","rank":R,"a":"name","b":"name","dist":D}
+//     {"ts":"...","kind":"top_outlier","rank":R,"a":"name","b":"name","dist":D}
+//     {"ts":"...","kind":"cluster","cid":N,"size":S,"members":["..."]}
+//
+// ALGORITHM:
+//   1. Walk file forward — each source's last occurrence wins (rolling buffer = chronological)
+//   2. Filter sources by min_pid_count (drop singleton noise)
+//   3. For each unordered pair (i,j) compute normalized euclidean distance over 6 axes:
+//        d_k = (a_k - b_k) / max(a_k, b_k, 1)
+//        D   = sqrt(sum(d_k^2))
+//   4. Top-K similar via O(N*K) selection (smallest D)
+//   5. Top-K outlier via O(N*K) selection (largest D)
+//   6. Single-linkage clusters via union-find on pairs with D < threshold
+//
+// CONFIG (nexus/shared/genome_harvest.jsonl, R2: no hardcoding):
+//   per_source_sigdiff_in        (default: nexus/shared/per_source_genome_ts.jsonl)
+//   per_source_sigdiff_out       (default: nexus/shared/per_source_sigdiff.jsonl)
+//   per_source_sigdiff_topk      (default: 10)
+//   per_source_sigdiff_min_pid   (default: 2)
+//   per_source_sigdiff_thresh100 (default: 15  → threshold = 0.15)
+//
+// RUN:
+//   ~/.hx/bin/hexa mk2_hexa/native/per_source_sigdiff.hexa [<in_file_override>]
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MATH — Newton sqrt (hexa lacks native sqrt in older builds)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn sqrt_newton(x: float) -> float {
+    if x <= 0.0 { return 0.0 }
+    let mut g = x
+    if g < 1.0 { g = 1.0 }
+    let mut i = 0
+    while i < 30 {
+        g = (g + x / g) * 0.5
+        i = i + 1
+    }
+    return g
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONFIG (R2: no hardcoding — all from genome_harvest.jsonl)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CFG_SD = "nexus/shared/genome_harvest.jsonl"
+
+fn cfg_int_sd(key: str, default_val: int) -> int {
+    if file_exists(CFG_SD) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CFG_SD + " 2>/dev/null || true").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":' '{print $2}' | tr -dc '0-9-'").trim()
+    if len(v) == 0 { return default_val }
+    try { return to_int(to_float(v)) } catch e { return default_val }
+}
+
+fn cfg_str_sd(key: str, default_val: str) -> str {
+    if file_exists(CFG_SD) == false { return default_val }
+    let grep = exec("grep '\"key\":\"" + key + "\"' " + CFG_SD + " 2>/dev/null || true").trim()
+    if len(grep) == 0 { return default_val }
+    let v = exec("echo '" + grep.replace("'", "") + "' | awk -F'\"value\":\"' '{print $2}' | awk -F'\"' '{print $1}'").trim()
+    if len(v) == 0 { return default_val }
+    return v
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  PARSE — extract source name, pid_count, per-axis mean
+// ═══════════════════════════════════════════════════════════════════════
+
+fn extract_source_sd(line: str) -> str {
+    let parts = line.split("\"source\":\"")
+    if len(parts) < 2 { return "" }
+    let tail = parts[1].split("\"")
+    if len(tail) < 1 { return "" }
+    return tail[0]
+}
+
+fn extract_pid_count_sd(line: str) -> int {
+    let parts = line.split("\"pid_count\":")
+    if len(parts) < 2 { return 0 }
+    let tail = parts[1].split(",")
+    if len(tail) < 1 { return 0 }
+    try { return to_int(to_float(tail[0].trim())) } catch e { return 0 }
+}
+
+// Extract <axis>.mean from "...,"axis":{"mean":N,"max":..,..}..."
+// Tolerates both old format ({"mean":N,"max":N}) and new ({"mean":N,"max":N,"std":N}).
+fn extract_axis_mean_sd(line: str, axis: str) -> float {
+    let marker = "\"" + axis + "\":{\"mean\":"
+    let parts = line.split(marker)
+    if len(parts) < 2 { return 0.0 }
+    let tail = parts[1]
+    // value ends at first ',' or '}'
+    let by_comma = tail.split(",")
+    if len(by_comma) < 1 { return 0.0 }
+    let by_brace = by_comma[0].split("}")
+    if len(by_brace) < 1 { return 0.0 }
+    try { return to_float(by_brace[0].trim()) } catch e { return 0.0 }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SOURCE TABLE — parallel arrays
+// ═══════════════════════════════════════════════════════════════════════
+
+fn find_index_sd(names: [str], target: str) -> int {
+    let mut i = 0
+    while i < len(names) {
+        if names[i] == target { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DISTANCE — normalized euclidean squared (caller applies sqrt at output)
+//    d_k = (a_k - b_k) / max(a_k, b_k, 1)
+//    D²  = sum(d_k^2)
+//
+//  Per-axis flat layout: axes_flat[6*i + k] (k=0..5: cpu,ram,swap,net,disk,gpu)
+//  Squared distance avoids 30 Newton iterations × O(N²) pairs in hot loop.
+// ═══════════════════════════════════════════════════════════════════════
+
+fn dist_sq_flat(axes_flat: [float], i: int, j: int) -> float {
+    let bi = i * 6
+    let bj = j * 6
+    let mut sum_sq = 0.0
+    let mut k = 0
+    while k < 6 {
+        let av = axes_flat[bi + k]
+        let bv = axes_flat[bj + k]
+        let mut max_v = av
+        if bv > max_v { max_v = bv }
+        if max_v < 1.0 { max_v = 1.0 }
+        let d = (av - bv) / max_v
+        sum_sq = sum_sq + d * d
+        k = k + 1
+    }
+    return sum_sq
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LOAD — walk file, keep last entry per source (rolling buffer = chronological)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Returns: [src_names, axes_flat (6 floats × N), src_pids]  (filtered by min_pid)
+// axes_flat layout: [s0_cpu, s0_ram, s0_swap, s0_net, s0_disk, s0_gpu, s1_cpu, ...]
+fn load_latest(in_file: str, min_pid: int) -> auto {
+    if file_exists(in_file) == false {
+        println("  ERROR input not found: " + in_file)
+        return [[], [], []]
+    }
+    let body = read_file(in_file)
+    let lines = body.split("\n")
+
+    let mut src_names = []
+    let mut src_flat  = []     // 6 floats per source, contiguous
+    let mut src_pids  = []
+
+    let mut li = 0
+    let mut total = 0
+    while li < len(lines) {
+        let line = lines[li].trim()
+        if len(line) > 0 {
+            let name = extract_source_sd(line)
+            if len(name) > 0 {
+                let pids = extract_pid_count_sd(line)
+                let cpu  = extract_axis_mean_sd(line, "cpu")
+                let ram  = extract_axis_mean_sd(line, "ram")
+                let swap = extract_axis_mean_sd(line, "swap")
+                let net  = extract_axis_mean_sd(line, "net")
+                let disk = extract_axis_mean_sd(line, "disk")
+                let gpu  = extract_axis_mean_sd(line, "gpu")
+
+                let idx = find_index_sd(src_names, name)
+                if idx < 0 {
+                    src_names = src_names + [name]
+                    src_flat  = src_flat + [cpu, ram, swap, net, disk, gpu]
+                    src_pids  = src_pids + [pids]
+                } else {
+                    // last wins (rolling buffer = chronological)
+                    let base = idx * 6
+                    src_flat[base + 0] = cpu
+                    src_flat[base + 1] = ram
+                    src_flat[base + 2] = swap
+                    src_flat[base + 3] = net
+                    src_flat[base + 4] = disk
+                    src_flat[base + 5] = gpu
+                    src_pids[idx] = pids
+                }
+                total = total + 1
+            }
+        }
+        li = li + 1
+    }
+
+    // Filter by min_pid_count
+    let mut f_names = []
+    let mut f_flat  = []
+    let mut f_pids  = []
+    let mut fi = 0
+    while fi < len(src_names) {
+        if src_pids[fi] >= min_pid {
+            f_names = f_names + [src_names[fi]]
+            let base = fi * 6
+            f_flat = f_flat + [src_flat[base + 0], src_flat[base + 1], src_flat[base + 2], src_flat[base + 3], src_flat[base + 4], src_flat[base + 5]]
+            f_pids = f_pids + [src_pids[fi]]
+        }
+        fi = fi + 1
+    }
+
+    println("  loaded: " + to_string(total) + " records → " + to_string(len(src_names)) + " unique sources")
+    println("  filter: pid_count >= " + to_string(min_pid) + " → " + to_string(len(f_names)) + " sources")
+    return [f_names, f_flat, f_pids]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STREAMING PAIR SCAN strategy (inlined in main):
+//    Naive "store all pairs" is O(N²) memory + O(N²) array-grow copies, which
+//    in interpreted hexa balloons to billions of copies for N=500. Instead,
+//    main() walks pairs once and immediately updates top-K + union-find.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Returns [roots: [int], groups: [str]]  groups[i] = pipe-delimited member names
+fn group_clusters(parent: [int], names: [str]) -> auto {
+    let n = len(parent)
+    let mut roots = []
+    let mut groups = []
+    let mut i = 0
+    while i < n {
+        let r = parent[i]
+        let mut ridx = -1
+        let mut k = 0
+        while k < len(roots) {
+            if roots[k] == r { ridx = k }
+            k = k + 1
+        }
+        if ridx < 0 {
+            roots = roots + [r]
+            groups = groups + [names[i]]
+        } else {
+            groups[ridx] = groups[ridx] + "|" + names[i]
+        }
+        i = i + 1
+    }
+    return [roots, groups]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CONSCIOUSNESS — CLI entry
+// ═══════════════════════════════════════════════════════════════════════
+
+consciousness PerSourceSigdiff {
+    let t0 = exec("date +%s").trim()
+
+    // Config (R2)
+    let mut in_file = cfg_str_sd("per_source_sigdiff_in", "nexus/shared/per_source_genome_ts.jsonl")
+    let out_file    = cfg_str_sd("per_source_sigdiff_out", "nexus/shared/per_source_sigdiff.jsonl")
+    let topk        = cfg_int_sd("per_source_sigdiff_topk", 10)
+    let min_pid     = cfg_int_sd("per_source_sigdiff_min_pid", 2)
+    let thresh100   = cfg_int_sd("per_source_sigdiff_thresh100", 15)
+    let threshold   = to_float(to_string(thresh100)) / 100.0
+
+    // CLI override: in_file
+    let argv = args()
+    let mut ai = 0
+    let mut saw_script = false
+    while ai < len(argv) {
+        let v = argv[ai]
+        if v.contains(".hexa") { saw_script = true }
+        else {
+            if saw_script && len(v) > 0 && v.contains("hexa-bin") == false {
+                in_file = v
+            }
+        }
+        ai = ai + 1
+    }
+
+    println("  per_source_sigdiff — in =" + in_file)
+    println("                       out=" + out_file)
+    println("                       topk=" + to_string(topk) + " min_pid=" + to_string(min_pid) + " thresh=" + to_string(threshold))
+
+    // Ensure output dir exists (R8 target)
+    exec("mkdir -p nexus/shared")
+
+    let loaded = load_latest(in_file, min_pid)
+    let names     = loaded[0]
+    let axes_flat = loaded[1]
+    let pids      = loaded[2]
+    let n = len(names)
+    if n < 2 {
+        println("  not enough sources after filter — aborting")
+        return
+    }
+
+    let n_pairs = n * (n - 1) / 2
+    println("  pairs:  " + to_string(n_pairs))
+
+    // ── streaming pair scan: top-K (similar+outlier) + union-find inline ──
+    // Squared distance ranks identically to euclidean (monotonic), saves Newton sqrt.
+    let threshold_sq = threshold * threshold
+
+    // Top-K similar — kept sorted ASCENDING by d_sq (smallest at index 0).
+    let mut tsim_a = []
+    let mut tsim_b = []
+    let mut tsim_d = []
+
+    // Top-K outlier — kept sorted ASCENDING by d_sq (smallest at index 0).
+    // Eviction: when full and new d_sq > tsim_d[0], replace [0] then bubble down.
+    let mut tout_a = []
+    let mut tout_b = []
+    let mut tout_d = []
+
+    // Union-find parent[] (size n)
+    let mut parent = []
+    let mut up = 0
+    while up < n { parent = parent + [up]; up = up + 1 }
+
+    let mut sp_i = 0
+    while sp_i < n {
+        let mut sp_j = sp_i + 1
+        while sp_j < n {
+            let d_sq = dist_sq_flat(axes_flat, sp_i, sp_j)
+
+            // ── insert into top similar (smallest first) ──
+            let csim = len(tsim_d)
+            if csim < topk {
+                tsim_a = tsim_a + [sp_i]
+                tsim_b = tsim_b + [sp_j]
+                tsim_d = tsim_d + [d_sq]
+                // bubble up to keep ascending sorted
+                let mut bi = csim
+                let mut bdone = false
+                while bi > 0 && bdone == false {
+                    if tsim_d[bi] < tsim_d[bi - 1] {
+                        let ta = tsim_a[bi]; tsim_a[bi] = tsim_a[bi - 1]; tsim_a[bi - 1] = ta
+                        let tb = tsim_b[bi]; tsim_b[bi] = tsim_b[bi - 1]; tsim_b[bi - 1] = tb
+                        let td = tsim_d[bi]; tsim_d[bi] = tsim_d[bi - 1]; tsim_d[bi - 1] = td
+                        bi = bi - 1
+                    } else {
+                        bdone = true
+                    }
+                }
+            } else {
+                // replace tail (largest of top-K) if new d_sq is smaller
+                if d_sq < tsim_d[topk - 1] {
+                    tsim_a[topk - 1] = sp_i
+                    tsim_b[topk - 1] = sp_j
+                    tsim_d[topk - 1] = d_sq
+                    let mut bi = topk - 1
+                    let mut bdone = false
+                    while bi > 0 && bdone == false {
+                        if tsim_d[bi] < tsim_d[bi - 1] {
+                            let ta = tsim_a[bi]; tsim_a[bi] = tsim_a[bi - 1]; tsim_a[bi - 1] = ta
+                            let tb = tsim_b[bi]; tsim_b[bi] = tsim_b[bi - 1]; tsim_b[bi - 1] = tb
+                            let td = tsim_d[bi]; tsim_d[bi] = tsim_d[bi - 1]; tsim_d[bi - 1] = td
+                            bi = bi - 1
+                        } else {
+                            bdone = true
+                        }
+                    }
+                }
+            }
+
+            // ── insert into top outlier (ascending; head=smallest of top-K) ──
+            let cout = len(tout_d)
+            if cout < topk {
+                tout_a = tout_a + [sp_i]
+                tout_b = tout_b + [sp_j]
+                tout_d = tout_d + [d_sq]
+                let mut bi2 = cout
+                let mut bdone2 = false
+                while bi2 > 0 && bdone2 == false {
+                    if tout_d[bi2] < tout_d[bi2 - 1] {
+                        let ta = tout_a[bi2]; tout_a[bi2] = tout_a[bi2 - 1]; tout_a[bi2 - 1] = ta
+                        let tb = tout_b[bi2]; tout_b[bi2] = tout_b[bi2 - 1]; tout_b[bi2 - 1] = tb
+                        let td = tout_d[bi2]; tout_d[bi2] = tout_d[bi2 - 1]; tout_d[bi2 - 1] = td
+                        bi2 = bi2 - 1
+                    } else {
+                        bdone2 = true
+                    }
+                }
+            } else {
+                // replace head (smallest of top-K) if new d_sq is larger
+                if d_sq > tout_d[0] {
+                    tout_a[0] = sp_i
+                    tout_b[0] = sp_j
+                    tout_d[0] = d_sq
+                    let mut bi2 = 0
+                    let mut bdone2 = false
+                    while bi2 < topk - 1 && bdone2 == false {
+                        if tout_d[bi2] > tout_d[bi2 + 1] {
+                            let ta = tout_a[bi2]; tout_a[bi2] = tout_a[bi2 + 1]; tout_a[bi2 + 1] = ta
+                            let tb = tout_b[bi2]; tout_b[bi2] = tout_b[bi2 + 1]; tout_b[bi2 + 1] = tb
+                            let td = tout_d[bi2]; tout_d[bi2] = tout_d[bi2 + 1]; tout_d[bi2 + 1] = td
+                            bi2 = bi2 + 1
+                        } else {
+                            bdone2 = true
+                        }
+                    }
+                }
+            }
+
+            // ── union-find inline (single-linkage threshold) ──
+            if d_sq < threshold_sq {
+                let mut ua = sp_i
+                while parent[ua] != ua { ua = parent[ua] }
+                let mut ub = sp_j
+                while parent[ub] != ub { ub = parent[ub] }
+                if ua != ub { parent[ua] = ub }
+            }
+
+            sp_j = sp_j + 1
+        }
+        sp_i = sp_i + 1
+    }
+
+    // ── path compression on parent[] ──
+    let mut pcx = 0
+    while pcx < n {
+        let mut pcr = pcx
+        while parent[pcr] != pcr { pcr = parent[pcr] }
+        parent[pcx] = pcr
+        pcx = pcx + 1
+    }
+
+    let grouped = group_clusters(parent, names)
+    let cluster_groups = grouped[1]
+
+    // Count multi-member clusters
+    let mut multi_count = 0
+    let mut ci = 0
+    while ci < len(cluster_groups) {
+        let members = cluster_groups[ci].split("|")
+        if len(members) > 1 { multi_count = multi_count + 1 }
+        ci = ci + 1
+    }
+
+    // ── stdout summary ──
+    // top similar arrays are sorted ascending by d_sq (smallest first)
+    println("")
+    println("  ── top-" + to_string(topk) + " similar pairs ──")
+    let mut si = 0
+    while si < len(tsim_d) {
+        println("  " + to_string(si + 1) + ". " + names[tsim_a[si]] + "  ~  " + names[tsim_b[si]] + "    dist=" + to_string(sqrt_newton(tsim_d[si])))
+        si = si + 1
+    }
+
+    // top outlier arrays are sorted ascending; reverse iterate so largest prints first
+    println("")
+    println("  ── top-" + to_string(topk) + " outlier pairs ──")
+    let mut oi = 0
+    let lout = len(tout_d)
+    while oi < lout {
+        let p = lout - 1 - oi
+        println("  " + to_string(oi + 1) + ". " + names[tout_a[p]] + "  vs  " + names[tout_b[p]] + "    dist=" + to_string(sqrt_newton(tout_d[p])))
+        oi = oi + 1
+    }
+
+    println("")
+    println("  ── clusters (single-linkage thresh=" + to_string(threshold) + ") ──")
+    println("  multi-member clusters: " + to_string(multi_count) + " / " + to_string(len(cluster_groups)) + " total groups")
+
+    // Print up to 10 multi-member clusters
+    let mut printed = 0
+    let mut pci = 0
+    while pci < len(cluster_groups) {
+        if printed < 10 {
+            let members = cluster_groups[pci].split("|")
+            if len(members) > 1 {
+                let preview = cluster_groups[pci].replace("|", ", ")
+                println("  c" + to_string(pci) + " (" + to_string(len(members)) + "): " + preview)
+                printed = printed + 1
+            }
+        }
+        pci = pci + 1
+    }
+
+    // ── elapsed ──
+    let t1 = exec("date +%s").trim()
+    let mut dt = 0
+    try { dt = to_int(to_float(t1)) - to_int(to_float(t0)) } catch e {}
+
+    // ── write SSOT JSONL (append) ──
+    let ts_iso = exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim()
+    let mut buf = ""
+
+    // summary record
+    buf = buf + "{\"ts\":\"" + ts_iso + "\",\"kind\":\"summary\""
+    buf = buf + ",\"n_sources\":" + to_string(n)
+    buf = buf + ",\"n_pairs\":" + to_string(n_pairs)
+    buf = buf + ",\"top_k\":" + to_string(topk)
+    buf = buf + ",\"min_pid\":" + to_string(min_pid)
+    buf = buf + ",\"thresh\":" + to_string(threshold)
+    buf = buf + ",\"cluster_count\":" + to_string(multi_count)
+    buf = buf + ",\"elapsed_s\":" + to_string(dt)
+    buf = buf + "}\n"
+
+    // top similar (sorted ascending: smallest first)
+    let mut wsi = 0
+    while wsi < len(tsim_d) {
+        let na = names[tsim_a[wsi]].replace("\"", "").replace("\\", "")
+        let nb = names[tsim_b[wsi]].replace("\"", "").replace("\\", "")
+        buf = buf + "{\"ts\":\"" + ts_iso + "\",\"kind\":\"top_similar\""
+        buf = buf + ",\"rank\":" + to_string(wsi + 1)
+        buf = buf + ",\"a\":\"" + na + "\""
+        buf = buf + ",\"b\":\"" + nb + "\""
+        buf = buf + ",\"dist\":" + to_string(sqrt_newton(tsim_d[wsi]))
+        buf = buf + "}\n"
+        wsi = wsi + 1
+    }
+
+    // top outlier (sorted ascending; reverse iterate so largest is rank 1)
+    let mut woi = 0
+    let lwout = len(tout_d)
+    while woi < lwout {
+        let p = lwout - 1 - woi
+        let na = names[tout_a[p]].replace("\"", "").replace("\\", "")
+        let nb = names[tout_b[p]].replace("\"", "").replace("\\", "")
+        buf = buf + "{\"ts\":\"" + ts_iso + "\",\"kind\":\"top_outlier\""
+        buf = buf + ",\"rank\":" + to_string(woi + 1)
+        buf = buf + ",\"a\":\"" + na + "\""
+        buf = buf + ",\"b\":\"" + nb + "\""
+        buf = buf + ",\"dist\":" + to_string(sqrt_newton(tout_d[p]))
+        buf = buf + "}\n"
+        woi = woi + 1
+    }
+
+    // clusters (multi-member only)
+    let mut wci = 0
+    let mut wcid = 0
+    while wci < len(cluster_groups) {
+        let members = cluster_groups[wci].split("|")
+        if len(members) > 1 {
+            let mut mlist = "["
+            let mut mi = 0
+            while mi < len(members) {
+                if mi > 0 { mlist = mlist + "," }
+                let mname = members[mi].replace("\"", "").replace("\\", "")
+                mlist = mlist + "\"" + mname + "\""
+                mi = mi + 1
+            }
+            mlist = mlist + "]"
+            buf = buf + "{\"ts\":\"" + ts_iso + "\",\"kind\":\"cluster\""
+            buf = buf + ",\"cid\":" + to_string(wcid)
+            buf = buf + ",\"size\":" + to_string(len(members))
+            buf = buf + ",\"members\":" + mlist
+            buf = buf + "}\n"
+            wcid = wcid + 1
+        }
+        wci = wci + 1
+    }
+
+    // Append to out_file (read existing → concat → write back)
+    let mut existing = ""
+    if file_exists(out_file) {
+        existing = read_file(out_file)
+    }
+    try {
+        write_file(out_file, existing + buf)
+    } catch ex {
+        println("  ERROR write: " + to_string(ex))
+    }
+
+    println("")
+    println("  wrote " + to_string(len(tsim_d) + len(tout_d) + multi_count + 1) + " records → " + out_file)
+    println("  elapsed: " + to_string(dt) + "s")
+}

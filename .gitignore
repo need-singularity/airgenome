@@ -11,6 +11,8 @@ forge/by_pid/
 forge/per_process_*.jsonl
 forge/per_process_*.baseline.jsonl
 forge/per_source_genome.jsonl
+nexus/shared/per_source_genome_ts.jsonl
+nexus/shared/per_source_sigdiff.jsonl
 .growth/
 .playwright-mcp/
 nexus/shared/airgenome_convergence_*.jsonl
