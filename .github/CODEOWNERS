@@ -18,3 +18,5 @@ modules/load_balancer.hexa @need-singularity
 scripts/com.airgenome.load-balancer.plist @need-singularity
 cl @need-singularity
 CLAUDE.md @need-singularity
+nexus/shared/bin/hexa @need-singularity
+nexus/shared/bin/hexa.real @need-singularity
