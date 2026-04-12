@@ -668,6 +668,35 @@ fn main() {
 
     log("CYCLE blast=" + to_string(ubu_n + htz_n) + " " + to_string(len(all_out)) + "B")
 
+    // ── 포스트 blast 메트릭 수집 (ssh_gate 우회 보상) ──
+    let mut htz_load = ""
+    let mut ubu_load = ""
+    try { htz_load = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes hetzner 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
+    try { ubu_load = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
+
+    // loadavg 첫 필드 → CPU% 변환 (htz=32T, ubu=12T)
+    let mut htz_pct = 0
+    let mut ubu_pct = 0
+    let mut ubu_gpu = 0
+    if len(htz_load) > 2 {
+        let htz_f = htz_load.split(" ")[0]
+        try { htz_pct = to_int(to_string(to_float(htz_f) * 100.0 / 32.0)) } catch e {}
+    }
+    if len(ubu_load) > 2 {
+        let ubu_f = ubu_load.split(" ")[0]
+        try { ubu_pct = to_int(to_string(to_float(ubu_f) * 100.0 / 12.0)) } catch e {}
+    }
+    try {
+        let gpu_s = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()
+        ubu_gpu = to_int(gpu_s)
+    } catch e {}
+
+    let total_pct = (htz_pct * 32 + ubu_pct * 12) / 44
+    let mts = ts()
+    let mline = "{\"ts\":\"" + mts + "\",\"ubu_cpu\":" + to_string(ubu_pct) + ",\"ubu_gpu\":" + to_string(ubu_gpu) + ",\"htz_cpu\":" + to_string(htz_pct) + ",\"total\":" + to_string(total_pct) + ",\"gap\":" + to_string(100 - total_pct) + ",\"depth_htz\":" + to_string(_htz_depth) + ",\"depth_ubu\":" + to_string(_ubu_depth) + "}"
+    try { exec("echo " + shquote(mline) + " >> " + shquote(CEILING)) } catch e {}
+    log("METRIC htz=" + to_string(htz_pct) + "% ubu=" + to_string(ubu_pct) + "% gpu=" + to_string(ubu_gpu) + "% total=" + to_string(total_pct) + "%")
+
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
 }
 
