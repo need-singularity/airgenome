@@ -559,34 +559,67 @@ fn main() {
 
     log("BLAST ubu=" + to_string(ubu_n) + " htz=" + to_string(htz_n))
 
-    // 호스트별 배치 스크립트 작성 + 동시 발사
-    if ubu_n > 0 {
-        write_file("/tmp/_td_ubu.sh", "#!/bin/bash\n" + ubu_cmds + "\n")
+    // ═══ 개별 SSH 병렬 발사 — 각 작업이 독립 SSH + 개별 timeout ═══
+    // ssh_gate 안 거치고 ssh 직접 (ControlMaster 이미 활성)
+    // 각 작업: nohup ssh host 'timeout 120 cmd' > /tmp/_td_N.out &
+    // 전부 발사 후 wait → 결과 수집
+
+    let mut launch_script = "#!/bin/bash\n"
+
+    if file_exists(QUEUE) {
+        let qc2 = read_file(QUEUE).trim()
+        // 이미 위에서 읽었으니 큐 비우기만
     }
+    write_file(QUEUE, "")
+
+    // 개별 명령 파일 생성 + 병렬 SSH 발사
+    let mut task_n = 0
+    let mut qi2 = 0
+    let lines2 = (ubu_cmds + htz_cmds).split("\n")
+    // ubu 작업들: 개별 SSH 발사
+    if ubu_n > 0 {
+        let ucmds = ubu_cmds.split("\n")
+        let mut ui = 0
+        while ui < len(ucmds) {
+            let uc = ucmds[ui].trim()
+            ui = ui + 1
+            if len(uc) < 3 { continue }
+            // ( cmd ) & 에서 실제 명령 추출
+            let inner = uc.replace("( ", "").replace(" ) &", "")
+            write_file("/tmp/_td_u" + to_string(task_n) + ".sh", inner + "\n")
+            launch_script = launch_script + "( cat /tmp/_td_u" + to_string(task_n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'timeout 120 bash -s' > /tmp/_td_out_" + to_string(task_n) + ".txt 2>&1 ) &\n"
+            task_n = task_n + 1
+        }
+    }
+    // htz 작업들: 개별 SSH 발사
     if htz_n > 0 {
-        write_file("/tmp/_td_htz.sh", "#!/bin/bash\n" + htz_cmds + "\n")
+        let hcmds = htz_cmds.split("\n")
+        let mut hi = 0
+        while hi < len(hcmds) {
+            let hc = hcmds[hi].trim()
+            hi = hi + 1
+            if len(hc) < 3 { continue }
+            let inner = hc.replace("( ", "").replace(" ) &", "")
+            write_file("/tmp/_td_h" + to_string(task_n) + ".sh", inner + "\n")
+            launch_script = launch_script + "( cat /tmp/_td_h" + to_string(task_n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'timeout 120 bash -s' > /tmp/_td_out_" + to_string(task_n) + ".txt 2>&1 ) &\n"
+            task_n = task_n + 1
+        }
     }
 
-    // 양쪽 동시 발사 — 단일 exec() 안에서 & + wait
-    let mut all_out = ""
-    if ubu_n > 0 {
-        if htz_n > 0 {
-            // 양쪽 동시: htz 백그라운드 + ubu 포그라운드 + wait
-            try {
-                all_out = exec("( cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " > /tmp/_td_htz_out.txt 2>&1 ) & cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1 ; wait ; echo '===HTZ===' ; cat /tmp/_td_htz_out.txt 2>/dev/null").trim()
-            } catch e {}
-        } else {
-            try {
-                all_out = exec("cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu " + shquote("timeout 300 bash -s") + " 2>&1").trim()
-            } catch e {}
-        }
-    } else {
-        if htz_n > 0 {
-            try {
-                all_out = exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner " + shquote("timeout 300 bash -s") + " 2>&1").trim()
-            } catch e {}
-        }
+    launch_script = launch_script + "wait\n"
+    // 결과 수집
+    let mut ci = 0
+    while ci < task_n {
+        launch_script = launch_script + "cat /tmp/_td_out_" + to_string(ci) + ".txt 2>/dev/null\n"
+        ci = ci + 1
     }
+
+    write_file("/tmp/_td_launch.sh", launch_script)
+
+    let mut all_out = ""
+    try {
+        all_out = exec("bash /tmp/_td_launch.sh 2>&1").trim()
+    } catch e {}
 
     // 결과 기록
     let rts = ts()
