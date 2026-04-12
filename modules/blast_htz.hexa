@@ -3,6 +3,8 @@
 // 30초 간격 독립 실행. ubu 안 기다림.
 // slot_catalog.jsonl에서 짝수(htz) 슬롯만 로드.
 // resource_ceiling.jsonl 기반 적응형 depth.
+// ★ systemd-run cgroup 격리 — OOM/과부하 방지
+//   각 작업: MemoryMax=12G, CPUQuota=400% (32T 기준)
 
 let HOME = env("HOME")
 let AG_HOME = HOME + "/Dev/airgenome"
@@ -15,20 +17,22 @@ let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
 let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
-// ── JSON helpers ──
+// cgroup 리밋 (htz: 32T, 125G RAM)
+let CGROUP_MEM = "12G"
+let CGROUP_CPU = "400%"
+
+// ── helpers ──
 
 fn jstr(raw: str, key: str, fb: str) -> str {
     let tag = "\"" + key + "\":\""
     if raw.contains(tag) == false { return fb }
-    let after = raw.split(tag)[1]
-    return after.split("\"")[0]
+    return raw.split(tag)[1].split("\"")[0]
 }
 
 fn jint(raw: str, key: str, fb: int) -> int {
     let tag = "\"" + key + "\":"
     if raw.contains(tag) == false { return fb }
-    let after = raw.split(tag)[1]
-    let val_s = after.split(",")[0].split("}")[0].trim().replace("\"", "")
+    let val_s = raw.split(tag)[1].split(",")[0].split("}")[0].trim().replace("\"", "")
     try { return to_int(to_float(val_s)) } catch e { return fb }
 }
 
@@ -61,7 +65,7 @@ fn update_depth() {
     log("ADAPT cpu=" + to_string(cpu) + "% depth=" + to_string(_depth))
 }
 
-// ── 슬롯 카탈로그 (짝수=htz만) ──
+// ── 슬롯 카탈로그 ──
 
 let mut _slot_cache = ""
 
@@ -103,8 +107,9 @@ fn build_cmd(s: int) -> str {
 // ── main ──
 
 fn main() {
-    // single instance lock
     try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+
+    // single instance lock
     let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
     if len(prev) > 0 {
         let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
@@ -113,9 +118,24 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
+    // ★ 안전 체크: 발사 전 load 확인 (SSH 실패 = SKIP)
+    let mut load_pct = 999
+    try {
+        let cur_load = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'cat /proc/loadavg' 2>/dev/null").trim()
+        if len(cur_load) > 2 {
+            let load_f = cur_load.split(" ")[0]
+            load_pct = to_int(to_string(to_float(load_f) * 100.0 / 32.0))
+        }
+    } catch e {}
+    if load_pct > 90 {
+        log("SKIP load=" + to_string(load_pct) + "% > 90% — 과부하 방지")
+        try { exec("rm -f " + shquote(LOCK)) } catch e {}
+        return
+    }
+
     update_depth()
 
-    // 짝수 슬롯(htz) 명령어 수집
+    // 짝수 슬롯(htz) — cgroup 격리된 SSH 명령 수집
     let mut launch = "#!/bin/bash\n"
     let mut n = 0
     let mut s = 0
@@ -125,8 +145,9 @@ fn main() {
             let name = slot_field(s, "name", "?")
             let cmd = build_cmd(s)
             write_file("/tmp/_blast_htz_" + to_string(n) + ".sh", cmd + "\n")
-            launch = launch + "( cat /tmp/_blast_htz_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'timeout 180 bash -s' > /tmp/_blast_htz_out_" + to_string(n) + ".txt 2>&1 ) &\n"
-            log("SLOT [" + to_string(s) + "] " + name + " depth=" + to_string(_depth))
+            // ★ systemd-run cgroup 격리
+            launch = launch + "( cat /tmp/_blast_htz_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 180 bash -s' > /tmp/_blast_htz_out_" + to_string(n) + ".txt 2>&1 ) &\n"
+            log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
         }
         s = s + 1
@@ -135,7 +156,6 @@ fn main() {
     if n == 0 { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
 
     launch = launch + "wait\n"
-    // 결과 수집
     let mut ci = 0
     while ci < n {
         launch = launch + "cat /tmp/_blast_htz_out_" + to_string(ci) + ".txt 2>/dev/null\n"
@@ -143,7 +163,7 @@ fn main() {
     }
 
     write_file("/tmp/_blast_htz_launch.sh", launch)
-    log("BLAST n=" + to_string(n))
+    log("BLAST n=" + to_string(n) + " cgroup=MEM" + CGROUP_MEM + "/CPU" + CGROUP_CPU)
 
     let mut out = ""
     try { out = exec("bash /tmp/_blast_htz_launch.sh 2>&1").trim() } catch e {}
@@ -152,17 +172,15 @@ fn main() {
     let rts = ts()
     let safe = out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
     let sout = if len(safe) > 800 { safe.substring(0, 800) + "..." } else { safe }
-    let rline = "{\"id\":\"htz_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_htz_" + to_string(n) + "\",\"host\":\"htz\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + ",\"output\":\"" + sout + "\"}"
+    let rline = "{\"id\":\"htz_" + rts + "\",\"ts\":\"" + rts + "\",\"task\":\"blast_htz_" + to_string(n) + "\",\"host\":\"htz\",\"status\":\"done\",\"bytes\":" + to_string(len(out)) + ",\"depth\":" + to_string(_depth) + "}"
     try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
 
     // 포스트 메트릭
-    let mut load_s = ""
-    try { load_s = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes hetzner 'cat /proc/loadavg' 2>/dev/null").trim() } catch e {}
     let mut pct = 0
-    if len(load_s) > 2 {
-        let f = load_s.split(" ")[0]
-        try { pct = to_int(to_string(to_float(f) * 100.0 / 32.0)) } catch e {}
-    }
+    try {
+        let ls = exec("ssh -o ConnectTimeout=3 -o BatchMode=yes hetzner 'cat /proc/loadavg' 2>/dev/null").trim()
+        if len(ls) > 2 { try { pct = to_int(to_string(to_float(ls.split(" ")[0]) * 100.0 / 32.0)) } catch e {} }
+    } catch e {}
     log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "%")
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
