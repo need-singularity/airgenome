@@ -695,3 +695,4 @@
 {"ts":"2026-04-12T11:42:03Z","ubu_cpu":18,"ubu_gpu":0,"htz_cpu":56,"total":45,"gap":55}
 {"ts":"2026-04-12T11:42:34Z","ubu_cpu":10,"ubu_gpu":0,"htz_cpu":60,"total":46,"gap":54}
 {"ts":"2026-04-12T11:43:05Z","ubu_cpu":10,"ubu_gpu":0,"htz_cpu":60,"total":46,"gap":54}
+{"ts":"2026-04-12T11:43:36Z","ubu_cpu":6,"ubu_gpu":5,"htz_cpu":62,"total":46,"gap":54}
