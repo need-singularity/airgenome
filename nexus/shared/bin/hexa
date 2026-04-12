@@ -6,7 +6,12 @@
 AG_HOME="${AIRGENOME_HOME:-$HOME/Dev/airgenome}"
 CFG="$AG_HOME/nexus/shared/gate_config.jsonl"
 LOCAL_HEXA="$AG_HOME/nexus/shared/bin/hexa.real"
-[ ! -x "$LOCAL_HEXA" ] && LOCAL_HEXA="$HOME/Dev/hexa-lang/hexa"
+# 골화 2026-04-13: 외부 fallback 제거 — airgenome 자체에 번들된 hexa.real 만 사용.
+# 이유: ~/Dev/hexa-lang/hexa 는 재빌드 시 망가질 수 있음 (args() 파손 사례).
+if [ ! -x "$LOCAL_HEXA" ]; then
+    echo "[GUARD] hexa.real 누락: $LOCAL_HEXA — airgenome 리페어 필요" >&2
+    exit 127
+fi
 
 # ── 외부 프로젝트 pass-through ──
 # 첫 .hexa 인자가 $AG_HOME 외부에 있으면 게이트 전체 우회 (직접 LOCAL_HEXA exec).
