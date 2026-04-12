@@ -347,25 +347,35 @@ while true {
     let mut ubu_gpu_mem = 0
     let mut ubu_gpu_name = ""
 
-    let gate_check = try { exec("nc -z -w 1 " + ubu_host + " " + ubu_port + " 2>/dev/null && echo y || echo n").trim() } catch e { "n" }
-    if gate_check == "y" {
-        gate = "online"
-        let ubu_status = try { exec("echo STATUS | nc -w 1 " + ubu_host + " " + ubu_port + " 2>/dev/null").trim() } catch e { "" }
-        if len(ubu_status) > 0 {
-            let ul = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'load=[^ ]*' | cut -d= -f2 | awk '{print $1}'").trim() } catch e { "" }
-            if len(ul) > 0 { ubu_load = ul }
-            let uru = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d= -f2 | cut -d/ -f1").trim() } catch e { "" }
-            let urt = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'ram=[^ ]*' | cut -d/ -f2 | sed 's/MB.*//'").trim() } catch e { "" }
-            let ura = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'avail=[^ ]*' | cut -d= -f2 | sed 's/MB.*//'").trim() } catch e { "" }
-            try { ubu_ram_used = to_int(to_float(uru)) } catch e {}
-            try { ubu_ram_total = to_int(to_float(urt)) } catch e {}
-            try { ubu_ram_avail = to_int(to_float(ura)) } catch e {}
-            if ubu_ram_total > 0 { ubu_ram_pct = ubu_ram_used * 100 / ubu_ram_total }
-            // jobs/cpu/gpu 모두 STATUS 응답에서 파싱 (SSH 제거 — 렉 방지)
-            let uj = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'jobs=[^ ]*' | cut -d= -f2").trim() } catch e { "" }
-            try { ubu_jobs = to_int(to_float(uj)) } catch e {}
-            let uc = try { exec("echo '" + ubu_status.replace("'", "") + "' | grep -o 'cpu=[^ ]*' | cut -d= -f2").trim() } catch e { "" }
-            try { ubu_cpu = to_int(to_float(uc)) } catch e {}
+    // ag3_status.json 직접 읽기 (nc 의존 제거 — 1초 실시간)
+    let ag3_path = env("HOME") + "/.airgenome/ag3_status.json"
+    if file_exists(ag3_path) {
+        let ag3_raw = try { read_file(ag3_path).trim() } catch e { "" }
+        if len(ag3_raw) > 10 {
+            let ag3_up = ag3_raw.contains("\"ubu_up\":true")
+            if ag3_up { gate = "online" }
+            // ag3_menubar_feed가 5초마다 갱신하는 정확한 메트릭 사용
+            let _jstr = fn(raw: str, key: str, fb: str) -> str {
+                let tag = "\"" + key + "\":\""
+                if raw.contains(tag) == false { return fb }
+                return raw.split(tag)[1].split("\"")[0]
+            }
+            let _jint = fn(raw: str, key: str, fb: int) -> int {
+                let tag = "\"" + key + "\":"
+                if raw.contains(tag) == false { return fb }
+                let v = raw.split(tag)[1].split(",")[0].split("}")[0].trim().replace("\"", "")
+                try { return to_int(to_float(v)) } catch e { return fb }
+            }
+            ubu_load = _jstr(ag3_raw, "ubu_load", "0")
+            ubu_cpu = _jint(ag3_raw, "ubu_cpu", 0)
+            ubu_ram_pct = _jint(ag3_raw, "ubu_ram_pct", 0)
+            ubu_ram_used = _jint(ag3_raw, "ubu_ram_used_mb", 0)
+            ubu_ram_total = _jint(ag3_raw, "ubu_ram_total_mb", 0)
+            ubu_ram_avail = ubu_ram_total - ubu_ram_used
+            ubu_jobs = _jint(ag3_raw, "ubu_jobs", 0)
+            ubu_gpu_util = _jint(ag3_raw, "ubu_gpu_util", 0)
+            ubu_gpu_mem = _jint(ag3_raw, "ubu_gpu_mem", 0)
+            ubu_gpu_name = _jstr(ag3_raw, "ubu_gpu_name", "")
             // GPU: "gpu=<util>, <mem>, <name>" — 첫 gpu= 이후 전부
             if ubu_status.contains("gpu=") {
                 let gpu_csv = ubu_status.split("gpu=")[1].trim()
