@@ -18,8 +18,8 @@ let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
 // cgroup 리밋
-let CGROUP_MEM = "8G"
-let CGROUP_CPU = "300%"
+let CGROUP_MEM = "6G"
+let CGROUP_CPU = "200%"
 
 // ── helpers ──
 
