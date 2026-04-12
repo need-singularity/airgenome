@@ -1,6 +1,8 @@
+// ⛔ CORE — L0 불변식 (자원 모니터 코어. 수정 전 유저 승인 필수)
 // resource_ceiling.hexa — 실시간 자원 활용 천장 모니터 + 자동 채움
 // AG7 dispatch_state + infra_state 기반 전 호스트 활용도 추적
 // 천장 미달 시 자동 채움 트리거 (ubu auto_fill, htz 작업 발사)
+// 골화 2026-04-12: cpu_free→load 기반 파싱, MAC_ONLY, 로그 경로 수정
 //
 // R1 HEXA-FIRST | R2 동적 로드 | R17 timeout | R19 에러 출력
 // AG6: Mac = 오케스트레이션만 (compute 0)
@@ -12,6 +14,7 @@ let HOME = env("HOME")
 let STATE_PATH = HOME + "/Dev/nexus/shared/infra_state.json"
 let DISPATCH_PATH = HOME + "/Dev/nexus/shared/dispatch_state.json"
 let LOG_PATH = env("HOME") + "/Dev/airgenome/forge/resource_ceiling.jsonl"
+try { exec("mkdir -p " + env("HOME") + "/Dev/airgenome/forge") } catch e {}
 let GATE_CFG = HOME + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 
 // ─── config ───
@@ -38,8 +41,9 @@ let UBU_ALIAS = load_cfg("ssh_alias", "ubu")
 let HTZ_ALIAS = load_cfg("htz_alias", "hetzner")
 
 // ─── host probe (infra_state.json 기반) ───
+// 골화 2026-04-12: 실제 infra_state 스키마에 맞춤 (cpu_free 버그 수정)
+// returns [status, cpu_pct_str, ram_pct_str, gpu_pct_str, load_str]
 fn read_host(raw: str, name: str) -> [str] {
-    // returns [status, cpu_pct, ram_pct, gpu_pct, load]
     let tag = "\"" + name + "\":{"
     if raw.contains(tag) == false { return ["offline", "0", "0", "0", "0"] }
     let after = raw.split(tag)[1]
@@ -47,16 +51,13 @@ fn read_host(raw: str, name: str) -> [str] {
 
     fn extract(b: str, k: str) -> str {
         let kt = "\"" + k + "\":"
-        if b.contains(kt) == false { return "0" }
+        if b.contains(kt) == false { return "" }
         let v = b.split(kt)[1]
-        let end = 0
-        if v[0..1] == "\"" {
-            return v.split("\"")[1]
-        }
-        // numeric
+        if len(v) == 0 { return "" }
+        if v[0..1] == "\"" { return v.split("\"")[1] }
         let digits = "0123456789.-"
-        let r = ""
-        let ci = 0
+        let mut r = ""
+        let mut ci = 0
         while ci < len(v) && digits.contains(v[ci..(ci+1)]) {
             r = r + v[ci..(ci+1)]
             ci = ci + 1
@@ -65,21 +66,49 @@ fn read_host(raw: str, name: str) -> [str] {
         return r
     }
 
-    let status = extract(block, "status")
-    let cpu_free = extract(block, "cpu_free")
-    let ram_free = extract(block, "ram_free")
-    let gpu_free = extract(block, "gpu_free")
-    let load_val = extract(block, "load")
-    return [status, cpu_free, ram_free, gpu_free, load_val]
-}
+    fn sf(s: str) -> float {
+        if s == "" { return 0.0 }
+        let mut v = 0.0
+        try { v = to_float(s) } catch e {}
+        return v
+    }
+    fn si(s: str) -> int {
+        if s == "" { return 0 }
+        let mut v = 0
+        try { v = to_int(to_float(s)) } catch e {}
+        return v
+    }
 
-// ─── utilization calc ───
-fn calc_util(cpu_free: str, total_cpu: int) -> int {
-    let free = to_int(cpu_free)
-    if total_cpu <= 0 { return 0 }
-    let used = total_cpu - free
-    if used < 0 { return 0 }
-    return (used * 100) / total_cpu
+    let status = extract(block, "status")
+    let load_s = extract(block, "load")
+    let load_f = sf(load_s)
+    if load_s == "" { let load_s = "0" }
+
+    // CPU % — load / cores * 100 (capped at 100)
+    let mut cpu_pct = 0
+    if name == "ubu" { cpu_pct = to_int(load_f * 100.0 / 12.0) }
+    if name == "htz" { cpu_pct = to_int(load_f * 100.0 / 32.0) }
+    if cpu_pct > 100 { cpu_pct = 100 }
+
+    // RAM %
+    let mut ram_pct = 0
+    if name == "ubu" {
+        let total = si(extract(block, "ram_total_mb"))
+        let avail = si(extract(block, "ram_avail_mb"))
+        if total > 0 { ram_pct = ((total - avail) * 100) / total }
+    }
+    if name == "htz" {
+        let total = si(extract(block, "ram_total_mb"))
+        let used = si(extract(block, "ram_used_mb"))
+        if total > 0 { ram_pct = (used * 100) / total }
+    }
+    if name == "mac" { ram_pct = si(extract(block, "ram_pct")) }
+
+    // GPU %
+    let mut gpu_pct = 0
+    if name == "ubu" { gpu_pct = si(extract(block, "gpu_util")) }
+
+    return [status, to_string(cpu_pct), to_string(ram_pct), to_string(gpu_pct), load_s]
 }
 
 // ─── auto fill trigger ───
@@ -103,7 +132,8 @@ fn trigger_ubu_fill() {
 
 fn trigger_htz_fill(load_s: str) {
     // htz load < 50% of 32 threads = 16 → 채울 여지
-    let load = to_int(load_s)
+    let mut load = 0
+    try { load = to_int(to_float(load_s)) } catch e {}
     if load < 16 {
         println("  [CEIL] htz load " + load_s + " < 16 → fill 여지 있음")
         // htz 에서 blowup/gap_finder 1개 발사
@@ -140,17 +170,13 @@ let ubu = read_host(raw, "ubu")
 let htz = read_host(raw, "htz")
 let mac = read_host(raw, "mac")
 
-// utilization (ubu: 12 cores, htz: 32 threads, mac: 0 compute)
-let ubu_cpu_util = calc_util(ubu[1], 12)
-let htz_cpu_util = calc_util(htz[1], 32)
-let ubu_gpu_util = if ubu[3] != "0" { 100 - to_int(ubu[3]) } else { 0 }
+// utilization — read_host now returns [status, cpu_pct, ram_pct, gpu_pct, load] directly
+let ubu_cpu_util = to_int(ubu[1])
+let htz_cpu_util = to_int(htz[1])
+let ubu_gpu_util = to_int(ubu[3])
 
 // total pool utilization (weighted: ubu=12, htz=32 → total 44 cores)
-let ubu_used = 12 - to_int(ubu[1])
-let htz_used = 32 - to_int(htz[1])
-if ubu_used < 0 { let ubu_used = 0 }
-if htz_used < 0 { let htz_used = 0 }
-let total_util = if 44 > 0 { ((ubu_used + htz_used) * 100) / 44 } else { 0 }
+let total_util = to_int((to_float(ubu_cpu_util) * 12.0 + to_float(htz_cpu_util) * 32.0) / 44.0)
 
 // display
 println("  ┌──────────┬────────┬────────┬────────┬──────────┐")
