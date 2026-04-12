@@ -147,10 +147,6 @@ fn blast_once() {
             launch = launch + "( cat /tmp/_blast_ubu_" + to_string(n) + ".sh | ssh -o ConnectTimeout=5 -o BatchMode=yes -o ControlPath=none -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'systemd-run --user --scope -p MemoryMax=" + CGROUP_MEM + " -p CPUQuota=" + CGROUP_CPU + " timeout 90 bash -s' > /tmp/_blast_ubu_out_" + to_string(n) + ".txt 2>&1 ) &\n"
             log("SLOT [" + to_string(s) + "] " + name + " d=" + to_string(_depth))
             n = n + 1
-            // 4개마다 wait (병렬 제한)
-            if n % 4 == 0 {
-                launch = launch + "wait\n"
-            }
         }
         s = s + 2
     }
@@ -187,7 +183,31 @@ fn blast_once() {
     try { gpu = to_int(exec("ssh -o ConnectTimeout=3 -o BatchMode=yes -F " + HOME + "/.ssh/config -i " + HOME + "/.ssh/id_ed25519 ubu 'nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null'").trim()) } catch e {}
     log("DONE n=" + to_string(n) + " " + to_string(len(out)) + "B cpu=" + to_string(pct) + "% gpu=" + to_string(gpu) + "%")
 
-    try { exec("rm -f " + shquote(LOCK)) } catch e {}
+}
+
+fn main() {
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+
+    // single instance lock
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    log("DAEMON START — 연속 blast 루프")
+
+    // 연속 루프: blast → 5초 대기 → blast → ...
+    let mut cycle = 0
+    while true {
+        cycle = cycle + 1
+        _slot_cache = ""  // 슬롯 캐시 갱신 (JSONL 변경 반영)
+        blast_once()
+        // 5초 대기 (다음 blast 전 쿨다운)
+        try { exec("sleep 5") } catch e {}
+    }
 }
 
 main()

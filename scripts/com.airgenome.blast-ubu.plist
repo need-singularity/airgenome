@@ -11,14 +11,11 @@
         <string>/Users/ghost/Dev/airgenome/modules/blast_ubu.hexa</string>
     </array>
 
-    <key>StartInterval</key>
-    <integer>30</integer>
-
     <key>RunAtLoad</key>
     <true/>
 
-    <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <key>KeepAlive</key>
+    <true/>
 
     <key>StandardOutPath</key>
     <string>/Users/ghost/Dev/airgenome/forge/blast_ubu.stdout.log</string>
