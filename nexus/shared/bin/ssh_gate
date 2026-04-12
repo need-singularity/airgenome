@@ -1,0 +1,94 @@
+#!/bin/bash
+# nexus/shared/bin/ssh_gate — SSH 접속 게이트 (동시 접속 제한)
+# 골화 2026-04-12: 21개 모듈 75건 SSH 난사 → sshd 마비 방지
+#
+# Usage: ssh_gate <host> <command...>
+#   host: ubu | htz
+#
+# 세마포어: ~/.airgenome/ssh_locks/<host>_<pid>.lock
+# 제한: gate_config.jsonl ssh_gate_max_ubu / ssh_gate_max_htz (default 4)
+
+LOCK_DIR="$HOME/.airgenome/ssh_locks"
+LOG="$HOME/Dev/airgenome/forge/ssh_gate.log"
+CFG="$HOME/Dev/airgenome/nexus/shared/gate_config.jsonl"
+SSH_OPTS="-o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes"
+
+_cfg() { grep "\"$1\"" "$CFG" 2>/dev/null | sed 's/.*"value": *"//;s/".*//' | head -1; }
+
+HOST="${1:?Usage: ssh_gate <host> <cmd...>}"
+shift
+CMD="$*"
+
+# 호스트별 한계
+MAX=$(_cfg "ssh_gate_max_${HOST}"); [ -z "$MAX" ] && MAX=4
+
+# SSH alias
+case "$HOST" in
+  ubu) ALIAS=$(_cfg ssh_alias); [ -z "$ALIAS" ] && ALIAS=ubu ;;
+  htz|hetzner) ALIAS=$(_cfg htz_ssh_alias); [ -z "$ALIAS" ] && ALIAS=hetzner; HOST=htz ;;
+  *) ALIAS="$HOST" ;;
+esac
+
+# ═══════════════════════════════════════════════════════════════
+#  FILTER — 위험 명령 차단 + 허용 패턴 검증
+# ═══════════════════════════════════════════════════════════════
+
+# 절대 금지 패턴 (시스템 파괴, 데이터 삭제, 권한 탈취)
+# grep -E alternation — 다중 단어 패턴 정확 매칭
+DENY_RE="rm -rf /[^a-z]|rm -rf /\$|mkfs |dd if=/dev|shutdown|reboot|halt|poweroff|chmod -R 777 /|passwd |userdel |groupdel |iptables -F|systemctl disable sshd|init 0|telinit"
+
+# 위험 경고 패턴 (실행하되 로그에 WARNING)
+WARN_RE="sudo |pkill -9|killall |systemctl stop |systemctl restart |rm -rf [^.]|truncate "
+
+# 필터 검사 — grep -E 로 전체 패턴 한번에 매칭 (단어 분리 버그 방지)
+if echo "$CMD" | grep -qiE "$DENY_RE" 2>/dev/null; then
+  matched=$(echo "$CMD" | grep -oiE "$DENY_RE" 2>/dev/null | head -1)
+  ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  echo "[SSH-GATE] ✗ DENIED $HOST cmd=$CMD (match: $matched)" >&2
+  echo "$ts [SSH-GATE] DENIED $HOST cmd=$CMD pattern=$matched" >> "$LOG" 2>/dev/null
+  exit 2
+fi
+
+# 경고 패턴 체크 (실행은 허용, 로그 WARNING)
+if echo "$CMD" | grep -qiE "$WARN_RE" 2>/dev/null; then
+  matched=$(echo "$CMD" | grep -oiE "$WARN_RE" 2>/dev/null | head -1)
+  ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  echo "$ts [SSH-GATE] WARNING $HOST cmd=$CMD pattern=$matched" >> "$LOG" 2>/dev/null
+fi
+
+# ═══════════════════════════════════════════════════════════════
+#  SEMAPHORE — 동시 접속 제한
+# ═══════════════════════════════════════════════════════════════
+
+mkdir -p "$LOCK_DIR"
+
+# stale lock 정리 (60초+)
+find "$LOCK_DIR" -name "${HOST}_*.lock" -mmin +1 -delete 2>/dev/null
+
+# 현재 슬롯 수
+current() { ls "$LOCK_DIR/${HOST}_"*.lock 2>/dev/null | wc -l | tr -d ' '; }
+
+CUR=$(current)
+if [ "$CUR" -ge "$MAX" ]; then
+  echo "[SSH-GATE] BLOCKED $HOST ($CUR/$MAX full)" >&2
+  ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  echo "$ts [SSH-GATE] BLOCKED $HOST ($CUR/$MAX) cmd=$CMD" >> "$LOG" 2>/dev/null
+  exit 1
+fi
+
+# 락 획득
+LOCK="$LOCK_DIR/${HOST}_$$.lock"
+echo $$ > "$LOCK"
+trap "rm -f '$LOCK'" EXIT
+
+# 로그
+ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+echo "$ts [SSH-GATE] EXEC $HOST [$((CUR+1))/$MAX] cmd=$CMD" >> "$LOG" 2>/dev/null
+
+# SSH 실행
+ssh $SSH_OPTS "$ALIAS" "$CMD" 2>/dev/null
+rc=$?
+
+rm -f "$LOCK"
+trap - EXIT
+exit $rc

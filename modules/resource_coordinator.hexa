@@ -24,6 +24,7 @@
 //   5. HARD_NEVER:     하드코드 가드 + 게이트별 자체 가드 (이중)
 
 let HOME = env("HOME")
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let AG_HOME = HOME + "/Dev/airgenome"
 let SESSION_NOW = HOME + "/.airgenome/session_now.json"
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
@@ -133,9 +134,9 @@ while gi < gate_list.len() {
     let gate = gate_list[gi].trim()
     if gate == "" { gi = gi + 1; continue }
     // 골화 2026-04-10: ubu 연결 시 원격 실행, Mac 로컬 금지
-    let ubu_ok = try { exec("ssh -o ConnectTimeout=2 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu echo ok 2>/dev/null").trim() } catch e { "" }
+    let ubu_ok = try { exec(SSH_GATE + " ubu 'echo ok' 2>/dev/null").trim() } catch e { "" }
     let cmd = if ubu_ok == "ok" {
-        "ssh -o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes ubu 'cd " + UBU_DIR + " && AG_COORD_FRONTMOST=\"" + frontmost.replace("'", "") + "\" " + UBU_HEXA + " modules/gates/" + gate + " \"" + state + "\" " + to_string(hid_idle_sec) + "' 2>/dev/null"
+        SSH_GATE + " ubu 'cd " + UBU_DIR + " && AG_COORD_FRONTMOST=\"" + frontmost.replace("'", "") + "\" " + UBU_HEXA + " modules/gates/" + gate + " \"" + state + "\" " + to_string(hid_idle_sec) + "' 2>/dev/null"
     } else {
         "AG_COORD_FRONTMOST='" + frontmost.replace("'", "") + "' /Users/ghost/Dev/hexa-lang/target/release/hexa " + AG_HOME + "/modules/gates/" + gate + " '" + state + "' " + to_string(hid_idle_sec) + " 2>/dev/null"
     }

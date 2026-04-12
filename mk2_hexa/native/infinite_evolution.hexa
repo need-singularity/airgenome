@@ -16,6 +16,7 @@
 //   cross-validation (3x), adaptive skip, state persistence
 
 let VERSION = "1.0.0-hexa"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let REMOTE = "ubu"
 let WORKER_DIR = env("HOME") + "/anima/anima/experiments/evolution"
 let WORKER = "_evo_gpu_worker.py"
@@ -40,7 +41,7 @@ let ROADMAP_SAT    = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
 
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ie_ssh.sh", cmd)
-    let result = exec("ssh -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " bash /dev/stdin < /tmp/_ie_ssh.sh 2>/dev/null")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_ie_ssh.sh' 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }

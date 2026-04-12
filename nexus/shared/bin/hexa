@@ -67,7 +67,7 @@ fi
 
 # sentinel 250 = SSH 도달 불가 (remote command의 실제 rc 와 구분)
 _route_ubu() {
-    ssh -o ConnectTimeout=2 -o BatchMode=yes "$UBU_SSH" true 2>/dev/null || return 250
+    "$(dirname "$0")/ssh_gate" ubu "true" 2>/dev/null || return 250
     RARGS=()
     ssh "$UBU_SSH" "mkdir -p $UBU_DIR/gate_files" 2>/dev/null
     for a in "$@"; do
@@ -79,12 +79,12 @@ _route_ubu() {
         fi
     done
     local _esc; _esc=$(printf '%q ' "${RARGS[@]}")
-    ssh -o ConnectTimeout=30 "$UBU_SSH" "cd $UBU_DIR && $UBU_HEXA $_esc" 2>&1
+    "$(dirname "$0")/ssh_gate" ubu "cd $UBU_DIR && $UBU_HEXA $_esc" 2>&1
     return $?
 }
 
 _route_htz() {
-    ssh -o ConnectTimeout=3 -o BatchMode=yes "$HTZ_SSH" true 2>/dev/null || return 250
+    "$(dirname "$0")/ssh_gate" htz "true" 2>/dev/null || return 250
     RARGS=()
     ssh "$HTZ_SSH" "mkdir -p $HTZ_DIR/gate_files" 2>/dev/null
     local NEXUS_LOCAL="$HOME/Dev/nexus"
@@ -103,7 +103,7 @@ _route_htz() {
         fi
     done
     local _esc; _esc=$(printf '%q ' "${RARGS[@]}")
-    ssh -o ConnectTimeout=30 "$HTZ_SSH" "cd $HTZ_DIR && $HTZ_HEXA $_esc" 2>&1
+    "$(dirname "$0")/ssh_gate" htz "cd $HTZ_DIR && $HTZ_HEXA $_esc" 2>&1
     return $?
 }
 

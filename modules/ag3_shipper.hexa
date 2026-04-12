@@ -5,7 +5,8 @@
 //
 // Usage: hexa run modules/ag3_shipper.hexa [N]
 
-let VERSION = "0.1.0"
+let VERSION = "0.1.1"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let TMP_BIN = "/tmp/_ag3_ship.bin"
 let REMOTE_BIN = "/tmp/_ag3_ship.bin"
@@ -122,7 +123,7 @@ fn ship(rows: auto) -> int {
         return 0
     }
     try {
-        let result = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=1 " + REMOTE + " /usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN)
+        let result = exec(SSH_GATE + " " + REMOTE + " '/usr/bin/python3 " + REMOTE_SCRIPT + " " + REMOTE_BIN + "'")
         print("[AG3-SHIP] consumer: " + result)
     } catch e {
         print("[AG3-SHIP] ssh exec failed: " + to_string(e))

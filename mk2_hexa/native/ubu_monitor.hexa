@@ -11,6 +11,7 @@
 // Prime directive: observe only, never kill
 
 let VERSION = "1.0.0"
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let CONFIG_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_config.jsonl"
 let OFFLOAD_PATH = env("HOME") + "/Dev/airgenome/nexus/shared/gate_offload.jsonl"
 let LOG_FILE = env("HOME") + "/Dev/airgenome/offload.log"
@@ -93,11 +94,9 @@ fn is_excluded(name: str, excludes: auto) -> bool {
 //  SSH helper
 // ═══════════════════════════════════════════════════════════════════════
 
-let SSH_OPTS = "-o ConnectTimeout=5 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes"
-
 fn ssh_quiet(cmd: str) -> str {
     write_file("/tmp/_ubu_mon.sh", cmd)
-    let result = exec("ssh " + SSH_OPTS + " " + REMOTE + " bash /dev/stdin < /tmp/_ubu_mon.sh 2>/dev/null")
+    let result = exec(SSH_GATE + " ubu 'bash /dev/stdin < /tmp/_ubu_mon.sh' 2>/dev/null")
     if to_string(result).contains("exec error") { return "" }
     return result.trim()
 }

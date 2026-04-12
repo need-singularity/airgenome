@@ -8,6 +8,7 @@
 //  - --delete 사용. Hetzner 측 잔여는 read-only mirror 로 다룬다.
 //  - 로그/백업 등 로컬 전용 파일은 --exclude.
 
+let SSH_GATE = env("HOME") + "/Dev/airgenome/nexus/shared/bin/ssh_gate"
 let HOST = "hetzner"
 let SRC = env("HOME") + "/Dev/airgenome/forge/"
 let DST_DIR = "/root/Dev/airgenome/forge"
@@ -38,7 +39,7 @@ fn log_err(msg: str) {
 fn run() {
     // 원격 디렉토리 보장
     let mkdir_ok = try {
-        exec("ssh -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o BatchMode=yes " + HOST + " 'mkdir -p \"" + DST_DIR + "\"' 2>&1")
+        exec(SSH_GATE + " htz 'mkdir -p \"" + DST_DIR + "\"' 2>&1")
         true
     } catch e { false }
     if mkdir_ok == false {
