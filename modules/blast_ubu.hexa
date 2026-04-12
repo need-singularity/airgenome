@@ -116,18 +116,7 @@ fn build_cmd(s: int) -> str {
 
 // ── main ──
 
-fn main() {
-    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
-
-    // single instance lock
-    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
-    if len(prev) > 0 {
-        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
-        if alive == "Y" { return }
-    }
-    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
-    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
-
+fn blast_once() {
     // ★ 안전 체크: resource_ceiling.jsonl에서 최신 ubu_cpu 읽기
     let mut load_pct = 50  // default: ceiling 못 읽으면 진행
     try {
