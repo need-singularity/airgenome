@@ -6,7 +6,7 @@
 AG_HOME="${AIRGENOME_HOME:-$HOME/Dev/airgenome}"
 CFG="$AG_HOME/nexus/shared/gate_config.jsonl"
 LOCAL_HEXA="$AG_HOME/nexus/shared/bin/hexa.real"
-[ ! -x "$LOCAL_HEXA" ] && LOCAL_HEXA="$HOME/Dev/hexa-lang/target/release/hexa"
+[ ! -x "$LOCAL_HEXA" ] && LOCAL_HEXA="$HOME/Dev/hexa-lang/hexa"
 
 # ── 외부 프로젝트 pass-through ──
 # 첫 .hexa 인자가 $AG_HOME 외부에 있으면 게이트 전체 우회 (직접 LOCAL_HEXA exec).
