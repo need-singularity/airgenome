@@ -197,7 +197,7 @@ fn main() {
         cycle = cycle + 1
         _slot_cache = ""
         blast_once()
-        try { exec("sleep 5") } catch e {}
+        try { exec("sleep 1") } catch e {}
     }
 }
 
