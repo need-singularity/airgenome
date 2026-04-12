@@ -549,6 +549,7 @@ fn main() {
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
     // ═══ BLAST MODE — 호스트별 배치 스크립트 동시 발사 ═══
+    update_adaptive_depth()
     idle_feeder()
 
     // 큐에서 전부 읽어 호스트별 분리
@@ -682,6 +683,9 @@ fn daemon_loop() {
 
         // 16슬롯 feed
         idle_feeder()
+
+        // 적응형 depth 갱신 (resource_ceiling 기반)
+        update_adaptive_depth()
 
         // blast 분배 + 실행
         let mut ubu_cmds = ""
