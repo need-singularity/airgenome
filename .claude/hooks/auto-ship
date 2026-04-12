@@ -64,10 +64,8 @@ trap 'rm -f "$LOG"' EXIT
     rsync -a --delete "$DIR/Airgenome.app/" /Applications/Airgenome.app/
     test -x /Applications/Airgenome.app/Contents/MacOS/applet
 
-    # ── 5. Restart ──
-    pkill -f 'Airgenome.app/Contents/MacOS/applet' 2>/dev/null || true
-    sleep 1
-    open /Applications/Airgenome.app
+    # ── 5. Restart (LaunchAgent가 단일 인스턴스 보장) ──
+    launchctl kickstart -k "gui/$(id -u)/com.airgenome.menubar"
 
 ) > "$LOG" 2>&1
 
