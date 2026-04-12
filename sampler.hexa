@@ -347,7 +347,7 @@ while true {
     let mut ubu_gpu_mem = 0
     let mut ubu_gpu_name = ""
 
-    // ag3_status.json 직접 읽기 (nc 의존 제거 — 1초 실시간)
+    // ag3_status.json 직접 읽기 (nc 제거, 로컬 파일 → 0ms)
     let ag3_path = env("HOME") + "/.airgenome/ag3_status.json"
     if file_exists(ag3_path) {
         let ag3_raw = try { read_file(ag3_path).trim() } catch e { "" }
