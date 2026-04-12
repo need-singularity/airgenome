@@ -37,6 +37,8 @@
         <string>/Users/ghost</string>
         <key>LANG</key>
         <string>en_US.UTF-8</string>
+        <key>SSH_AUTH_SOCK</key>
+        <string>/private/tmp/com.apple.launchd.MLs8EFX1NE/Listeners</string>
     </dict>
 
     <key>ProcessType</key>
