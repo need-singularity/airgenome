@@ -909,12 +909,14 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
 
                 // Determine rank for this account
                 let my_rank = -1
+                let my_score = -200
                 let ri = 0
                 while ri < len(rank_lines) {
                     let rp = rank_lines[ri].split("|")
                     if len(rp) >= 2 {
                         if rp[1] == name {
                             let rsc = to_int(rp[0])
+                            my_score = rsc
                             if rsc >= 0 { my_rank = ri }
                         }
                     }
@@ -926,7 +928,10 @@ fn show_usage_dashboard_ranked(show_select: bool) -> str {
                 if my_rank >= 0 {
                     if my_rank < 3 { tag = rank_icons[my_rank] }
                 }
-                if my_rank < 0 { tag = "✗" }
+                if my_rank < 0 {
+                    if my_score == -50 { tag = "⟳" }
+                    else { tag = "✗" }
+                }
 
                 // Style per cell — borders stay plain (ccmon-style)
                 let w_int = parse_pct(w_pct)
