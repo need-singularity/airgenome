@@ -110,26 +110,29 @@ fn ssh_alias(host: str) -> str {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-//  16-slot 가중 카탈로그 — ROI priority + engine + build + maint
+//  16-slot 교대 카탈로그 — 짝수=htz(cpu), 홀수=ubu(gpu)
+//  → 매 사이클 양 호스트 동시 실행 보장
 //
-//  Slot  Name              Project       Type         Target
-//  ────  ────────────────  ────────────  ──────────   ──────
-//  0     anima_engine      anima         gpu_heavy    ubu
-//  1     nexus_engine      nexus         cpu_heavy    htz
-//  2     hexa_test         hexa-lang     cpu_heavy    htz
-//  3     nexus_blowup      nexus         cpu_heavy    htz
-//  4     anima_engine      anima         gpu_heavy    ubu
-//  5     airgenome_engine  airgenome     cpu_heavy    htz
-//  6     hexa_build        hexa-lang     cpu_heavy    htz
-//  7     nexus_todo        nexus         cpu_heavy    htz
-//  8     anima_engine      anima         gpu_heavy    ubu
-//  9     papers_engine     papers        cpu_heavy    htz
-//  10    repo_sync         infra         io_heavy     htz
-//  11    airgenome_engine  airgenome     cpu_heavy    htz
-//  12    hexa_bench        hexa-lang     cpu_heavy    htz
-//  13    n6_engine         n6-arch       cpu_heavy    htz
-//  14    git_gc            infra         io_heavy     htz
-//  15    hexa_clippy       hexa-lang     cpu_heavy    htz
+//  Slot  Name              Project         Type       Host   Timeout
+//  ────  ────────────────  ──────────────  ─────────  ─────  ───────
+//   0    anima_engine      anima           cpu_heavy  htz    600s
+//   1    nexus_engine_u    nexus           gpu_heavy  ubu    600s
+//   2    nexus_todo        nexus           cpu_heavy  htz    300s
+//   3    airgenome_eng_u   airgenome       gpu_heavy  ubu    600s
+//   4    hexa_test         hexa-lang       cpu_heavy  htz    300s
+//   5    anima_eng_u       anima           gpu_heavy  ubu    600s
+//   6    anima_engine2     anima           cpu_heavy  htz    600s
+//   7    papers_eng_u      papers          gpu_heavy  ubu    600s
+//   8    hexa_build        hexa-lang       cpu_heavy  htz    600s
+//   9    n6_eng_u          n6-architecture gpu_heavy  ubu    600s
+//  10    repo_sync         infra           cpu_heavy  htz    120s
+//  11    hexa_eng_u        hexa-lang       gpu_heavy  ubu    600s
+//  12    nexus_blowup      nexus           cpu_heavy  htz    300s
+//  13    airgenome_eng2_u  airgenome       gpu_heavy  ubu    600s
+//  14    git_gc            infra           cpu_heavy  htz    120s
+//  15    nexus_eng2_u      nexus           gpu_heavy  ubu    600s
+//
+//  8 cycles × 30s = 4분 풀 루프. 양 호스트 100% 가동.
 // ═══════════════════════════════════════════════════════════════════════
 
 let CATALOG_SIZE = 16
@@ -137,125 +140,80 @@ let CATALOG_SIZE = 16
 fn catalog_name(s: int) -> str {
     if s == 0  { return "anima_engine" }
     if s == 1  { return "nexus_engine" }
-    if s == 2  { return "hexa_test" }
-    if s == 3  { return "nexus_blowup" }
-    if s == 4  { return "anima_engine" }
-    if s == 5  { return "airgenome_engine" }
-    if s == 6  { return "hexa_build" }
-    if s == 7  { return "nexus_todo" }
-    if s == 8  { return "anima_engine" }
-    if s == 9  { return "papers_engine" }
+    if s == 2  { return "nexus_todo" }
+    if s == 3  { return "airgenome_engine" }
+    if s == 4  { return "hexa_test" }
+    if s == 5  { return "anima_engine" }
+    if s == 6  { return "anima_engine" }
+    if s == 7  { return "papers_engine" }
+    if s == 8  { return "hexa_build" }
+    if s == 9  { return "n6_engine" }
     if s == 10 { return "repo_sync" }
-    if s == 11 { return "airgenome_engine" }
-    if s == 12 { return "hexa_bench" }
-    if s == 13 { return "n6_engine" }
+    if s == 11 { return "hexa_engine" }
+    if s == 12 { return "nexus_blowup" }
+    if s == 13 { return "airgenome_engine" }
     if s == 14 { return "git_gc" }
-    if s == 15 { return "hexa_clippy" }
+    if s == 15 { return "nexus_engine" }
     return "noop"
 }
 
 fn catalog_project(s: int) -> str {
     if s == 0  { return "anima" }
     if s == 1  { return "nexus" }
-    if s == 2  { return "hexa-lang" }
-    if s == 3  { return "nexus" }
-    if s == 4  { return "anima" }
-    if s == 5  { return "airgenome" }
-    if s == 6  { return "hexa-lang" }
-    if s == 7  { return "nexus" }
-    if s == 8  { return "anima" }
-    if s == 9  { return "papers" }
+    if s == 2  { return "nexus" }
+    if s == 3  { return "airgenome" }
+    if s == 4  { return "hexa-lang" }
+    if s == 5  { return "anima" }
+    if s == 6  { return "anima" }
+    if s == 7  { return "papers" }
+    if s == 8  { return "hexa-lang" }
+    if s == 9  { return "n6-architecture" }
     if s == 10 { return "infra" }
-    if s == 11 { return "airgenome" }
-    if s == 12 { return "hexa-lang" }
-    if s == 13 { return "n6-architecture" }
+    if s == 11 { return "hexa-lang" }
+    if s == 12 { return "nexus" }
+    if s == 13 { return "airgenome" }
     if s == 14 { return "infra" }
-    if s == 15 { return "hexa-lang" }
+    if s == 15 { return "nexus" }
     return "infra"
 }
 
 fn catalog_type(s: int) -> str {
-    // anima: gpu 필요하나 ubu에 repo 없음 → htz(cpu_heavy)로 전환
-    // gpu_heavy 슬롯은 ubu 전용 작업(hexa build 등)으로 교체
-    if s == 0  { return "cpu_heavy" }   // anima engine → htz
-    if s == 1  { return "cpu_heavy" }   // nexus engine → htz
-    if s == 2  { return "gpu_heavy" }   // hexa test → ubu (병렬용)
-    if s == 3  { return "cpu_heavy" }   // nexus blowup → htz
-    if s == 4  { return "cpu_heavy" }   // anima engine → htz
-    if s == 5  { return "gpu_heavy" }   // airgenome engine → ubu (병렬용)
-    if s == 6  { return "cpu_heavy" }   // hexa build → htz
-    if s == 7  { return "cpu_heavy" }   // nexus todo → htz
-    if s == 8  { return "cpu_heavy" }   // anima engine → htz
-    if s == 9  { return "gpu_heavy" }   // papers engine → ubu (병렬용)
-    if s == 10 { return "io_heavy" }    // repo sync → htz
-    if s == 11 { return "cpu_heavy" }   // airgenome engine → htz
-    if s == 12 { return "gpu_heavy" }   // hexa bench → ubu (병렬용)
-    if s == 13 { return "cpu_heavy" }   // n6 engine → htz
-    if s == 14 { return "io_heavy" }    // git gc → htz
-    if s == 15 { return "gpu_heavy" }   // hexa clippy → ubu (병렬용)
-    return "cpu_heavy"
+    // 짝수 = cpu_heavy → htz, 홀수 = gpu_heavy → ubu
+    if s % 2 == 0 { return "cpu_heavy" }
+    return "gpu_heavy"
 }
 
 fn catalog_cmd(s: int) -> str {
-    // engine: cd 제거 — engine은 nexus/shared/engine 에서 독립 실행
-    // ubu: airgenome, hexa-lang, nexus 만 있음
-    // htz: anima, airgenome, hexa-lang, n6-architecture, nexus 있음
     let H = HEXA_R
     let E = ENGINE_DIR
-    // P0 anima — engine (htz에만 anima 있음 → cpu_heavy로 htz 전송)
+    // 짝수: htz (32T, cargo, anima/n6 repo 있음)
+    // 홀수: ubu (GPU, 12T, engine 독립 실행)
     if s == 0  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    // P1 nexus — engine
     if s == 1  { return H + " " + E + "/engine_nexus.hexa 2>&1 | tail -50" }
-    // P2 hexa-lang — cargo test
-    if s == 2  { return "cd ~/Dev/hexa-lang && cargo test 2>&1 | tail -30" }
-    // P1 nexus — blowup BT discovery
-    if s == 3  { return H + " ~/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa 3 2>&1 | tail -30" }
-    // P0 anima — engine repeat
-    if s == 4  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    // P1 airgenome — engine
-    if s == 5  { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
-    // P2 hexa-lang — cargo build release
-    if s == 6  { return "cd ~/Dev/hexa-lang && cargo build --release 2>&1 | tail -10" }
-    // P1 nexus — todo scan
-    if s == 7  { return H + " ~/Dev/nexus/shared/blowup/todo.hexa nexus 2>&1 | tail -50" }
-    // P0 anima — engine repeat
-    if s == 8  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
-    // P2 papers — engine (repo 없어도 engine 독립 실행)
-    if s == 9  { return H + " " + E + "/engine_papers.hexa 2>&1 | tail -50" }
-    // maint — repo sync (존재하는 디렉만)
+    if s == 2  { return H + " ~/Dev/nexus/shared/blowup/todo.hexa nexus 2>&1 | tail -50" }
+    if s == 3  { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
+    if s == 4  { return "export PATH=$HOME/.cargo/bin:$PATH && cd ~/Dev/hexa-lang && cargo test 2>&1 | tail -30" }
+    if s == 5  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
+    if s == 6  { return H + " " + E + "/engine_anima.hexa 2>&1 | tail -50" }
+    if s == 7  { return H + " " + E + "/engine_papers.hexa 2>&1 | tail -50" }
+    if s == 8  { return "export PATH=$HOME/.cargo/bin:$PATH && cd ~/Dev/hexa-lang && cargo build --release 2>&1 | tail -10" }
+    if s == 9  { return H + " " + E + "/engine_n6_architecture.hexa 2>&1 | tail -50" }
     if s == 10 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) == && cd $d && git pull --ff-only 2>&1 | tail -2; done" }
-    // P1 airgenome — engine repeat
-    if s == 11 { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
-    // P2 hexa-lang — bench
-    if s == 12 { return "cd ~/Dev/hexa-lang && cargo bench 2>&1 | tail -30" }
-    // P2 n6-architecture — engine
-    if s == 13 { return H + " " + E + "/engine_n6_architecture.hexa 2>&1 | tail -50" }
-    // maint — git gc (존재하는 디렉만)
+    if s == 11 { return H + " " + E + "/engine_hexa_lang.hexa 2>&1 | tail -50" }
+    if s == 12 { return H + " ~/Dev/nexus/shared/blowup/commands.hexa scan 2>&1 | tail -30" }
+    if s == 13 { return H + " " + E + "/engine_airgenome.hexa 2>&1 | tail -50" }
     if s == 14 { return "for d in $(ls -d ~/Dev/nexus ~/Dev/hexa-lang ~/Dev/airgenome ~/Dev/anima ~/Dev/n6-architecture 2>/dev/null); do echo == $(basename $d) gc && cd $d && git gc --auto 2>&1; done" }
-    // P2 hexa-lang — clippy
-    if s == 15 { return "cd ~/Dev/hexa-lang && cargo clippy 2>&1 | tail -30" }
+    if s == 15 { return H + " " + E + "/engine_nexus.hexa 2>&1 | tail -50" }
     return "echo noop"
 }
 
 fn catalog_timeout(s: int) -> int {
-    // engines: 600s, build: 600s, test/bench: 300s, maint: 120s
-    if s == 0  { return 600 }
-    if s == 1  { return 600 }
     if s == 2  { return 300 }
-    if s == 3  { return 300 }
-    if s == 4  { return 600 }
-    if s == 5  { return 600 }
-    if s == 6  { return 600 }
-    if s == 7  { return 300 }
-    if s == 8  { return 600 }
-    if s == 9  { return 600 }
+    if s == 4  { return 300 }
     if s == 10 { return 120 }
-    if s == 11 { return 600 }
     if s == 12 { return 300 }
-    if s == 13 { return 600 }
     if s == 14 { return 120 }
-    if s == 15 { return 300 }
-    return 120
+    return 600
 }
 
 // ═══════════════════════════════════════════════════════════════════════
