@@ -1,0 +1,449 @@
+// modules/task_dispatcher.hexa — 자원 최대 활용 Pull-Dispatcher (AG8)
+//
+// ═══════════════════════════════════════════════════════════════════════
+//  AG8 — 전 프로젝트 Pull-Dispatch 아키텍처
+//
+//  문제: gap 79% — 원격 자원(ubu/htz) 대부분 유휴
+//  해결: 중앙 큐 + idle 자동 생성 + best-fit SSH 실행
+//
+//  동작 (30s 주기 LaunchAgent):
+//    1. task_queue.jsonl 에서 pending 작업 확인 (priority DESC)
+//    2. 없으면 idle_feeder 가 유용한 작업 자동 생성
+//    3. dispatch_state.json 기반 best host 선택 (AG7 연동)
+//    4. SSH 실행 → task_results.jsonl 기록
+//
+//  프로젝트 Pull:
+//    모든 프로젝트가 큐에 직접 append:
+//      echo '{"task":"my_job","project":"anima","type":"gpu_heavy",
+//             "priority":7,"status":"pending"}' >> task_queue.jsonl
+//    또는 CLI:
+//      hexa task_dispatcher.hexa add <project> <type> <task> [priority]
+//
+//  Idle 카탈로그 (task 없을 때 자동 round-robin):
+//    0: hexa_test     — cargo test          (cpu_heavy)
+//    1: hexa_build    — cargo build release  (cpu_heavy)
+//    2: repo_sync     — git pull all repos   (io_heavy)
+//    3: disk_report   — df + du top10        (io_heavy)
+//    4: hexa_bench    — cargo bench          (cpu_heavy)
+//    5: git_gc        — gc all repos         (io_heavy)
+//    6: log_scan      — 50MB+ log 탐지       (io_heavy)
+//    7: hexa_clippy   — cargo clippy         (cpu_heavy)
+//
+//  CLI: hexa task_dispatcher.hexa <run|add|status|feed|catalog>
+// ═══════════════════════════════════════════════════════════════════════
+
+let HOME = env("HOME")
+let AG_HOME = HOME + "/Dev/airgenome"
+let QUEUE = HOME + "/Dev/nexus/shared/task_queue.jsonl"
+let RESULTS = AG_HOME + "/forge/task_results.jsonl"
+let LOG = AG_HOME + "/forge/task_dispatcher.log"
+let LOCK = HOME + "/.airgenome/task_dispatcher.lock"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let SSH_GATE = AG_HOME + "/nexus/shared/bin/ssh_gate"
+let COUNTER_FILE = HOME + "/.airgenome/idle_counter"
+
+fn ts() -> str {
+    return try { exec("date -u '+%Y-%m-%dT%H:%M:%SZ'").trim() } catch e { "?" }
+}
+
+fn shquote(s: str) -> str {
+    return "'" + s.replace("'", "'\\''") + "'"
+}
+
+fn log(msg: str) {
+    let line = ts() + " [TD] " + msg
+    try { exec("mkdir -p " + shquote(AG_HOME + "/forge")) } catch e {}
+    try { exec("echo " + shquote(line) + " >> " + shquote(LOG)) } catch e {}
+    println(line)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JSON helpers
+// ═══════════════════════════════════════════════════════════════════════
+
+fn jstr(raw: str, key: str, fb: str) -> str {
+    let tag = "\"" + key + "\":\""
+    if raw.contains(tag) == false { return fb }
+    let after = raw.split(tag)[1]
+    return after.split("\"")[0]
+}
+
+fn jint(raw: str, key: str, fb: int) -> int {
+    let tag = "\"" + key + "\":"
+    if raw.contains(tag) == false { return fb }
+    let after = raw.split(tag)[1]
+    let val_s = after.split(",")[0].split("}")[0].trim().replace("\"", "")
+    try { return to_int(to_float(val_s)) } catch e { return fb }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Host routing — dispatch_state.json (AG7) 연동
+// ═══════════════════════════════════════════════════════════════════════
+
+fn best_host(task_type: str) -> str {
+    if file_exists(DISPATCH_STATE) == false { return "ubu" }
+    let raw = read_file(DISPATCH_STATE)
+    let tag = "\"" + task_type + "\":{\"host\":\""
+    if raw.contains(tag) == false { return "ubu" }
+    let h = raw.split(tag)[1].split("\"")[0]
+    if h == "none" { return "ubu" }
+    return h
+}
+
+fn ssh_alias(host: str) -> str {
+    if host == "htz" { return "hetzner" }
+    return "ubu"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Task Catalog — idle 작업 정의 (8 slots, round-robin)
+// ═══════════════════════════════════════════════════════════════════════
+
+let CATALOG_SIZE = 8
+
+fn catalog_name(s: int) -> str {
+    if s == 0 { return "hexa_test" }
+    if s == 1 { return "hexa_build" }
+    if s == 2 { return "repo_sync" }
+    if s == 3 { return "disk_report" }
+    if s == 4 { return "hexa_bench" }
+    if s == 5 { return "git_gc" }
+    if s == 6 { return "log_scan" }
+    if s == 7 { return "hexa_clippy" }
+    return "noop"
+}
+
+fn catalog_project(s: int) -> str {
+    if s == 0 { return "hexa-lang" }
+    if s == 1 { return "hexa-lang" }
+    if s == 2 { return "infra" }
+    if s == 3 { return "infra" }
+    if s == 4 { return "hexa-lang" }
+    if s == 5 { return "infra" }
+    if s == 6 { return "infra" }
+    if s == 7 { return "hexa-lang" }
+    return "infra"
+}
+
+fn catalog_type(s: int) -> str {
+    if s == 0 { return "cpu_heavy" }
+    if s == 1 { return "cpu_heavy" }
+    if s == 2 { return "io_heavy" }
+    if s == 3 { return "io_heavy" }
+    if s == 4 { return "cpu_heavy" }
+    if s == 5 { return "io_heavy" }
+    if s == 6 { return "io_heavy" }
+    if s == 7 { return "cpu_heavy" }
+    return "io_heavy"
+}
+
+fn catalog_cmd(s: int) -> str {
+    if s == 0 { return "cd ~/Dev/hexa-lang && cargo test 2>&1 | tail -30" }
+    if s == 1 { return "cd ~/Dev/hexa-lang && cargo build --release 2>&1 | tail -10" }
+    if s == 2 { return "for d in nexus anima hexa-lang airgenome n6-architecture; do echo == $d == && cd ~/Dev/$d 2>/dev/null && git pull --ff-only 2>&1 | tail -2; done" }
+    if s == 3 { return "df -h / && du -sh ~/Dev/*/. 2>/dev/null | sort -rh | head -10" }
+    if s == 4 { return "cd ~/Dev/hexa-lang && cargo bench 2>&1 | tail -30" }
+    if s == 5 { return "for d in nexus anima hexa-lang airgenome; do echo == $d == && cd ~/Dev/$d 2>/dev/null && git gc --auto 2>&1; done" }
+    if s == 6 { return "find ~/Dev -name *.log -size +50M 2>/dev/null | head -10" }
+    if s == 7 { return "cd ~/Dev/hexa-lang && cargo clippy 2>&1 | tail -30" }
+    return "echo noop"
+}
+
+fn catalog_timeout(s: int) -> int {
+    if s == 0 { return 300 }
+    if s == 1 { return 600 }
+    if s == 2 { return 120 }
+    if s == 3 { return 60 }
+    if s == 4 { return 300 }
+    if s == 5 { return 120 }
+    if s == 6 { return 60 }
+    if s == 7 { return 300 }
+    return 60
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Queue operations
+// ═══════════════════════════════════════════════════════════════════════
+
+fn queue_add(task_name: str, project: str, task_type: str, priority: int, timeout: int) {
+    let id = task_name + "_" + try { exec("date +%s").trim() } catch e { "0" }
+    let line = "{\"id\":\"" + id + "\",\"ts\":\"" + ts() + "\",\"task\":\"" + task_name + "\",\"project\":\"" + project + "\",\"type\":\"" + task_type + "\",\"priority\":" + to_string(priority) + ",\"timeout\":" + to_string(timeout) + ",\"status\":\"pending\"}"
+    append_file(QUEUE, line + "\n")
+}
+
+fn read_pending() -> str {
+    if file_exists(QUEUE) == false { return "" }
+    let content = read_file(QUEUE).trim()
+    if len(content) < 5 { return "" }
+    let lines = content.split("\n")
+    let mut best_line = ""
+    let mut best_pri = -1
+    let i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if len(l) >= 5 {
+            if l.contains("\"pending\"") {
+                let pri = jint(l, "priority", 0)
+                if pri > best_pri {
+                    best_pri = pri
+                    best_line = l
+                }
+            }
+        }
+        i = i + 1
+    }
+    return best_line
+}
+
+fn remove_task(task_id: str) {
+    if file_exists(QUEUE) == false { return }
+    let content = read_file(QUEUE).trim()
+    if len(content) < 3 { return }
+    let lines = content.split("\n")
+    let mut out = ""
+    let i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if len(l) > 0 {
+            if l.contains("\"" + task_id + "\"") == false {
+                out = out + l + "\n"
+            }
+        }
+        i = i + 1
+    }
+    write_file(QUEUE, out)
+}
+
+fn queue_count() -> int {
+    if file_exists(QUEUE) == false { return 0 }
+    let content = read_file(QUEUE).trim()
+    if len(content) < 5 { return 0 }
+    let lines = content.split("\n")
+    let mut n = 0
+    let i = 0
+    while i < len(lines) {
+        if lines[i].contains("\"pending\"") { n = n + 1 }
+        i = i + 1
+    }
+    return n
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Idle feeder — round-robin 카탈로그에서 자동 생성
+// ═══════════════════════════════════════════════════════════════════════
+
+fn idle_feeder() {
+    let mut count = 0
+    if file_exists(COUNTER_FILE) {
+        try { count = to_int(read_file(COUNTER_FILE).trim()) } catch e {}
+    }
+    let slot = count % CATALOG_SIZE
+
+    let name = catalog_name(slot)
+    let project = catalog_project(slot)
+    let ttype = catalog_type(slot)
+    let timeout = catalog_timeout(slot)
+
+    queue_add(name, project, ttype, 2, timeout)
+    log("FEED [" + to_string(slot) + "/" + to_string(CATALOG_SIZE) + "] " + name + " (" + project + ")")
+
+    try { write_file(COUNTER_FILE, to_string(count + 1)) } catch e {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Task resolver — name → cmd
+// ═══════════════════════════════════════════════════════════════════════
+
+fn resolve_cmd(task_name: str) -> str {
+    let i = 0
+    while i < CATALOG_SIZE {
+        if catalog_name(i) == task_name { return catalog_cmd(i) }
+        i = i + 1
+    }
+    return "echo unknown_task: " + task_name
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Execute — SSH to best host
+// ═══════════════════════════════════════════════════════════════════════
+
+fn execute_task(line: str) {
+    let task_id = jstr(line, "id", "?")
+    let task_name = jstr(line, "task", "noop")
+    let project = jstr(line, "project", "?")
+    let task_type = jstr(line, "type", "cpu_heavy")
+    let timeout = jint(line, "timeout", 120)
+
+    let host = best_host(task_type)
+    let alias = ssh_alias(host)
+    let cmd = resolve_cmd(task_name)
+
+    log("EXEC " + task_id + " [" + project + "/" + task_name + "] -> " + host + " (" + task_type + ")")
+
+    // Remove from pending queue
+    remove_task(task_id)
+
+    // Write raw command → pipe via stdin to remote bash (no quoting issues)
+    write_file("/tmp/_td_exec.sh", cmd + "\n")
+
+    let mut result = ""
+    let mut status = "done"
+    try {
+        result = exec(SSH_GATE + " " + alias + " 'timeout " + to_string(timeout) + " bash /dev/stdin' < /tmp/_td_exec.sh 2>&1").trim()
+        // Trim to last 500 chars if too long
+        if len(result) > 500 {
+            result = result.substring(len(result) - 500, len(result))
+        }
+    } catch e {
+        status = "fail"
+        result = try { to_string(e) } catch e2 { "exec_error" }
+    }
+
+    // Sanitize output for JSON embedding
+    let safe = result.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
+
+    // Append result
+    let rline = "{\"id\":\"" + task_id + "\",\"ts\":\"" + ts() + "\",\"project\":\"" + project + "\",\"task\":\"" + task_name + "\",\"host\":\"" + host + "\",\"status\":\"" + status + "\",\"bytes\":" + to_string(len(result)) + ",\"output\":\"" + safe + "\"}"
+    append_file(RESULTS, rline + "\n")
+
+    log(status + " " + task_id + " -> " + host + " [" + to_string(len(result)) + "B]")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CLI commands
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_status() {
+    println("=== Task Dispatcher (AG8) ===")
+    println("")
+
+    // Pending
+    let pending = queue_count()
+    println("  pending: " + to_string(pending))
+
+    // Recent results (last 5)
+    if file_exists(RESULTS) {
+        let last = try { exec("tail -5 " + shquote(RESULTS)).trim() } catch e { "" }
+        if len(last) > 0 {
+            println("")
+            println("  -- recent --")
+            let rlines = last.split("\n")
+            let i = 0
+            while i < len(rlines) {
+                let rl = rlines[i].trim()
+                if len(rl) > 5 {
+                    let rtask = jstr(rl, "task", "?")
+                    let rhost = jstr(rl, "host", "?")
+                    let rstatus = jstr(rl, "status", "?")
+                    let rts = jstr(rl, "ts", "?")
+                    let rbytes = jint(rl, "bytes", 0)
+                    println("  " + rts + " " + rtask + " -> " + rhost + " [" + rstatus + " " + to_string(rbytes) + "B]")
+                }
+                i = i + 1
+            }
+        }
+    }
+
+    // Idle counter
+    let mut count = 0
+    if file_exists(COUNTER_FILE) {
+        try { count = to_int(read_file(COUNTER_FILE).trim()) } catch e {}
+    }
+    let next_slot = count % CATALOG_SIZE
+    println("")
+    println("  idle cycle: " + to_string(count) + " (next: " + catalog_name(next_slot) + ")")
+
+    // Dispatch state freshness
+    if file_exists(DISPATCH_STATE) {
+        let dts = jstr(read_file(DISPATCH_STATE), "ts", "?")
+        println("  dispatch_state: " + dts)
+    }
+}
+
+fn cmd_catalog() {
+    println("=== Task Catalog (8 slots) ===")
+    println("")
+    let i = 0
+    while i < CATALOG_SIZE {
+        println("  [" + to_string(i) + "] " + catalog_name(i) + "  (" + catalog_project(i) + " / " + catalog_type(i) + ")  timeout=" + to_string(catalog_timeout(i)) + "s")
+        i = i + 1
+    }
+    println("")
+    println("Projects can add custom tasks:")
+    println("  hexa task_dispatcher.hexa add <project> <type> <task_name> [priority]")
+    println("  echo '{...}' >> " + QUEUE)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Main
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() {
+    let argv = args()
+    let mut cmd = "run"
+    if len(argv) > 3 { cmd = argv[3] }
+
+    // --- status ---
+    if cmd == "status" { cmd_status(); return }
+
+    // --- catalog ---
+    if cmd == "catalog" { cmd_catalog(); return }
+
+    // --- feed (manual idle inject) ---
+    if cmd == "feed" {
+        idle_feeder()
+        println("  fed 1 idle task (total pending: " + to_string(queue_count()) + ")")
+        return
+    }
+
+    // --- add <project> <type> <task_name> [priority] ---
+    if cmd == "add" {
+        if len(argv) < 7 {
+            println("Usage: task_dispatcher.hexa add <project> <type> <task_name> [priority]")
+            println("  project: hexa-lang | anima | nexus | airgenome | n6-architecture | infra")
+            println("  type:    cpu_heavy | gpu_heavy | io_heavy | realtime_gpu")
+            println("  priority: 1-10 (default 5, idle=2)")
+            return
+        }
+        let project = argv[4]
+        let ttype = argv[5]
+        let task_name = argv[6]
+        let mut priority = 5
+        if len(argv) > 7 { try { priority = to_int(argv[7]) } catch e {} }
+        queue_add(task_name, project, ttype, priority, 300)
+        println("  added: " + task_name + " [" + project + "/" + ttype + "] priority=" + to_string(priority))
+        return
+    }
+
+    // --- run (default, LaunchAgent calls this) ---
+
+    // Single instance lock
+    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
+    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
+    if len(prev) > 0 {
+        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
+        if alive == "Y" { return }
+    }
+    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
+    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
+
+    // 1. Check pending queue
+    let mut pending = read_pending()
+
+    // 2. Empty → auto-generate idle task
+    if len(pending) == 0 {
+        idle_feeder()
+        pending = read_pending()
+    }
+
+    // 3. Execute
+    if len(pending) > 0 {
+        execute_task(pending)
+    } else {
+        log("NOOP no tasks")
+    }
+
+    try { exec("rm -f " + shquote(LOCK)) } catch e {}
+}
+
+main()
