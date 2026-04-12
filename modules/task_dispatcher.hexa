@@ -536,32 +536,95 @@ fn main() {
     let pid_s = try { exec("echo $$").trim() } catch e { "0" }
     try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
 
-    // 1. 큐 확인 (user tasks first)
-    let mut pending = read_pending()
+    // ═══ BLAST MODE — 호스트별 배치 스크립트 동시 발사 ═══
+    idle_feeder()
 
-    // 2. Empty → 양 호스트 동시 feed (gpu + cpu 각 1개)
-    if len(pending) == 0 {
-        idle_feeder()
-        pending = read_pending()
-    }
+    // 큐에서 전부 읽어 호스트별 분리
+    let mut ubu_cmds = ""
+    let mut htz_cmds = ""
+    let mut ubu_ids = ""
+    let mut htz_ids = ""
+    let mut ubu_n = 0
+    let mut htz_n = 0
 
-    // 3. 양 호스트 동시 실행: 최대 2개 task (ubu + htz)
-    if len(pending) > 0 {
-        execute_task(pending)
-    }
+    if file_exists(QUEUE) == false { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
+    let qcontent = read_file(QUEUE).trim()
+    if len(qcontent) < 5 { log("NOOP"); try { exec("rm -f " + shquote(LOCK)) } catch e {}; return }
+    let qlines = qcontent.split("\n")
+    let mut qi = 0
+    while qi < len(qlines) {
+        let ql = qlines[qi].trim()
+        qi = qi + 1
+        if len(ql) < 5 { continue }
+        if ql.contains("\"pending\"") == false { continue }
 
-    // 4. 두 번째 task 실행 (다른 호스트 대상)
-    let pending2 = read_pending()
-    if len(pending2) > 0 {
-        let t2_type = jstr(pending2, "type", "cpu_heavy")
-        let t1_type = jstr(pending, "type", "?")
-        let h1 = best_host(t1_type)
-        let h2 = best_host(t2_type)
-        // 같은 호스트면 스킵 (다음 사이클에 실행)
-        if h1 != h2 {
-            execute_task(pending2)
+        let tid = jstr(ql, "id", "?")
+        let tname = jstr(ql, "task", "noop")
+        let ttype = jstr(ql, "type", "cpu_heavy")
+        let tproject = jstr(ql, "project", "?")
+        let cmd = resolve_cmd(tname)
+        let host = best_host(ttype)
+
+        if host == "ubu" {
+            ubu_cmds = ubu_cmds + "echo '==" + tid + "==' && " + cmd + " && echo '==" + tid + "==END' ; "
+            ubu_ids = ubu_ids + tid + "|" + tname + "|" + tproject + "\n"
+            ubu_n = ubu_n + 1
+        } else {
+            htz_cmds = htz_cmds + "echo '==" + tid + "==' && " + cmd + " && echo '==" + tid + "==END' ; "
+            htz_ids = htz_ids + tid + "|" + tname + "|" + tproject + "\n"
+            htz_n = htz_n + 1
         }
     }
+
+    // 큐 비우기
+    write_file(QUEUE, "")
+
+    log("BLAST ubu=" + to_string(ubu_n) + " htz=" + to_string(htz_n))
+
+    // 호스트별 배치 스크립트 작성 + 동시 발사
+    if ubu_n > 0 {
+        write_file("/tmp/_td_ubu.sh", "#!/bin/bash\n" + ubu_cmds + "\n")
+    }
+    if htz_n > 0 {
+        write_file("/tmp/_td_htz.sh", "#!/bin/bash\n" + htz_cmds + "\n")
+    }
+
+    // 양쪽 동시 실행: htz를 백그라운드, ubu를 포그라운드
+    if htz_n > 0 {
+        if ubu_n > 0 {
+            // 양쪽 동시 — htz 백그라운드 + ubu 포그라운드
+            try { exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner 'timeout 300 bash -s' > /tmp/_td_htz_out.txt 2>&1 &") } catch e {}
+        } else {
+            try { exec("cat /tmp/_td_htz.sh | " + SSH_GATE + " hetzner 'timeout 300 bash -s' > /tmp/_td_htz_out.txt 2>&1 &") } catch e {}
+        }
+    }
+
+    let mut ubu_out = ""
+    if ubu_n > 0 {
+        try {
+            ubu_out = exec("cat /tmp/_td_ubu.sh | " + SSH_GATE + " ubu 'timeout 300 bash -s' 2>&1").trim()
+        } catch e {}
+    }
+
+    // htz 완료 대기 (백그라운드 프로세스)
+    if htz_n > 0 {
+        try { exec("wait 2>/dev/null; sleep 1") } catch e {}
+    }
+    let htz_out = try { exec("cat /tmp/_td_htz_out.txt 2>/dev/null").trim() } catch e { "" }
+
+    // 결과 기록
+    let all_out = ubu_out + "\n" + htz_out
+    let rts = ts()
+    let safe_all = all_out.replace("\\", "/").replace("\"", "'").replace("\n", " | ")
+    if len(safe_all) > 1000 {
+        let rline = "{\"id\":\"batch_" + rts + "\",\"ts\":\"" + rts + "\",\"project\":\"all\",\"task\":\"blast_" + to_string(ubu_n + htz_n) + "\",\"host\":\"ubu+" + to_string(ubu_n) + "_htz+" + to_string(htz_n) + "\",\"status\":\"done\",\"bytes\":" + to_string(len(all_out)) + ",\"output\":\"" + safe_all.substring(0, 800) + "...\"}"
+        try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
+    } else {
+        let rline = "{\"id\":\"batch_" + rts + "\",\"ts\":\"" + rts + "\",\"project\":\"all\",\"task\":\"blast_" + to_string(ubu_n + htz_n) + "\",\"host\":\"ubu+" + to_string(ubu_n) + "_htz+" + to_string(htz_n) + "\",\"status\":\"done\",\"bytes\":" + to_string(len(all_out)) + ",\"output\":\"" + safe_all + "\"}"
+        try { exec("echo " + shquote(rline) + " >> " + shquote(RESULTS)) } catch e {}
+    }
+
+    log("CYCLE blast=" + to_string(ubu_n + htz_n) + " ubu=" + to_string(len(ubu_out)) + "B htz=" + to_string(len(htz_out)) + "B")
 
     try { exec("rm -f " + shquote(LOCK)) } catch e {}
 }
