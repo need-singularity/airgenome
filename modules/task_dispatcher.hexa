@@ -85,14 +85,23 @@ fn jint(raw: str, key: str, fb: int) -> int {
 //  Host routing — dispatch_state.json (AG7) 연동
 // ═══════════════════════════════════════════════════════════════════════
 
-fn best_host(task_type: str) -> str {
-    if file_exists(DISPATCH_STATE) == false { return "ubu" }
+fn host_active(h: str) -> bool {
+    if file_exists(DISPATCH_STATE) == false { return true }
     let raw = read_file(DISPATCH_STATE)
-    let tag = "\"" + task_type + "\":{\"host\":\""
-    if raw.contains(tag) == false { return "ubu" }
-    let h = raw.split(tag)[1].split("\"")[0]
-    if h == "none" { return "ubu" }
-    return h
+    let tag = "\"" + h + "\":{\"active\":"
+    if raw.contains(tag) == false { return false }
+    let v = raw.split(tag)[1].split(",")[0].trim()
+    return v == "true"
+}
+
+fn best_host(task_type: str) -> str {
+    // AG8 호스트 어피니티 — LB 점수 무시, 용도별 강제 분배
+    // gpu_heavy/realtime_gpu → ubu (유일한 GPU)
+    // cpu_heavy/io_heavy → htz (32T, 대용량 디스크) — htz 다운 시 ubu 폴백
+    if task_type == "gpu_heavy" { return "ubu" }
+    if task_type == "realtime_gpu" { return "ubu" }
+    if host_active("htz") { return "htz" }
+    return "ubu"
 }
 
 fn ssh_alias(host: str) -> str {
