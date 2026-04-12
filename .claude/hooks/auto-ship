@@ -10,18 +10,18 @@ set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 DIR="$HOME/Dev/airgenome"
-cd "$DIR" 2>/dev/null || exit 0
+cd "$DIR" || exit 0
 
 # ── Cooldown: skip if last ship was < 30s ago ──
 COOLDOWN="/tmp/.auto-ship-cooldown"
 NOW=$(date +%s)
 if [ -f "$COOLDOWN" ]; then
-    PREV=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+    PREV=$(cat "$COOLDOWN" || echo 0)
     [ $((NOW - PREV)) -lt 30 ] && exit 0
 fi
 
 # ── Bail if no tracked changes ──
-DIRTY=$(git status --porcelain 2>/dev/null | grep -v '^??' || true)
+DIRTY=$(git status --porcelain | grep -v '^??' || true)
 [ -z "$DIRTY" ] && exit 0
 
 echo "$NOW" > "$COOLDOWN"
