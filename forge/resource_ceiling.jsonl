@@ -664,3 +664,6 @@
 {"ts":"2026-04-12T11:25:17Z","ubu_cpu":9,"ubu_gpu":0,"htz_cpu":47,"total":36,"gap":64}
 {"ts":"2026-04-12T11:25:52Z","ubu_cpu":9,"ubu_gpu":0,"htz_cpu":47,"total":36,"gap":64}
 {"ts":"2026-04-12T11:26:24Z","ubu_cpu":5,"ubu_gpu":0,"htz_cpu":49,"total":37,"gap":63}
+{"ts":"2026-04-12T11:26:57Z","ubu_cpu":5,"ubu_gpu":0,"htz_cpu":49,"total":37,"gap":63}
+{"ts":"2026-04-12T11:27:30Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":43,"total":32,"gap":68}
+{"ts":"2026-04-12T11:28:04Z","ubu_cpu":4,"ubu_gpu":0,"htz_cpu":43,"total":32,"gap":68}

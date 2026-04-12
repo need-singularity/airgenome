@@ -545,12 +545,11 @@ fn main() {
         let host = best_host(ttype)
 
         if host == "ubu" {
-            ubu_cmds = ubu_cmds + "echo '==" + tid + "==' && " + cmd + " && echo '==" + tid + "==END' ; "
-            ubu_ids = ubu_ids + tid + "|" + tname + "|" + tproject + "\n"
+            // 배치 내부 병렬: 각 명령을 & 백그라운드로 + wait
+            ubu_cmds = ubu_cmds + "( " + cmd + " ) &\n"
             ubu_n = ubu_n + 1
         } else {
-            htz_cmds = htz_cmds + "echo '==" + tid + "==' && " + cmd + " && echo '==" + tid + "==END' ; "
-            htz_ids = htz_ids + tid + "|" + tname + "|" + tproject + "\n"
+            htz_cmds = htz_cmds + "( " + cmd + " ) &\n"
             htz_n = htz_n + 1
         }
     }
