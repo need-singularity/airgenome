@@ -17,9 +17,9 @@ let HEXA_R = "~/Dev/hexa-lang/target/release/hexa"
 let BLOWUP = "~/Dev/nexus/shared/blowup"
 let MODULES = BLOWUP + "/modules/"
 
-// cgroup 리밋 (htz: 32T, 125G RAM)
+// 32T × 80% = 25.6 cores. 8 tasks × 320% = 25.6 cores
 let CGROUP_MEM = "12G"
-let CGROUP_CPU = "400%"
+let CGROUP_CPU = "320%"
 
 // ── helpers ──
 
@@ -106,18 +106,7 @@ fn build_cmd(s: int) -> str {
 
 // ── main ──
 
-fn main() {
-    try { exec("mkdir -p " + shquote(HOME + "/.airgenome")) } catch e {}
-
-    // single instance lock
-    let prev = try { exec("test -f " + LOCK + " && cat " + LOCK + " 2>/dev/null").trim() } catch e { "" }
-    if len(prev) > 0 {
-        let alive = try { exec("kill -0 " + prev + " 2>/dev/null && echo Y || echo N").trim() } catch e { "N" }
-        if alive == "Y" { return }
-    }
-    let pid_s = try { exec("echo $$").trim() } catch e { "0" }
-    try { exec("echo " + pid_s + " > " + shquote(LOCK)) } catch e {}
-
+fn blast_once() {
     // ★ 안전 체크: resource_ceiling.jsonl에서 최신 htz_cpu 읽기
     let mut load_pct = 50
     try {
