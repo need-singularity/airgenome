@@ -175,22 +175,24 @@ fn catalog_project(s: int) -> str {
 }
 
 fn catalog_type(s: int) -> str {
-    if s == 0  { return "gpu_heavy" }
-    if s == 1  { return "cpu_heavy" }
-    if s == 2  { return "cpu_heavy" }
-    if s == 3  { return "cpu_heavy" }
-    if s == 4  { return "gpu_heavy" }
-    if s == 5  { return "cpu_heavy" }
-    if s == 6  { return "cpu_heavy" }
-    if s == 7  { return "cpu_heavy" }
-    if s == 8  { return "gpu_heavy" }
-    if s == 9  { return "cpu_heavy" }
-    if s == 10 { return "io_heavy" }
-    if s == 11 { return "cpu_heavy" }
-    if s == 12 { return "cpu_heavy" }
-    if s == 13 { return "cpu_heavy" }
-    if s == 14 { return "io_heavy" }
-    if s == 15 { return "cpu_heavy" }
+    // anima: gpu 필요하나 ubu에 repo 없음 → htz(cpu_heavy)로 전환
+    // gpu_heavy 슬롯은 ubu 전용 작업(hexa build 등)으로 교체
+    if s == 0  { return "cpu_heavy" }   // anima engine → htz
+    if s == 1  { return "cpu_heavy" }   // nexus engine → htz
+    if s == 2  { return "gpu_heavy" }   // hexa test → ubu (병렬용)
+    if s == 3  { return "cpu_heavy" }   // nexus blowup → htz
+    if s == 4  { return "cpu_heavy" }   // anima engine → htz
+    if s == 5  { return "gpu_heavy" }   // airgenome engine → ubu (병렬용)
+    if s == 6  { return "cpu_heavy" }   // hexa build → htz
+    if s == 7  { return "cpu_heavy" }   // nexus todo → htz
+    if s == 8  { return "cpu_heavy" }   // anima engine → htz
+    if s == 9  { return "gpu_heavy" }   // papers engine → ubu (병렬용)
+    if s == 10 { return "io_heavy" }    // repo sync → htz
+    if s == 11 { return "cpu_heavy" }   // airgenome engine → htz
+    if s == 12 { return "gpu_heavy" }   // hexa bench → ubu (병렬용)
+    if s == 13 { return "cpu_heavy" }   // n6 engine → htz
+    if s == 14 { return "io_heavy" }    // git gc → htz
+    if s == 15 { return "gpu_heavy" }   // hexa clippy → ubu (병렬용)
     return "cpu_heavy"
 }
 
@@ -408,13 +410,11 @@ fn execute_one(task_id: str, task_name: str, project: str, task_type: str, timeo
     // Remove from pending queue
     remove_task(task_id)
 
-    // ssh_gate 에 직접 명령 전달 (stdin 파이프 제거 — 69B 문제 해결)
-    let wrapped = "timeout " + to_string(timeout) + " bash -c " + shquote(cmd)
-
+    // ssh_gate 에 명령 직접 전달 — shquote 1겹만
     let mut result = ""
     let mut status = "done"
     try {
-        result = exec(SSH_GATE + " " + alias + " " + shquote(wrapped) + " 2>&1").trim()
+        result = exec(SSH_GATE + " " + alias + " " + shquote("timeout " + to_string(timeout) + " sh -c " + "'" + cmd.replace("'", "'\"'\"'") + "'") + " 2>&1").trim()
         if len(result) > 500 {
             result = result.substring(len(result) - 500, len(result))
         }
