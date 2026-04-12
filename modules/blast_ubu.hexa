@@ -19,7 +19,7 @@ let MODULES = BLOWUP + "/modules/"
 
 // cgroup 리밋
 let CGROUP_MEM = "6G"
-let CGROUP_CPU = "200%"
+let CGROUP_CPU = "250%"
 
 // ── helpers ──
 
