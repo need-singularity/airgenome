@@ -312,33 +312,13 @@ fn idle_feeder() {
         try { count = to_int(read_file(COUNTER_FILE).trim()) } catch e {}
     }
 
-    // 양 호스트 동시 가동: gpu 1개 + cpu 1개 동시 feed
-    // → 매 사이클 ubu(gpu) + htz(cpu) 병렬 실행
-    feed_one_slot(count)
-
-    // 두 번째 슬롯: 다른 호스트 타입 찾기
-    let first_type = catalog_type(count % CATALOG_SIZE)
-    let mut second = count + 1
-    let mut found = false
-    let mut attempts = 0
-    while found == false {
-        if attempts >= CATALOG_SIZE { break }
-        let st = catalog_type(second % CATALOG_SIZE)
-        // 첫 번째가 gpu면 cpu/io 찾고, cpu/io면 gpu 찾기
-        if first_type == "gpu_heavy" {
-            if st != "gpu_heavy" { found = true; break }
-        } else {
-            if st == "gpu_heavy" { found = true; break }
-        }
-        second = second + 1
-        attempts = attempts + 1
+    // 16슬롯 전부 feed — 30s 안에 모두 소진
+    let mut i = 0
+    while i < CATALOG_SIZE {
+        feed_one_slot(count + i)
+        i = i + 1
     }
-    if found {
-        feed_one_slot(second)
-        try { write_file(COUNTER_FILE, to_string(second + 1)) } catch e {}
-    } else {
-        try { write_file(COUNTER_FILE, to_string(count + 1)) } catch e {}
-    }
+    try { write_file(COUNTER_FILE, to_string(count + CATALOG_SIZE)) } catch e {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════
