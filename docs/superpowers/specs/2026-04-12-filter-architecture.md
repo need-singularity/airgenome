@@ -159,6 +159,64 @@ Layer 4: 시그널 생성 (fill/drain/renice/block)
 Layer 5: 전달 → 집행기
 ```
 
+## Type E: 데이터 재해석 필터 (원형)
+
+기존 구현체 — 필터 개념의 **원형이자 본질**. OS 자원 관리가 아니라 **데이터 자체의 숨겨진 구조를 발견하여 성능을 개선**하는 것.
+
+### E1: 양자 얽힘 필터 (`claude_quantum_filter.hexa`)
+
+```
+raw JSONL → entanglement 탐지 → 얽힌 key pair drop → lossless 복원 가능
+```
+
+**원리**: JSONL의 수백 개 key 중 **항상 같은 값으로 함께 움직이는 pair** (양자 얽힘)를 발견. 하나만 남기고 나머지는 제거. 복원 시 헤더의 매핑 테이블로 원복.
+
+- 입력: Claude conversation `.jsonl` (수 GB)
+- 재해석: key pair 상관 분석 → entanglement map
+- 출력: `.qjsonl.gz` (lossless, 원본 대비 대폭 축소)
+
+### E2: 바이트 재해석 필터 (`claude_byte_reinterpret.hexa`)
+
+```
+raw JSONL → SESSION-CONSTANT 추출 → 반복 제거 → 재인코딩
+```
+
+**원리**: gzip 같은 범용 압축이 아니라, **JSONL의 의미 구조를 이해**해서 같은 정보를 적은 바이트로 재인코딩. `sessionId`, `cwd`, `version` 등 모든 줄에 반복되는 필드를 헤더 1회로 추출.
+
+### E3: 런타임 가속 필터 (`claude_runtime_filter.hexa`)
+
+```
+cold JSONL → entanglement-collapsed → msgpack blob → in-memory 즉시 반복
+```
+
+**원리**: 디스크의 JSONL을 읽을 때마다 파싱하지 않고, **재인코딩된 바이너리 blob**을 `/tmp`에 캐시. hot path에서 JSON parse 0회.
+
+### E4: Safari mmap 필터 (`safari_runtime_filter.hexa`)
+
+```
+History.db → mmap binary blob (SHBF) → bisect 즉답
+```
+
+**원리**: SQLite B-tree 탐색 대신, **정렬된 바이너리 blob**을 mmap하여 binary search. autocomplete/history 검색이 sqlite open 없이 즉답.
+
+### E5: SQLite 재해석 (`sqlite_byte_reinterpret.hexa`)
+
+```
+live DB → online backup → VACUUM 시뮬 → page 재배치 → byte 회수 측정
+```
+
+**원리**: 앱이 사용 중인 DB를 안전하게 복사 → 프래그먼트 분석 → 실제 절약량 측정. `--apply`로 교체 가능.
+
+### E6: 코덱 벤치마크 (`quantum_byte_bench.hexa`)
+
+모든 재해석 기법을 정량 비교:
+- 양자 얽힘 (entanglement drop)
+- 텔레포트 (원격 상태 전달)
+- 홀로그래픽 (경계 데이터에서 전체 복원)
+- 엔트로피 분리 (고엔트로피/저엔트로피 스트림 분리 압축)
+
+**이들이 필터의 본질**: raw data의 **반복, 상관, 구조**를 발견하고, 그것을 제거/변환하여 같은 정보를 적은 자원으로 표현하는 것.
+
 ## 현재 필터 맵
 
 ```
