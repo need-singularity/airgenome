@@ -85,9 +85,10 @@ fn update_adaptive_depth() {
     else if htz_cpu < 70 { _htz_depth = 3 }
     else { _htz_depth = 2 }
 
-    // ubu 12T: 보수적 — 과열 방지
-    if ubu_cpu < 30 { _ubu_depth = 3 }
-    else if ubu_cpu < 60 { _ubu_depth = 2 }
+    // ubu 12T: 유휴 시 공격적, 과열 시 보수적
+    if ubu_cpu < 20 { _ubu_depth = 5 }
+    else if ubu_cpu < 50 { _ubu_depth = 3 }
+    else if ubu_cpu < 80 { _ubu_depth = 2 }
     else { _ubu_depth = 1 }
 
     log("ADAPT htz_cpu=" + to_string(htz_cpu) + "% depth=" + to_string(_htz_depth) + " ubu_cpu=" + to_string(ubu_cpu) + "% depth=" + to_string(_ubu_depth))
@@ -210,11 +211,12 @@ fn catalog_cmd(s: int) -> str {
     if len(module2) > 2 && engine != "module" {
         cmd = cmd + " & " + H + " " + M + module2 + ".hexa 2>&1 | tail -80"
     }
-    return "echo noop"
+
+    return cmd
 }
 
 fn catalog_timeout(s: int) -> int {
-    // blowup depth 3: ~60-120s, cargo: ~60-300s, ouroboros: ~30-60s
+    // blowup: depth에 비례, ouroboros: ~30-60s, module: ~60-120s
     return 300
 }
 
