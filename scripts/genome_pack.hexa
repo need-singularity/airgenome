@@ -59,6 +59,62 @@ if file_exists(idx_path) == false {
     exit(1)
 }
 
+// ROI-3: rolling window — trim index to 10K lines before processing.
+// Archive excess to gzip-rotated files so index never grows unbounded.
+let INDEX_CAP = 10000
+let pre_trim = read_file(idx_path)
+let pre_lines = pre_trim.split("\n")
+let mut pre_count = 0
+let mut pli = 0
+while pli < len(pre_lines) {
+    if len(pre_lines[pli].trim()) > 0 { pre_count = pre_count + 1 }
+    pli = pli + 1
+}
+if pre_count > INDEX_CAP {
+    let excess = pre_count - INDEX_CAP
+    println("  [rolling] index has " + to_string(pre_count) + " lines, trimming to " + to_string(INDEX_CAP))
+    let mut archive_buf = ""
+    let mut keep_buf = ""
+    let mut seen = 0
+    let mut ti = 0
+    while ti < len(pre_lines) {
+        let tline = pre_lines[ti].trim()
+        if len(tline) > 0 {
+            if seen < excess {
+                archive_buf = archive_buf + tline + "\n"
+            } else {
+                keep_buf = keep_buf + tline + "\n"
+            }
+            seen = seen + 1
+        }
+        ti = ti + 1
+    }
+    if len(archive_buf) > 0 {
+        let ts_tag = exec("date +%Y%m%d_%H%M%S").trim()
+        let archive_path = idx_path + ".archive." + ts_tag + ".jsonl"
+        try {
+            write_file(archive_path, archive_buf)
+            exec("gzip " + archive_path + " 2>/dev/null")
+            println("  [rolling] archived " + to_string(excess) + " lines → " + archive_path + ".gz")
+        } catch e {}
+    }
+    // Prune old archives: keep last 5
+    let arc_dir = exec("dirname '" + idx_path + "'").trim()
+    let arc_base = exec("basename '" + idx_path + "'").trim()
+    let old_arcs = exec("ls -1t " + arc_dir + "/" + arc_base + ".archive.*.gz 2>/dev/null | tail -n +6").trim()
+    if len(old_arcs) > 0 {
+        let olist = old_arcs.split("\n")
+        let mut oi = 0
+        while oi < len(olist) {
+            let of = olist[oi].trim()
+            if len(of) > 0 { exec("rm -f '" + of + "'") }
+            oi = oi + 1
+        }
+    }
+    try { write_file(idx_path, keep_buf) } catch e {}
+    println("  [rolling] index trimmed: " + to_string(pre_count) + " → " + to_string(INDEX_CAP))
+}
+
 let idx_content = read_file(idx_path).trim()
 if len(idx_content) == 0 {
     println("ERROR: index file is empty")
@@ -84,6 +140,86 @@ if file_exists(out_path) {
     let bak = out_path + ".bak"
     exec("cp " + out_path + " " + bak)
     println("  backed up existing pack to: " + bak)
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ROI-2: RING BUFFER SOURCE — if genomes.ring exists, build pack from ring
+// ═══════════════════════════════════════════════════════════════════════
+// Ring buffer (AG3R format) is the primary source since ROI-2 migration.
+// Falls back to legacy JSONL + .genome files if ring not available.
+
+let ring_path = ROOT + "/forge/genomes/genomes.ring"
+let use_ring = file_exists(ring_path)
+
+if use_ring {
+    println("  ring buffer detected: " + ring_path)
+    // Build pack directly from ring — single python3 call, no .genome file reads
+    let py_ring = "perl -e \"alarm 120; exec @ARGV\" python3 -c '" +
+        "import sys,os,struct,json\n" +
+        "ring_path=sys.argv[1]; out_path=sys.argv[2]; idx_path=sys.argv[3]\n" +
+        "HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"\n" +
+        "f=open(ring_path,\"rb\")\n" +
+        "hdr=f.read(64)\n" +
+        "_,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr)\n" +
+        "total=wc*sc+wi\n" +
+        "if total>sc: total=sc\n" +
+        "rows=[]\n" +
+        "for i in range(total):\n" +
+        "  idx=(wi-1-i)%sc\n" +
+        "  if idx<0: idx+=sc\n" +
+        "  off=64+idx*ss\n" +
+        "  f.seek(off); raw=f.read(ss)\n" +
+        "  if len(raw)<ss: continue\n" +
+        "  ts_f,pid,nh=struct.unpack_from(\"<diI\",raw,0)\n" +
+        "  g=raw[16:76]\n" +
+        "  if ts_f==0.0 and pid==0: continue\n" +
+        "  ts=int(ts_f)\n" +
+        "  comm=b\"ring_\" + str(nh).encode(\"utf-8\")\n" +
+        "  comm=comm[:64]\n" +
+        "  axes=[0]*6\n" +
+        "  rows.append((ts,pid,comm,axes,g))\n" +
+        "f.close()\n" +
+        "# Also merge index-based axes if available\n" +
+        "axes_map={}\n" +
+        "if os.path.exists(idx_path):\n" +
+        "  with open(idx_path) as fi:\n" +
+        "    for line in fi:\n" +
+        "      line=line.strip()\n" +
+        "      if not line: continue\n" +
+        "      try: r=json.loads(line)\n" +
+        "      except: continue\n" +
+        "      pid=int(r.get(\"pid\",0)); comm=str(r.get(\"comm\",\"\"))\n" +
+        "      axes_s=str(r.get(\"axes\",\"\"))\n" +
+        "      gh=str(r.get(\"genome\",\"\"))\n" +
+        "      if axes_s and gh and len(gh)==120:\n" +
+        "        axes=[int(x)&255 for x in axes_s.split(\",\")[:6]]\n" +
+        "        while len(axes)<6: axes.append(0)\n" +
+        "        try: sig=bytes.fromhex(gh)\n" +
+        "        except: continue\n" +
+        "        if len(sig)==60: axes_map[(pid,gh)]=((comm.encode(\"utf-8\")[:64]),axes,sig)\n" +
+        "with open(out_path,\"wb\") as fo:\n" +
+        "  fo.write(b\"AG\"+struct.pack(\"<BI\",1,len(rows)))\n" +
+        "  for ts,pid,comm,axes,sig in rows:\n" +
+        "    fo.write(struct.pack(\"<qI\",ts,pid))\n" +
+        "    fo.write(struct.pack(\"B\",len(comm))+comm)\n" +
+        "    fo.write(bytes(axes)+sig)\n" +
+        "sz=os.path.getsize(out_path)\n" +
+        "print(str(len(rows))+\" \"+str(sz)+\" 0\")' " +
+        ring_path + " " + out_path + " " + idx_path
+    println("  invoking python3 ring→pack converter...")
+    let ring_result = exec(py_ring).trim()
+    if len(ring_result) > 0 {
+        let rp = ring_result.split(" ")
+        let mut pc = 0
+        let mut ps = 0
+        try { pc = to_int(to_float(rp[0])) } catch e {}
+        if len(rp) >= 2 { try { ps = to_int(to_float(rp[1])) } catch e {} }
+        println("  packed (from ring): " + to_string(pc) + " records, " + to_string(ps) + " bytes")
+        println("done. output: " + out_path)
+        exit(0)
+    } else {
+        println("  WARN: ring→pack failed, falling back to legacy JSONL mode")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

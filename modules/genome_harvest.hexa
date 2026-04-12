@@ -227,6 +227,71 @@ fn count_existing(out_dir: str) -> int {
     try { return to_int(to_float(c)) } catch e { return 0 }
 }
 
+// ROI-2: count records in ring buffer via header (O(1), no readdir)
+fn count_ring(ring_path: str) -> int {
+    if file_exists(ring_path) == false { return 0 }
+    let py = "python3 -c 'import struct,sys; f=open(sys.argv[1],\"rb\"); h=f.read(64); " +
+        "_,ver,ss,sc,wi,wc=struct.unpack(\"<4sHHIII44x\",h); " +
+        "total=wc*sc+wi; print(min(total,sc))' " + ring_path + " 2>/dev/null"
+    let out = exec(py).trim()
+    let mut n = 0
+    try { n = to_int(to_float(out)) } catch e {}
+    return n
+}
+
+// ROI-2: init ring buffer if missing. ring_io.hexa local init via python3.
+fn ensure_ring(ring_path: str, slot_count: int) -> void {
+    if file_exists(ring_path) { return }
+    // Get parent dir — use exec dirname since hexa has no rfind
+    let dir = exec("dirname '" + ring_path + "'").trim()
+    exec("mkdir -p " + dir)
+    let py = "python3 -c 'import struct,sys; p=sys.argv[1]; sc=int(sys.argv[2]); ss=128; " +
+        "hdr=struct.pack(\"<4sHHIII44x\",b\"AG3R\",1,ss,sc,0,0); " +
+        "f=open(p,\"wb\"); f.write(hdr); f.write(b\"\\x00\"*(sc*ss)); f.close(); " +
+        "print(\"ok\")' " + ring_path + " " + to_string(slot_count)
+    exec(py)
+}
+
+// ROI-2: batch-append genomes to local ring buffer (single python3 call)
+fn ring_append_batch(ring_path: str, entries: str) -> int {
+    if len(entries) == 0 { return 0 }
+    let tmp = "/tmp/_ag_ring_batch_" + exec("date +%s%N 2>/dev/null || date +%s").trim() + ".txt"
+    try { write_file(tmp, entries) } catch e { return 0 }
+    let py = "python3 -c '" +
+        "import struct,os,sys,time,zlib\n" +
+        "ring_path=sys.argv[1]; tmp=sys.argv[2]\n" +
+        "HDR=\"<4sHHIII44x\"; SLOT=\"<diI60siI44x\"\n" +
+        "f=open(ring_path,\"r+b\")\n" +
+        "hdr=f.read(64)\n" +
+        "_,ver,ss,sc,wi,wc=struct.unpack(HDR,hdr)\n" +
+        "count=0\n" +
+        "with open(tmp) as t:\n" +
+        "  for line in t:\n" +
+        "    line=line.strip()\n" +
+        "    if not line: continue\n" +
+        "    parts=line.split(\"|\")\n" +
+        "    if len(parts)<5: continue\n" +
+        "    pid=int(parts[0]); name=parts[1]; gh=parts[2]; cid=int(parts[3]); fl=int(parts[4])\n" +
+        "    if len(gh)!=120: continue\n" +
+        "    try: g=bytes.fromhex(gh)\n" +
+        "    except: continue\n" +
+        "    if len(g)!=60: continue\n" +
+        "    idx=wi%sc; off=64+idx*ss\n" +
+        "    nh=zlib.crc32(name.encode(\"utf-8\"))&0xffffffff\n" +
+        "    f.seek(off); f.write(struct.pack(SLOT,time.time(),pid,nh,g,cid,fl))\n" +
+        "    wi=wi+1\n" +
+        "    if wi%sc==0: wc+=1\n" +
+        "    count+=1\n" +
+        "f.seek(0); f.write(struct.pack(HDR,b\"AG3R\",ver,ss,sc,wi%sc,wc))\n" +
+        "f.flush(); os.fsync(f.fileno()); f.close()\n" +
+        "os.remove(tmp)\n" +
+        "print(count)' " + ring_path + " " + tmp
+    let out = exec(py).trim()
+    let mut n = 0
+    try { n = to_int(to_float(out)) } catch e {}
+    return n
+}
+
 // LCG PRNG — ts-seeded; avoids fixed round-robin → kills τ=N self-revisit MI artifact.
 // Returns next state; caller derives index via state % range.
 fn lcg_next(state: int) -> int {
@@ -262,7 +327,13 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
     }
     let mut added = 0
     let mut idx_buf = ""
+    let mut ring_buf = ""   // ROI-2: ring buffer batch entries
     let ts_base = exec("date +%s%N 2>/dev/null || date +%s").trim()
+
+    // ROI-2: ring buffer path — same dir as pack_file, ".ring" extension
+    let ring_path = out_dir + "/genomes.ring"
+    ensure_ring(ring_path, 65536)
+
     let mut i = 0
     while i < len(lines) && added < batch {
         try {
@@ -282,13 +353,13 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
                             if len(genome) == 120 {
                                 // Monotonic ts: base + counter to avoid collision
                                 let ts = to_string(to_int(to_float(ts_base)) + added)
-                                let fname = out_dir + "/" + ts + "_" + pid + ".genome"
-                                try { write_file(fname, genome) } catch e {}
-                                let safe_comm = comm.replace("\"", "").replace("\\", "")
-                                idx_buf = idx_buf + "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm + "\",\"axes\":\"" + axes + "\",\"file\":\"" + fname + "\",\"encoding_ver\":2}\n"
-                                // Binary pack 는 batch rebuilder (scripts/genome_pack.hexa) 가 주기적으로 재생성한다.
-                                // 이전 inline pack_append 는 record 당 python3 fork → race+slow 로 200/3578 만 성공.
-                                // 제거됨 (2026-04-11). pack 동기화는 외부 스케줄에 위임.
+                                // ROI-2: write to ring buffer instead of individual .genome files.
+                                // Ring entry: "pid|comm|genome_hex|cluster_id|flags"
+                                let safe_comm = comm.replace("\"", "").replace("\\", "").replace("|", "_")
+                                ring_buf = ring_buf + pid + "|" + safe_comm + "|" + genome + "|0|0\n"
+                                // Index still gets appended for downstream consumers (source_group etc.)
+                                let safe_comm2 = comm.replace("\"", "").replace("\\", "")
+                                idx_buf = idx_buf + "{\"ts\":" + ts + ",\"pid\":" + pid + ",\"comm\":\"" + safe_comm2 + "\",\"axes\":\"" + axes + "\",\"genome\":\"" + genome + "\",\"encoding_ver\":3}\n"
                                 added = added + 1
                             }
                         }
@@ -299,6 +370,13 @@ fn harvest_batch(out_dir: str, index_file: str, pack_file: str, batch: int, min_
             // PID vanished mid-sample or parse error — skip silently
         }
         i = i + 1
+    }
+    // ROI-2: batch-write to ring buffer (single python3 call)
+    if len(ring_buf) > 0 {
+        let ring_ok = ring_append_batch(ring_path, ring_buf)
+        if ring_ok > 0 {
+            println("  ring: +" + to_string(ring_ok) + " → " + ring_path)
+        }
     }
     // Batch-write index
     if len(idx_buf) > 0 {
@@ -549,6 +627,88 @@ fn prune_source_ts(ts_file: str, max_per_source: int) -> void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ROI-3: ROLLING WINDOW — cap index JSONL, archive old entries via gzip
+// ═══════════════════════════════════════════════════════════════════════
+
+// Trim index_file to keep only the most recent max_lines.
+// Excess lines are appended to an archive file with gzip rotation.
+// Returns number of lines archived (0 = no action needed).
+fn rolling_trim_index(index_file: str, max_lines: int) -> int {
+    if file_exists(index_file) == false { return 0 }
+    let body = read_file(index_file)
+    let lines = body.split("\n")
+    // Count non-empty lines
+    let mut non_empty = 0
+    let mut li = 0
+    while li < len(lines) {
+        if len(lines[li].trim()) > 0 { non_empty = non_empty + 1 }
+        li = li + 1
+    }
+    if non_empty <= max_lines { return 0 }
+
+    let excess = non_empty - max_lines
+    println("  [rolling] index has " + to_string(non_empty) + " lines, cap=" + to_string(max_lines) + ", archiving " + to_string(excess))
+
+    // Split into archive (old) and keep (recent) portions
+    let mut archive_buf = ""
+    let mut keep_buf = ""
+    let mut seen = 0
+    let mut ki = 0
+    while ki < len(lines) {
+        let line = lines[ki].trim()
+        if len(line) > 0 {
+            if seen < excess {
+                archive_buf = archive_buf + line + "\n"
+            } else {
+                keep_buf = keep_buf + line + "\n"
+            }
+            seen = seen + 1
+        }
+        ki = ki + 1
+    }
+
+    // Write archive to gzip-rotated file
+    // Pattern: index_file.archive.YYYYMMDD_HHMMSS.jsonl.gz
+    if len(archive_buf) > 0 {
+        let ts_tag = exec("date +%Y%m%d_%H%M%S").trim()
+        let archive_path = index_file + ".archive." + ts_tag + ".jsonl"
+        try {
+            write_file(archive_path, archive_buf)
+            // Compress with gzip
+            exec("gzip " + archive_path + " 2>/dev/null")
+            println("  [rolling] archived " + to_string(excess) + " lines → " + archive_path + ".gz")
+        } catch e {
+            println("  [rolling] WARN: archive write failed")
+        }
+    }
+
+    // Prune old archives: keep only last 5 gzip files
+    let archive_dir = exec("dirname '" + index_file + "'").trim()
+    let archive_base = exec("basename '" + index_file + "'").trim()
+    let prune_cmd = "ls -1t " + archive_dir + "/" + archive_base + ".archive.*.gz 2>/dev/null | tail -n +6"
+    let old_archives = exec(prune_cmd).trim()
+    if len(old_archives) > 0 {
+        let old_list = old_archives.split("\n")
+        let mut oi = 0
+        while oi < len(old_list) {
+            let f = old_list[oi].trim()
+            if len(f) > 0 {
+                exec("rm -f '" + f + "'")
+                println("  [rolling] pruned old archive: " + f)
+            }
+            oi = oi + 1
+        }
+    }
+
+    // Rewrite index with only recent lines
+    try { write_file(index_file, keep_buf) } catch e {
+        println("  [rolling] ERROR: failed to rewrite index")
+    }
+    println("  [rolling] index trimmed: " + to_string(non_empty) + " → " + to_string(max_lines))
+    return excess
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  CONSCIOUSNESS — CLI
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -584,8 +744,13 @@ consciousness HarvestRouter {
     println("  genome_harvest — target=" + to_string(target) + " batch=" + to_string(batch) + " mode=" + mode)
     println("  out_dir=" + out_dir)
 
-    let mut have = count_existing(out_dir)
-    println("  existing: " + to_string(have))
+    // ROI-2: ring buffer path for counting (O(1) header read vs O(N) find)
+    let ring_path = out_dir + "/genomes.ring"
+    let ring_have = count_ring(ring_path)
+    let legacy_have = count_existing(out_dir)
+    let mut have = ring_have
+    if have == 0 && legacy_have > 0 { have = legacy_have }  // fallback to legacy .genome files
+    println("  existing: " + to_string(have) + " (ring=" + to_string(ring_have) + " legacy=" + to_string(legacy_have) + ")")
 
     if mode == "status" {
         println("  target remaining: " + to_string(target - have))
@@ -604,7 +769,8 @@ consciousness HarvestRouter {
         }
         if done == false {
             let added = harvest_batch(out_dir, index_file, pack_file, batch, min_pid, skip_pref, total_ram_mb, pid_shuffle)
-            have = count_existing(out_dir)
+            have = count_ring(ring_path)
+            if have == 0 { have = count_existing(out_dir) }  // fallback
             println("  batch+" + to_string(added) + " total=" + to_string(have))
             loops = loops + 1
             if run_once { done = true }
@@ -614,6 +780,13 @@ consciousness HarvestRouter {
     }
 
     println("  done. genomes=" + to_string(have))
+
+    // ROI-3: rolling window — cap index JSONL at 10K lines, archive excess
+    let index_cap = cfg_int("index_rolling_cap", 10000)
+    let archived = rolling_trim_index(index_file, index_cap)
+    if archived > 0 {
+        println("  index rolling: archived " + to_string(archived) + " old lines")
+    }
 
     // T12: per_source grouping — group index by comm, append time-series
     println("  per_source grouping...")

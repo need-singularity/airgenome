@@ -66,7 +66,7 @@ HTZ_DIR=$(_cfg htz_nexus_dir);  [ -z "$HTZ_DIR" ]  && HTZ_DIR="/root/Dev/nexus"
 HEXA_TARGET="${HEXA_TARGET:-auto}"
 
 # ── Mac 전용 스크립트 (절대 원격 라우팅 금지) ──
-MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa|sync_remote.hexa|claude_profile_dedup.hexa|mac_compute_zero.hexa|load_balancer.hexa|per_source_genome.hexa|per_source_sigdiff.hexa|resource_ceiling.hexa|monitor_test.hexa|run_all.hexa|detector_loop.hexa"
+MAC_ONLY="cl.hexa|sampler.hexa|menubar.hexa|menubar.js|ag3_loop.hexa|ag3_guard.hexa|ag3_menubar_feed.hexa|auto_dispatch.hexa|session_snapshot.hexa|session_resume.hexa|genome_harvest.hexa|growth_bus_sync.hexa|usage.hexa|resource_coordinator.hexa|hook.hexa|launcher_cap.hexa|infra_probe.hexa|sync_remote.hexa|claude_profile_dedup.hexa|mac_compute_zero.hexa|load_balancer.hexa|per_source_genome.hexa|per_source_sigdiff.hexa|resource_ceiling.hexa|monitor_test.hexa|run_all.hexa|detector_loop.hexa|task_dispatcher.hexa"
 
 # 인자에서 Mac 전용 스크립트 감지
 for a in "$@"; do
