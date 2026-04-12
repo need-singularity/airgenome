@@ -181,7 +181,7 @@ fn fire_best_blowup(now_s: str, task_type: str) -> str {
 //  반환: "fired(pid=N)" | "throttled(Ns)" | "fire_err:..."
 // ═══════════════════════════════════════════════════════════════════════
 
-// 2026-04-12: 동일 DIAG-01 우회 — bt_shell_discover.sh 경유로 전환
+// 2026-04-12: 동일 DIAG-01 우회 — bt_shell_discover.hexa 경유로 전환
 fn fire_htz_blowup(now_s: str) -> str {
     let lock_file = "/tmp/ag_htz_fire.lock"
     let cooldown_s = load_cfg_int("offload_htz_cooldown_s", 300)
@@ -206,7 +206,7 @@ fn fire_htz_blowup(now_s: str) -> str {
         return "already_running(" + to_string(running_n) + ")"
     }
     try { write_file(lock_file, now_s) } catch e {}
-    let bt_shell = load_cfg("htz_bt_shell_script", "/root/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh")
+    let bt_shell = load_cfg("htz_bt_shell_script", "/root/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa")
     let blowup_domain = load_cfg("offload_htz_blowup_domain", "airgenome")
     let bt_count = load_cfg("offload_htz_bt_count", load_cfg("offload_htz_blowup_depth", "3"))
     let remote_cmd = bt_shell + " " + blowup_domain + " " + bt_count + " >>/tmp/ag_htz_blowup.out 2>&1"
@@ -227,7 +227,7 @@ fn fire_htz_blowup(now_s: str) -> str {
 
 // 2026-04-12: DIAG-01 우회 — blowup.hexa 는 interpreter hang 으로 silent dead code
 // (rc=0, 0 byte output, 6일간 discovery 0건 확인). 구 경로는 OOM, 신 경로는 hang.
-// 해결: bt_shell_discover.sh 가 n6_constants + atlas.n6 만 읽는 순수 awk BT 생성기.
+// 해결: bt_shell_discover.hexa 가 n6_constants + atlas.n6 만 읽는 순수 awk BT 생성기.
 // 메모리 <5MB / 런타임 <500ms / prlimit/timeout 불필요. blowup_depth = BT emit count.
 fn fire_ubu_blowup(now_s: str) -> str {
     let lock_file = "/tmp/ag_ubu_fire.lock"
@@ -255,10 +255,10 @@ fn fire_ubu_blowup(now_s: str) -> str {
     }
     try { write_file(lock_file, now_s) } catch e {}
     let ubu_alias = load_cfg("ssh_alias", "ubu")
-    let bt_shell = load_cfg("ubu_bt_shell_script", "/home/aiden/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh")
+    let bt_shell = load_cfg("ubu_bt_shell_script", "/home/aiden/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa")
     let blowup_domain = load_cfg("offload_ubu_blowup_domain", "airgenome")
     let bt_count = load_cfg("offload_ubu_bt_count", load_cfg("offload_ubu_blowup_depth", "3"))
-    // bt_shell_discover.sh: 순수 shell/awk, prlimit/nice 불필요. <500ms 런타임.
+    // bt_shell_discover.hexa: 순수 shell/awk, prlimit/nice 불필요. <500ms 런타임.
     // SSH 원격 실행. 결과는 /tmp/ag_ubu_blowup.out 에 append 형태로 기록.
     let remote_cmd = bt_shell + " " + blowup_domain + " " + bt_count + " >>/tmp/ag_ubu_blowup.out 2>&1"
     let ssh_cmd = SSH_GATE + " " + ubu_alias + " '" + remote_cmd + "' >/tmp/ag_ubu_fire.out 2>&1 & echo $!"

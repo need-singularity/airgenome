@@ -1,0 +1,120 @@
+// scripts/sync_wrappers.hexa — sync gate/wrappers/ -> ~/.hx/bin/
+// Source of truth: gate/wrappers/ (repo-tracked, patched wrappers)
+// Target: ~/.hx/bin/ (runtime PATH shims)
+//
+// Idempotent: only copies when files differ.
+// Usage: hexa scripts/sync_wrappers.hexa [-v|--verbose] [-n|--dry-run]
+
+fn main() {
+    let cli = args()
+    let repo_dir = exec("cd \"$(dirname '" + cli[0] + "')/..' && pwd").trim()
+    let src_dir = repo_dir + "/gate/wrappers"
+    let home = exec("echo $HOME").trim()
+    let dst_dir = home + "/.hx/bin"
+
+    // Wrappers to sync (gate scripts that survived cargo build)
+    // Excludes: _budget.hexa (hexa source, not a shell wrapper)
+    //           patched/ (archive of older versions)
+    let wrappers = [
+        "_cache.sh",
+        "cargo",
+        "hexa",
+        "hexa-bin",
+        "hexa-launcher",
+        "python3",
+        "rustc",
+        "sh-run"
+    ]
+
+    let mut verbose = false
+    let mut dry_run = false
+
+    for arg in cli {
+        if arg == "-v" || arg == "--verbose" {
+            verbose = true
+        }
+        if arg == "-n" || arg == "--dry-run" {
+            dry_run = true
+            verbose = true
+        }
+        if arg == "-h" || arg == "--help" {
+            println("Usage: hexa sync_wrappers.hexa [-v|--verbose] [-n|--dry-run]")
+            println("  Syncs gate/wrappers/ -> ~/.hx/bin/ (only when files differ)")
+            return
+        }
+    }
+
+    // Pre-flight
+    let src_exists = exec("test -d '" + src_dir + "' && echo ok || echo fail").trim()
+    if src_exists != "ok" {
+        println("FATAL: source directory not found: " + src_dir)
+        exec("exit 1")
+    }
+
+    let dst_exists = exec("test -d '" + dst_dir + "' && echo ok || echo fail").trim()
+    if dst_exists != "ok" {
+        println("Creating target directory: " + dst_dir)
+        if !dry_run {
+            exec("mkdir -p '" + dst_dir + "'")
+        }
+    }
+
+    // Sync loop
+    let mut copied = 0
+    let mut skipped = 0
+    let mut missing_src = 0
+
+    for w in wrappers {
+        let src = src_dir + "/" + w
+        let dst = dst_dir + "/" + w
+
+        let src_ok = exec("test -f '" + src + "' && echo ok || echo fail").trim()
+        if src_ok != "ok" {
+            println("WARN: source missing: " + src)
+            missing_src = missing_src + 1
+            continue
+        }
+
+        // If destination is a symlink, remove it first (replace with real file)
+        let is_link = exec("test -L '" + dst + "' && echo yes || echo no").trim()
+        if is_link == "yes" {
+            if verbose {
+                let link_target = exec("readlink '" + dst + "'").trim()
+                println("  unlink symlink: " + dst + " -> " + link_target)
+            }
+            if !dry_run {
+                exec("rm '" + dst + "'")
+            }
+        }
+
+        let is_identical = exec("test -f '" + dst + "' && diff -q '" + src + "' '" + dst + "' >/dev/null 2>&1 && echo yes || echo no").trim()
+        if is_identical == "yes" {
+            if verbose {
+                println("  skip (identical): " + w)
+            }
+            skipped = skipped + 1
+        } else {
+            let dst_file_exists = exec("test -f '" + dst + "' && echo yes || echo no").trim()
+            if verbose {
+                if dst_file_exists == "yes" {
+                    println("  update: " + w)
+                } else {
+                    println("  install: " + w)
+                }
+            }
+            if !dry_run {
+                exec("cp '" + src + "' '" + dst + "'")
+                exec("chmod +x '" + dst + "'")
+            }
+            copied = copied + 1
+        }
+    }
+
+    // Summary
+    println("[sync_wrappers] copied=" + to_string(copied) + " skipped=" + to_string(skipped) + " missing=" + to_string(missing_src) + " src=" + src_dir + " dst=" + dst_dir)
+    if dry_run {
+        println("(dry-run: no files were modified)")
+    }
+}
+
+main()

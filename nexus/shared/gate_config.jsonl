@@ -11,10 +11,10 @@
 {"key": "ubu_ramdisk_cache", "value": "/mnt/ramdisk/blowup_cache", "desc": "blowup 캐시 디렉토리"}
 {"key": "ubu_ramdisk_root", "value": "/mnt/ramdisk", "desc": "Ubuntu ramdisk 루트"}
 {"key": "ubu_blowup_hexa", "value": "/home/aiden/Dev/nexus/shared/blowup/core/blowup.hexa", "desc": "blowup.hexa 경로 (2026-04-12: mk2_hexa/native → shared/blowup/core 이동. OPT-07 shell-uplift 포함)"}
-{"key": "ubu_blowup_script", "value": "/home/aiden/Dev/nexus/shared/blowup/core/blowup.hexa", "desc": "auto_dispatch 호환 키 — ubu_blowup_hexa 와 동일 (2026-04-12 키 불일치 버그 fix, auto_dispatch.hexa:218 이 이 키를 읽음). DEPRECATED: 2026-04-12 fire_ubu_blowup 가 bt_shell_discover.sh 로 전환. 키는 다른 경로에서 여전히 사용될 수 있어 유지"}
-{"key": "ubu_bt_shell_script", "value": "/home/aiden/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh", "desc": "2026-04-12: DIAG-01 우회 shell-native BT 생성기. blowup.hexa silent dead-code 대체. n6_constants.jsonl 읽어 awk 단일패스로 BT 생성, 메모리 <5MB, 런타임 <500ms. auto_dispatch.fire_ubu_blowup() 이 호출"}
-{"key": "htz_bt_shell_script", "value": "/root/Dev/nexus/shared/blowup/lib/bt_shell_discover.sh", "desc": "Hetzner 용 bt_shell_discover.sh 경로. auto_dispatch.fire_htz_blowup() 이 호출"}
-{"key": "offload_ubu_bt_count", "value": "3", "desc": "fire 당 생성할 BT 개수 (bt_shell_discover.sh 2번째 인자). 기존 offload_ubu_blowup_depth 를 count 로 재해석"}
+{"key": "ubu_blowup_script", "value": "/home/aiden/Dev/nexus/shared/blowup/core/blowup.hexa", "desc": "auto_dispatch 호환 키 — ubu_blowup_hexa 와 동일 (2026-04-12 키 불일치 버그 fix, auto_dispatch.hexa:218 이 이 키를 읽음). DEPRECATED: 2026-04-12 fire_ubu_blowup 가 bt_shell_discover.hexa 로 전환. 키는 다른 경로에서 여전히 사용될 수 있어 유지"}
+{"key": "ubu_bt_shell_script", "value": "/home/aiden/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa", "desc": "2026-04-12: DIAG-01 우회 shell-native BT 생성기. blowup.hexa silent dead-code 대체. n6_constants.jsonl 읽어 awk 단일패스로 BT 생성, 메모리 <5MB, 런타임 <500ms. auto_dispatch.fire_ubu_blowup() 이 호출"}
+{"key": "htz_bt_shell_script", "value": "/root/Dev/nexus/shared/blowup/lib/bt_shell_discover.hexa", "desc": "Hetzner 용 bt_shell_discover.hexa 경로. auto_dispatch.fire_htz_blowup() 이 호출"}
+{"key": "offload_ubu_bt_count", "value": "3", "desc": "fire 당 생성할 BT 개수 (bt_shell_discover.hexa 2번째 인자). 기존 offload_ubu_blowup_depth 를 count 로 재해석"}
 {"key": "offload_htz_bt_count", "value": "3", "desc": "Hetzner fire 당 생성할 BT 개수"}
 {"key": "ag3_mode", "value": "strict", "desc": "AG3 집행 모드 (strict|degrade|off) — 2026-04-12 골화: strict 강제. 원격 없으면 heavy 작업 차단 (배터리 보호). degrade 금지"}
 {"key": "log_rotate_max_bytes", "value": "10485760", "desc": "dispatch.log 최대 바이트 (10MB)"}
