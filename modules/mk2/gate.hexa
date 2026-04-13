@@ -1,0 +1,259 @@
+// mk2/gate.hexa — Mk2 hook 게이트 (Claude Code PreToolUse/PostToolUse + CLI)
+//
+// Verbs:
+//   pre-bash  — Bash 도구 실행 직전. mk2_epoch 신선도 + Mac load + AG6 + heavy keyword 차단
+//   pre-agent — Agent 도구 실행 직전. 동시 Agent ≤8 (AG4)
+//   post-bash — Bash 실행 직후. state=R + elapsed>5min hexa 좀비 kill
+//   status    — CLI 수동 호출. state.json 요약 stdout
+//
+// 하네스 원칙:
+//   - silent_success: 성공 시 stdout 0바이트, exit 0
+//   - loud_failure: 실패 시 stderr JSON 1줄 + mistakes.jsonl append + exit 1
+//   - 모든 호출 gate_log.jsonl 1줄 append (성공/실패 둘 다)
+//   - 실행 <200ms
+
+let HOME = env("HOME")
+let STATE_DIR = HOME + "/.airgenome/mk2"
+let MK2_STATE = STATE_DIR + "/state.json"
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let GATE_LOG = STATE_DIR + "/gate_log.jsonl"
+let MISTAKES_LOG = STATE_DIR + "/mistakes.jsonl"
+
+// ─── Utilities ───
+
+fn safe_exec(cmd: str) -> str {
+    let mut r = ""
+    try { r = exec(cmd).trim() } catch e {}
+    return r
+}
+
+fn ts_iso() -> str {
+    return safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+}
+
+fn now_epoch_int() -> int {
+    let s = safe_exec("date +%s")
+    let mut n = 0
+    try { n = to_int(s) } catch e {}
+    return n
+}
+
+fn json_escape(s: str) -> str {
+    let mut r = s
+    r = r.replace("\\", "\\\\")
+    r = r.replace("\"", "\\\"")
+    r = r.replace("\n", "\\n")
+    return r
+}
+
+fn sh_append(path: str, line: str) {
+    let escaped = line.replace("'", "'\\''")
+    let _unused = safe_exec("echo '" + escaped + "' >> '" + path + "'")
+}
+
+fn ensure_state_dir() {
+    let _unused = safe_exec("mkdir -p '" + STATE_DIR + "'")
+}
+
+// ─── State readers ───
+
+fn read_mk2_epoch() -> int {
+    if file_exists(MK2_STATE) == false { return 0 }
+    let raw = safe_exec("cat '" + MK2_STATE + "' 2>/dev/null")
+    // naive: "mk2_epoch":<int>
+    let key = "\"mk2_epoch\":"
+    let idx = raw.index_of(key)
+    if idx < 0 { return 0 }
+    let after = raw.substring(idx + len(key), len(raw))
+    let comma = after.index_of(",")
+    let rbrace = after.index_of("}")
+    let mut end = len(after)
+    if comma >= 0 { end = comma }
+    if rbrace >= 0 {
+        if rbrace < end { end = rbrace }
+    }
+    let val_s = after.substring(0, end).trim()
+    let mut n = 0
+    try { n = to_int(val_s) } catch e {}
+    return n
+}
+
+fn mac_load_1m() -> str {
+    let r = safe_exec("sysctl -n vm.loadavg | awk '{print $2}'")
+    if r == "" { return "0.0" }
+    return r
+}
+
+// ubu/htz 중 하나라도 active 이면 true
+fn remote_alive() -> bool {
+    if file_exists(INFRA_STATE) == false { return false }
+    let raw = safe_exec("cat '" + INFRA_STATE + "' 2>/dev/null")
+    if raw.contains("\"status\":\"active\"") { return true }
+    return false
+}
+
+// ─── Logging ───
+
+fn log_gate(verb: str, pass: bool, reason: str) {
+    ensure_state_dir()
+    let pass_s = if pass { "true" } else { "false" }
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"verb\":\"" + verb + "\",\"pass\":" + pass_s + ",\"reason\":\"" + json_escape(reason) + "\"}"
+    sh_append(GATE_LOG, line)
+}
+
+fn log_mistake(verb: str, reason: str, action: str) {
+    ensure_state_dir()
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"verb\":\"" + verb + "\",\"reason\":\"" + json_escape(reason) + "\",\"action\":\"" + action + "\"}"
+    sh_append(MISTAKES_LOG, line)
+}
+
+fn fail(verb: str, reason: str) {
+    log_gate(verb, false, reason)
+    log_mistake(verb, reason, "block")
+    let err = "{\"verb\":\"" + verb + "\",\"reason\":\"" + json_escape(reason) + "\",\"action\":\"block\"}"
+    let _unused = safe_exec("echo '" + err.replace("'", "'\\''") + "' >&2")
+    exit(1)
+}
+
+fn pass(verb: str) {
+    log_gate(verb, true, "")
+    exit(0)
+}
+
+// ─── Heavy keyword detector (pre-bash) ───
+
+let HEAVY_KEYWORDS = [
+    " yes > ",
+    "yes > /dev/null",
+    "stress ",
+    "/stress-ng",
+    "cargo build --release",
+    " next build",
+    "webpack --mode production",
+    " vite build",
+    "blowup_engine",
+    "seed_engine.hexa"
+]
+
+fn heavy_hit(cmd: str) -> str {
+    let mut i = 0
+    while i < len(HEAVY_KEYWORDS) {
+        let k = HEAVY_KEYWORDS[i]
+        if cmd.contains(k) { return k }
+        i = i + 1
+    }
+    return ""
+}
+
+// ─── Verb: pre-bash ───
+// Blocks if: state stale (>120s) OR Mac load high + remote idle OR heavy keyword
+
+fn verb_pre_bash() {
+    let cmd = env("CLAUDE_TOOL_INPUT")
+    let ep = read_mk2_epoch()
+    let now = now_epoch_int()
+    let age = now - ep
+
+    // 1. state freshness (120s 이내)
+    if ep == 0 {
+        // 최초 부트: probe 아직 안 돈 경우 — 통과 (soft open)
+    } else {
+        if age > 120 {
+            fail("pre-bash", "state stale age=" + to_string(age) + "s (>120s) — probe not running?")
+        }
+    }
+
+    // 2. heavy keyword 차단
+    if cmd != "" {
+        let hit = heavy_hit(cmd)
+        if hit != "" {
+            fail("pre-bash", "heavy keyword detected: " + hit)
+        }
+    }
+
+    // 3. AG6 — Mac load 높은데 remote idle 이면 offload 기대 (로그만, 차단 X)
+    let load_s = mac_load_1m()
+    let alive = remote_alive()
+    let alive_s = if alive { "Y" } else { "N" }
+    log_gate("pre-bash", true, "load=" + load_s + " remote_alive=" + alive_s + " age=" + to_string(age))
+    exit(0)
+}
+
+// ─── Verb: pre-agent ───
+// AG4: 동시 Agent ≤ 8
+
+let AGENT_CAP = 8
+
+fn count_agents() -> int {
+    let c = safe_exec("ps axo command | grep -cE '/claude|claude-code' 2>/dev/null")
+    let mut n = 0
+    try { n = to_int(c) } catch e {}
+    return n
+}
+
+fn verb_pre_agent() {
+    let n = count_agents()
+    if n > AGENT_CAP {
+        fail("pre-agent", "AG4 cap exceeded: agents=" + to_string(n) + " > " + to_string(AGENT_CAP))
+    }
+    log_gate("pre-agent", true, "agents=" + to_string(n))
+    exit(0)
+}
+
+// ─── Verb: post-bash ───
+// state=R + elapsed>5min + hexa_stage0 process → kill
+
+fn verb_post_bash() {
+    // ps -axo state,etime,pid,command → state R, elapsed > 5min, hexa_stage0 매칭
+    // etime 형식 복잡 (MM:SS / HH:MM:SS / D-HH:MM:SS) → awk 로 초 단위 환산
+    let cmd = "ps -axo state=,etime=,pid=,command= 2>/dev/null | awk '{ st=$1; et=$2; pid=$3; $1=\"\"; $2=\"\"; $3=\"\"; cmd=$0; if (st !~ /R/) next; if (cmd !~ /hexa_stage0|hexa\\.real/) next; if (cmd ~ /gate\\.hexa/) next; n=split(et, a, \"[-:]\"); if (n==4) s=a[1]*86400+a[2]*3600+a[3]*60+a[4]; else if (n==3) s=a[1]*3600+a[2]*60+a[3]; else if (n==2) s=a[1]*60+a[2]; else s=0; if (s<300) next; print pid }'"
+    let pids_raw = safe_exec(cmd)
+    if pids_raw == "" {
+        log_gate("post-bash", true, "no zombies")
+        exit(0)
+    }
+    let pids = pids_raw.split("\n")
+    let mut killed = 0
+    let mut i = 0
+    while i < len(pids) {
+        let pid = pids[i].trim()
+        if pid != "" {
+            let _k = safe_exec("kill -KILL " + pid + " 2>/dev/null")
+            killed = killed + 1
+        }
+        i = i + 1
+    }
+    log_gate("post-bash", true, "killed=" + to_string(killed))
+    exit(0)
+}
+
+// ─── Verb: status ───
+
+fn verb_status() {
+    let ep = read_mk2_epoch()
+    let now = now_epoch_int()
+    let age = now - ep
+    let load_s = mac_load_1m()
+    let alive_s = if remote_alive() { "Y" } else { "N" }
+    println("mk2_epoch=" + to_string(ep) + " age=" + to_string(age) + "s")
+    println("mac_load_1m=" + load_s)
+    println("remote_alive=" + alive_s)
+    println("state_file=" + MK2_STATE)
+    println("gate_log=" + GATE_LOG)
+    exit(0)
+}
+
+// ─── Dispatch ───
+
+// argv[0]=hexa, [1]=script, [2]=verb
+let a = args()
+let mut verb = ""
+if len(a) >= 3 { verb = a[2] }
+
+if verb == "pre-bash" { verb_pre_bash() }
+if verb == "pre-agent" { verb_pre_agent() }
+if verb == "post-bash" { verb_post_bash() }
+if verb == "status" { verb_status() }
+
+// unknown verb → status 기본
+verb_status()
