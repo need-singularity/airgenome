@@ -1,0 +1,199 @@
+// run.hexa — airgenome single-entry CLI (T3, M11d 후속)
+//
+// hx pkg entry. `hx install airgenome` → ~/.hx/packages/airgenome/run.hexa.
+// 사용:
+//   airgenome harvest        — modules/harvest.hexa 1회 실행 (forge/genomes.ring 갱신)
+//   airgenome label          — modules/label.hexa
+//   airgenome forecast       — modules/forecast.hexa
+//   airgenome dispatch       — modules/dispatch.hexa
+//   airgenome probe          — modules/probe.hexa
+//   airgenome merge          — modules/genome_merge.hexa
+//   airgenome throttle       — modules/predictive_throttle.hexa (Mac 보호)
+//   airgenome menubar        — Mac menubar 부활 (T4)
+//   airgenome status         — launchd + ring 파일 + state 한눈에
+//   airgenome install        — 5 launchagent + ring-sync + throttle bootstrap
+//   airgenome uninstall      — 모든 com.airgenome.* bootout
+//   airgenome self-test      — 모든 module self-test 일괄
+//   airgenome help           — 사용법
+//
+// 환경 변수:
+//   AIRGENOME_ROOT       — 기본 ~/Dev/airgenome (개발 중 fork 시 override)
+//   AIRGENOME_RING_NAME  — 기본 genomes.ring (unified 시 genomes.unified.ring)
+
+use "core/core"
+
+let AGENT_LABELS = [
+    "com.airgenome.probe",
+    "com.airgenome.dispatch",
+    "com.airgenome.harvest",
+    "com.airgenome.label",
+    "com.airgenome.forecast",
+    "com.airgenome.ring-sync",
+    "com.airgenome.predictive-throttle"
+]
+
+fn hexa_bin() -> str {
+    let candidates = [env("HOME") + "/Dev/hexa-lang/hexa", env("HOME") + "/.hx/bin/hexa"]
+    let mut i = 0
+    while i < len(candidates) {
+        let chk = exec("[ -x '" + candidates[i] + "' ] && echo y || echo n").trim()
+        if chk == "y" { return candidates[i] }
+        i = i + 1
+    }
+    return "hexa"
+}
+
+fn run_module(name: str) -> int {
+    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: module not found — " + path)
+        return 2
+    }
+    let cmd = hexa_bin() + " run '" + path + "'"
+    let _ = exec(cmd + " 2>&1")
+    return 0
+}
+
+fn run_module_self_test(name: str) -> int {
+    let path = airgenome_root() + "/modules/" + name + ".hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("[skip] " + name + " — file missing")
+        return 0
+    }
+    let cmd = hexa_bin() + " run '" + path + "' self-test 2>&1 | tail -3"
+    let out = exec(cmd)
+    println("[" + name + "]\n" + out)
+    return 0
+}
+
+fn cmd_status() -> void {
+    println("⬡ airgenome status")
+    println("  root: " + airgenome_root())
+    println("  ring: " + default_ring_path())
+    println("")
+    println("--- launchd (com.airgenome.*) ---")
+    let agents = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{printf \"  %-40s pid=%s rc=%s\\n\", $3, $1, $2}'")
+    if agents.trim() == "" { println("  (none registered)") }
+    println(agents)
+    println("--- ring files ---")
+    let rings = exec("ls -1 '" + forge_dir() + "'/*.ring 2>/dev/null | head -10")
+    if rings.trim() == "" { println("  (none)") }
+    println(rings)
+    println("--- predictive_throttle state ---")
+    let st = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+    if st == "" { println("  (no state)") } else { println("  " + st) }
+}
+
+fn cmd_install() -> void {
+    let src_dir = airgenome_root() + "/shared/launchagents"
+    let dst_dir = env("HOME") + "/Library/LaunchAgents"
+    let log_dir = env("HOME") + "/.airgenome"
+    let _ = exec("mkdir -p '" + dst_dir + "' '" + log_dir + "'")
+
+    let mut i = 0
+    let mut installed = 0
+    while i < len(AGENT_LABELS) {
+        let label = AGENT_LABELS[i]
+        let src = src_dir + "/" + label + ".plist"
+        let chk = exec("[ -f '" + src + "' ] && echo y || echo n").trim()
+        if chk == "y" {
+            let dst = dst_dir + "/" + label + ".plist"
+            let _ = exec("cp '" + src + "' '" + dst + "'")
+            let _ = exec("launchctl bootout gui/$(id -u)/" + label + " 2>/dev/null || true")
+            let _ = exec("launchctl bootstrap gui/$(id -u) '" + dst + "' 2>/dev/null || true")
+            println("[install] " + label)
+            installed = installed + 1
+        } else {
+            println("[skip]    " + label + " — plist missing")
+        }
+        i = i + 1
+    }
+    println("⬡ installed " + to_string(installed) + " / " + to_string(len(AGENT_LABELS)) + " agents")
+}
+
+fn cmd_uninstall() -> void {
+    let mut i = 0
+    while i < len(AGENT_LABELS) {
+        let label = AGENT_LABELS[i]
+        let _ = exec("launchctl bootout gui/$(id -u)/" + label + " 2>/dev/null || true")
+        let _ = exec("rm -f '" + env("HOME") + "/Library/LaunchAgents/" + label + ".plist'")
+        println("[uninstall] " + label)
+        i = i + 1
+    }
+}
+
+fn cmd_self_test_all() -> void {
+    println("⬡ airgenome self-test")
+    let _ = run_module_self_test("harvest")
+    let _ = run_module_self_test("label")
+    let _ = run_module_self_test("forecast")
+    let _ = run_module_self_test("genome_merge")
+    let _ = run_module_self_test("predictive_throttle")
+    let _ = run_module_self_test("dispatch")
+    let _ = run_module_self_test("probe")
+    println("")
+    println("--- core ---")
+    let cmd = hexa_bin() + " run '" + airgenome_root() + "/core/test/core_test.hexa' 2>&1 | tail -3"
+    let out = exec(cmd)
+    println(out)
+}
+
+fn cmd_menubar() -> void {
+    let path = airgenome_root() + "/bin/menubar.hexa"
+    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("airgenome: menubar not yet ported (T4) — see archive/v1/menubar.hexa")
+        return
+    }
+    let _ = exec(hexa_bin() + " run '" + path + "' 2>&1")
+}
+
+fn print_help() -> void {
+    println("airgenome — OS hexagon genome scanner")
+    println("")
+    println("subcommands:")
+    println("  harvest             modules/harvest.hexa 1회 실행 (genomes.ring 갱신)")
+    println("  label               modules/label.hexa")
+    println("  forecast            modules/forecast.hexa")
+    println("  dispatch            modules/dispatch.hexa")
+    println("  probe               modules/probe.hexa")
+    println("  merge               modules/genome_merge.hexa")
+    println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
+    println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
+    println("  status              launchd + ring + state 한눈에")
+    println("  install             7 LaunchAgent bootstrap")
+    println("  uninstall           7 LaunchAgent bootout + plist 제거")
+    println("  self-test           모든 module self-test 일괄")
+    println("  help                이 도움말")
+    println("")
+    println("env:")
+    println("  AIRGENOME_ROOT       (기본 ~/Dev/airgenome)")
+    println("  AIRGENOME_RING_NAME  (기본 genomes.ring; unified 시 genomes.unified.ring)")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) < 3 {
+        print_help()
+        return
+    }
+    let sub = a[2]
+    if sub == "help" { print_help(); return }
+    if sub == "status" { cmd_status(); return }
+    if sub == "install" { cmd_install(); return }
+    if sub == "uninstall" { cmd_uninstall(); return }
+    if sub == "self-test" { cmd_self_test_all(); return }
+    if sub == "menubar" { cmd_menubar(); return }
+    if sub == "harvest" { let _ = run_module("harvest"); return }
+    if sub == "label" { let _ = run_module("label"); return }
+    if sub == "forecast" { let _ = run_module("forecast"); return }
+    if sub == "dispatch" { let _ = run_module("dispatch"); return }
+    if sub == "probe" { let _ = run_module("probe"); return }
+    if sub == "merge" { let _ = run_module("genome_merge"); return }
+    if sub == "throttle" { let _ = run_module("predictive_throttle"); return }
+    println("airgenome: unknown subcommand '" + sub + "'. try 'airgenome help'.")
+}
+
+main()

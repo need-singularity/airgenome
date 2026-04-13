@@ -1,0 +1,232 @@
+// modules/predictive_throttle.hexa — Mac 자기보호 사전 throttle (M14, AG6 강화)
+//
+// 책임:
+//   1. core sample() 로 현재 vitals 수집 (light, 30ms 정도)
+//   2. forge/throttle_history.jsonl 의 마지막 N 샘플 + 현재 → Holt linear
+//   3. 1-step (60s) ahead pred_cpu / pred_ram 계산
+//   4. 임계 초과 예상 시 발화:
+//        - forge/predictive_throttle_state.json 갱신 (level/until/reason)
+//        - shared/config/protected_agents.txt 의 화이트리스트 외
+//          launchctl print 후 com.airgenome.* 비핵심 일시 bootout (gentle)
+//        - dispatch (AG7) 가 본 state 를 읽어 mac=blocked 처리하도록
+//
+// 제약 (R-MAC-01 / AG6):
+//   - mac 자체에서 매우 light 만. sample() + 산술 + 가벼운 launchctl 호출.
+//   - 임계 초과 예측 시에만 발화. 평상시 비용 ≈ harvest 1회와 동급.
+//   - "kill" 금지 — bootout 은 LaunchAgent 라 다음 StartInterval 자동 복귀.
+//
+// 알고리즘 (Holt linear, int 연산만, forecast.hexa 와 동일):
+//   alpha=50/100, beta=50/100, h=1
+//   level_t = (alpha*y + (100-alpha)*(L+T))/100
+//   trend_t = (beta*(L_new-L) + (100-beta)*T)/100
+//   pred = L + h*T
+
+use "../core/core"
+
+let HISTORY = ring_path("throttle_history.jsonl")
+let STATE   = ring_path("predictive_throttle_state.json")
+let WHITELIST = airgenome_root() + "/shared/config/protected_agents.txt"
+let MAX_HISTORY = 30           // 마지막 30 sample (~ 30분 if 60s 주기)
+let HORIZON_STEPS = 1          // 1-step ahead = 60s ahead
+let CPU_PRED_CRIT = 80         // pred_cpu > 80 → throttle
+let RAM_PRED_CRIT = 75         // pred_ram > 75 → throttle
+let TTL_SEC = 90               // throttle 발화 후 90s 유지 → 자동 만료
+
+let ALPHA_NUM = 50
+let BETA_NUM  = 50
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn ts_epoch() -> int {
+    return to_int(exec("date +%s").trim())
+}
+
+fn append_history(cpu: int, ram: int, swap: int) -> void {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"cpu\":" + to_string(cpu)
+             + ",\"ram\":" + to_string(ram) + ",\"swap\":" + to_string(swap) + "}"
+    let _ = exec("printf '%s\\n' '" + line + "' >> '" + HISTORY + "'")
+    // rotate: 마지막 MAX_HISTORY 만 유지
+    let count = to_int(exec("wc -l < '" + HISTORY + "' 2>/dev/null").trim())
+    if count > MAX_HISTORY {
+        let _ = exec("tail -" + to_string(MAX_HISTORY) + " '" + HISTORY + "' > '" + HISTORY + ".tmp' && mv '" + HISTORY + ".tmp' '" + HISTORY + "'")
+    }
+}
+
+fn read_history(field: str) -> list {
+    let cmd = "tail -" + to_string(MAX_HISTORY) + " '" + HISTORY + "' 2>/dev/null | jq -r '." + field + " // 0'"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" { result = result + [to_int(l)] }
+        i = i + 1
+    }
+    return result
+}
+
+struct HoltState {
+    level: int,
+    trend: int,
+    initialized: bool
+}
+
+fn holt_init() -> HoltState {
+    return HoltState { level: 0, trend: 0, initialized: false }
+}
+
+fn holt_step(s: HoltState, y: int) -> HoltState {
+    if !s.initialized {
+        s.level = y
+        s.trend = 0
+        s.initialized = true
+        return s
+    }
+    let level_new = (ALPHA_NUM * y + (100 - ALPHA_NUM) * (s.level + s.trend)) / 100
+    let trend_new = (BETA_NUM * (level_new - s.level) + (100 - BETA_NUM) * s.trend) / 100
+    s.level = level_new
+    s.trend = trend_new
+    return s
+}
+
+fn forecast_h(s: HoltState, h: int) -> int {
+    if !s.initialized { return 0 }
+    return s.level + h * s.trend
+}
+
+fn predict_series(series: list, h: int) -> int {
+    let mut s = holt_init()
+    let mut i = 0
+    while i < len(series) {
+        s = holt_step(s, series[i])
+        i = i + 1
+    }
+    return forecast_h(s, h)
+}
+
+fn whitelisted(agent: str) -> bool {
+    let chk = exec("[ -f '" + WHITELIST + "' ] && grep -Fxq '" + agent + "' '" + WHITELIST + "' && echo y || echo n").trim()
+    return chk == "y"
+}
+
+// 비핵심 com.airgenome.* LaunchAgent bootout
+// (LaunchAgent 라 자동으로 다음 StartInterval 에 재시작 — gentle)
+fn gentle_bootout_mac() -> int {
+    let raw = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{print $3}'")
+    let lines = raw.split("\n")
+    let mut booted_out = 0
+    let mut i = 0
+    while i < len(lines) {
+        let agent = lines[i].trim()
+        if agent != "" {
+            if !whitelisted(agent) {
+                let _ = exec("launchctl bootout gui/$(id -u)/" + agent + " 2>/dev/null || true")
+                booted_out = booted_out + 1
+            }
+        }
+        i = i + 1
+    }
+    return booted_out
+}
+
+fn write_state(level: str, until: int, pred_cpu: int, pred_ram: int, action: str) -> void {
+    let line = "{\"ts\":\"" + ts_iso() + "\""
+             + ",\"level\":\"" + level + "\""
+             + ",\"until_epoch\":" + to_string(until)
+             + ",\"pred_cpu\":" + to_string(pred_cpu)
+             + ",\"pred_ram\":" + to_string(pred_ram)
+             + ",\"action\":\"" + action + "\"}"
+    let _ = exec("printf '%s' '" + line + "' > '" + STATE + "'")
+}
+
+fn run_throttle() -> int {
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
+
+    // 1. 현재 vitals
+    let v = sample()
+    let cur_cpu = to_int(v.cpu)
+    let cur_ram = to_int(v.ram)
+    let cur_swap = to_int(v.power)
+    append_history(cur_cpu, cur_ram, cur_swap)
+
+    // 2. 시리즈 가져와 예측
+    let s_cpu = read_history("cpu")
+    let s_ram = read_history("ram")
+    if len(s_cpu) < 3 {
+        // 데이터 부족 — calm state
+        write_state("CALM", 0, cur_cpu, cur_ram, "warmup")
+        println("predictive_throttle: warmup (" + to_string(len(s_cpu)) + " samples)")
+        return 0
+    }
+    let pred_cpu = predict_series(s_cpu, HORIZON_STEPS)
+    let pred_ram = predict_series(s_ram, HORIZON_STEPS)
+
+    // 3. 임계 검사
+    if pred_cpu <= CPU_PRED_CRIT {
+        if pred_ram <= RAM_PRED_CRIT {
+            write_state("CALM", 0, pred_cpu, pred_ram, "none")
+            println("predictive_throttle: CALM (pred cpu=" + to_string(pred_cpu) + " ram=" + to_string(pred_ram) + ")")
+            return 0
+        }
+    }
+
+    // 4. 발화 — bootout + state 기록
+    let booted = gentle_bootout_mac()
+    let until = ts_epoch() + TTL_SEC
+    write_state("THROTTLE", until, pred_cpu, pred_ram, "bootout=" + to_string(booted))
+    println("predictive_throttle: 🔴 THROTTLE (pred cpu=" + to_string(pred_cpu)
+          + " ram=" + to_string(pred_ram) + ") — booted_out=" + to_string(booted)
+          + " until_epoch=" + to_string(until))
+    return booted
+}
+
+fn self_test() -> void {
+    // 1. holt 기본 동작
+    let s0 = holt_init()
+    if s0.initialized { panic("self_test FAIL [init]") }
+    if forecast_h(s0, 1) != 0 { panic("self_test FAIL [forecast empty]") }
+
+    let series_flat = [50, 50, 50, 50, 50]
+    let p_flat = predict_series(series_flat, 1)
+    if p_flat < 45 || p_flat > 55 { panic("self_test FAIL [flat predict, got " + to_string(p_flat) + "]") }
+
+    // 2. 선형 상승 — pred 가 마지막값 + trend 보다 크게
+    let series_rise = [10, 20, 30, 40, 50, 60, 70]
+    let p_rise = predict_series(series_rise, 1)
+    if p_rise < 75 { panic("self_test FAIL [rise predict too low: " + to_string(p_rise) + "]") }
+
+    // 3. 임계 비교 (CPU_PRED_CRIT = 80)
+    if CPU_PRED_CRIT != 80 { panic("self_test FAIL [CPU_PRED_CRIT]") }
+    if 81 <= CPU_PRED_CRIT { panic("self_test FAIL [boundary 81]") }
+    if 80 > CPU_PRED_CRIT { panic("self_test FAIL [boundary 80]") }
+
+    // 4. whitelisted — 미설정 시 false (file missing 또는 grep fail)
+    if whitelisted("com.test.nonexistent") { panic("self_test FAIL [unknown agent should not be whitelisted]") }
+
+    println("  ✅ predictive_throttle self_test PASS — flat_pred=" + to_string(p_flat)
+          + " rise_pred=" + to_string(p_rise))
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+        if sub == "status" {
+            let raw = exec("cat '" + STATE + "' 2>/dev/null").trim()
+            if raw == "" { println("predictive_throttle: no state") }
+            else { println(raw) }
+            return
+        }
+    }
+    let _ = run_throttle()
+}
+
+main()
