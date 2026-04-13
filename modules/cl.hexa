@@ -447,7 +447,7 @@ fn reset_seconds(iso_str: str) -> int {
 }
 
 fn score_account(name: str) -> int {
-    // Returns score * 100 (integer). -100 = exhausted, -200 = error
+    // Returns score * 100 (integer). -100 = exhausted, -50 = stale (refresh pending), -200 = error
     let full = get_full_usage(name)
     let parts = full.split("|")
     let s_pct_str = parts[0]
@@ -461,7 +461,22 @@ fn score_account(name: str) -> int {
     let s_pct = parse_pct(s_pct_str)
     let w_pct = parse_pct(w_pct_str)
 
-    if w_pct >= 100 { return -100 }
+    if w_pct >= 100 {
+        // stale 감지: 주간 reset 시점이 이미 지났으면 캐시가 낡았을 가능성.
+        // → 백그라운드 강제 갱신 트리거 (60s throttle), -50 으로 마킹하여 ✗ 와 분리.
+        let w_secs = reset_seconds(w_reset)
+        if w_secs <= 60 {
+            let touched = HOME + "/.airgenome/cl-stale-refresh." + name
+            let last = to_int(exec("stat -f %m '" + touched + "' 2>/dev/null || echo 0").trim())
+            if NOW_TS - last > 60 {
+                exec("touch '" + touched + "'")
+                let bin = HOME + "/Dev/airgenome/nexus/shared/bin/hexa.real"
+                exec("'" + bin + "' '" + HOME + "/Dev/airgenome/modules/usage.hexa' -- one '" + name + "' >/dev/null 2>&1 &")
+            }
+            return -50
+        }
+        return -100
+    }
 
     let session_remaining = 100 - s_pct
     let weekly_remaining = 100 - w_pct

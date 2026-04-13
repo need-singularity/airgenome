@@ -20,3 +20,5 @@ cl @need-singularity
 CLAUDE.md @need-singularity
 nexus/shared/bin/hexa @need-singularity
 nexus/shared/bin/hexa.real @need-singularity
+modules/usage.hexa @need-singularity
+scripts/com.airgenome.usage-refresh.plist @need-singularity
