@@ -33,3 +33,6 @@ nexus/shared/bin/hexa.real
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+
+# Claude Code memory (account-shared, local only)
+.claude-memory/
