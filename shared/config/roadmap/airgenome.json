@@ -33,8 +33,9 @@
       "id": "M0_archive_split",
       "title": "v1 동결 + core 분리",
       "priority": "P0",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-13",
+      "completed": "2026-04-13",
       "deps": [],
       "exit_criteria": [
         "기존 modules/src/scripts/forge/etc → archive/v1/ 이동 완료",
@@ -42,13 +43,19 @@
         "lockdown.json L0 새 목록 (7항) 적용 — nexus PR",
         "CODEOWNERS sync 완료",
         "L0 verify 새 기준으로 PASS"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": 33,
+        "nexus_pr": 33,
+        "l0_verify_result": "19 PASS / 0 FAIL"
+      }
     },
     {
       "id": "M1_l0_strict",
       "title": "L0 guard parse-check 추가 — phantom 차단",
       "priority": "P0",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-13",
       "deps": ["M0_archive_split"],
       "target_repo": "nexus",
       "exit_criteria": [
