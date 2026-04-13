@@ -289,6 +289,14 @@ fn ring_path(name: str) -> str {
     return forge_dir() + "/" + name
 }
 
+// AIRGENOME_RING_NAME 으로 ring 파일명 override (예: "genomes.unified.ring").
+// 미설정 시 단일호스트 기본 "genomes.ring" 사용.
+fn default_ring_path() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return ring_path(n) }
+    return ring_path("genomes.ring")
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
@@ -353,6 +361,7 @@ fn self_test() -> void {
     let expected_root = home + "/Dev/airgenome"
     chk_true("forge_dir contains /forge", forge_dir() == expected_root + "/forge")
     chk_true("ring_path joins name", ring_path("genomes.ring") == expected_root + "/forge/genomes.ring")
+    chk_true("default_ring_path fallback", default_ring_path() == expected_root + "/forge/genomes.ring")
 
     println("  ✅ lib.rs port verified")
 }

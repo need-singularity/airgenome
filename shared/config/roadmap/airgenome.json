@@ -9,9 +9,9 @@
     "core/core.hexa",
     "core/test/core_test.hexa",
     "archive/v1/README.md",
-    "~/Dev/nexus/shared/rules/airgenome.json",
-    "~/Dev/nexus/shared/airgenome_convergence_*.jsonl",
-    "~/Dev/nexus/shared/lockdown/lockdown.json"
+    "$NEXUS/shared/rules/airgenome.json",
+    "$NEXUS/shared/airgenome_convergence_*.jsonl",
+    "$NEXUS/shared/lockdown/lockdown.json"
   ],
   "rebuild_meta": {
     "trigger": "phantom L0 파일 다수 발견 (src/core.hexa, modules/load_balancer.hexa 외)",
@@ -290,7 +290,7 @@
         "ubu/htz 에 systemd timer — harvest_ag 60s 주기 실행",
         "각 호스트별 forge/genomes.ring 파일 갱신 확인",
         "Mac launchd timer — rsync pull from ubu/htz (60s 주기)",
-        "수신 경로: ~/Dev/airgenome/forge/genomes.{ubu,htz}.ring",
+        "수신 경로: ./forge/genomes.{ubu,htz}.ring",
         "24h 연속 sync 무오류 (stderr.log 에 ERROR 0건)"
       ],
       "evidence": {
@@ -355,14 +355,26 @@
       "id": "M11d_unified_analytics",
       "title": "label/forecast 를 unified ring 으로 확장",
       "priority": "P2",
-      "status": "todo",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M11c_genome_merge", "M11_hygiene_paths"],
       "exit_criteria": [
         "label.hexa — unified ring 읽기 + host 필드 포함 라벨링",
         "shared/config/label_rules.jsonl — host 조건 (예: host=ubu AND cpu>90) 지원",
         "forecast.hexa — host×pid 2차원 시계열 예측",
         "self-test: 3호스트 synthetic unified ring → label + forecast 정상 출력"
-      ]
+      ],
+      "evidence": {
+        "core_helper_added": "default_ring_path() — AIRGENOME_RING_NAME env (예: genomes.unified.ring) 지원",
+        "label_changes": "Rule 에 host_filter 필드, rule_match 에 host 검사, extract_meta 에 host 보존, pid 항상 string quote",
+        "forecast_changes": "distinct_pids → distinct_keys (string), series_for_pid → series_for_key, host_for_key 추가, 출력에 host 필드",
+        "rules_extended": "shared/config/label_rules.jsonl 에 REMOTE_UBU_CPU/REMOTE_HTZ_CPU 2개 host 한정 rule 추가",
+        "production_label_run": "AIRGENOME_RING_NAME=genomes.unified.ring → 56 labels (htz 40 / ubu 16), REMOTE_HTZ_CPU 20건 + REMOTE_UBU_CPU 8건 + CPU_SPIKE 28건",
+        "self_test": "Mac + ubu + hetzner 모두 4/4 PASS — label/forecast 새 host_filter 검증 + distinct_keys host.pid 분리 검증",
+        "host_quirk": "hetzner 에 jq 없어 forecast self_test panic — apt install -y jq 로 해결, 메모리에 ubu_infra 갱신 권장",
+        "perf_caveat": "forecast unified production run 이 mac 에서 jq O(N×K) 폭주 — 별도 최적화 트랙 (M14_forecast_perf), Mac 에서는 production 실행 비추천"
+      }
     },
     {
       "id": "M12_dashboard",

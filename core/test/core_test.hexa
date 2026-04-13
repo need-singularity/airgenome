@@ -74,6 +74,7 @@ fn main() -> void {
     chk("forge_dir fallback", forge_dir() == want_root + "/forge")
     chk("ring_path joins", ring_path("genomes.ring") == want_root + "/forge/genomes.ring")
     chk("ring_path .ubu", ring_path("genomes.ubu.ring") == want_root + "/forge/genomes.ubu.ring")
+    chk("default_ring_path fallback", default_ring_path() == want_root + "/forge/genomes.ring")
 
     println("  ✅ core_test PASS")
 }
