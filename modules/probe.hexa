@@ -1,0 +1,117 @@
+// modules/probe.hexa — vitals probe (Mac + ubu + htz)
+//
+// 책임:
+//   1. Mac: core.sample() 로 self vitals 수집
+//   2. ubu/htz: ssh 5s timeout CSV 수집
+//   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신
+//   4. self_test() — L0 parse-check + runtime smoke
+//
+// 제약:
+//   - use "../core/core" 만 (invariants AG-core-only)
+//   - try/catch 미사용 (hexa-lang stage1 broken)
+//   - exec 실패는 빈 문자열로 판정
+//   - AG6: Mac heavy compute 금지 — sysctl/uptime 만 사용, ssh outbound 만
+
+use "/Users/ghost/Dev/airgenome/core/core"
+
+let HOME = env("HOME")
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn probe_ubu_csv() -> str {
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \"); echo \"$L,$M,$G\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn probe_htz_csv() -> str {
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); echo \"$L,$N,$M\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn ubu_json(csv: str) -> str {
+    if csv == "" {
+        return "{\"status\":\"offline\",\"reason\":\"ssh timeout\"}"
+    }
+    let parts = csv.split(",")
+    if len(parts) < 6 {
+        return "{\"status\":\"offline\",\"reason\":\"parse_fail\"}"
+    }
+    return "{\"status\":\"active\",\"load\":\"" + parts[0] + "\",\"ram_used_mb\":" + parts[2] + ",\"ram_total_mb\":" + parts[1] + ",\"gpu_util\":" + parts[3] + ",\"gpu_vram_used_mb\":" + parts[4] + ",\"gpu_vram_total_mb\":" + parts[5] + "}"
+}
+
+fn htz_json(csv: str) -> str {
+    if csv == "" {
+        return "{\"status\":\"offline\",\"reason\":\"ssh timeout\"}"
+    }
+    let parts = csv.split(",")
+    if len(parts) < 4 {
+        return "{\"status\":\"offline\",\"reason\":\"parse_fail\"}"
+    }
+    return "{\"status\":\"active\",\"load\":\"" + parts[0] + "\",\"cpu_threads\":" + parts[1] + ",\"ram_used_mb\":" + parts[3] + ",\"ram_total_mb\":" + parts[2] + "}"
+}
+
+fn mac_json(v: Vitals) -> str {
+    // core.sample() 가 cpu/ram/power 를 float 으로 반환. to_int 로 안전 포맷.
+    let cpu = to_string(to_int(v.cpu))
+    let ram = to_string(to_int(v.ram))
+    let pow = to_string(to_int(v.power))
+    return "{\"status\":\"active\",\"cpu_pct\":" + cpu + ",\"ram_pct\":" + ram + ",\"swap_pct\":" + pow + ",\"reason\":\"AG6 compute zero\"}"
+}
+
+fn write_atomic(path: str, content: str) -> void {
+    let tmp = path + ".tmp"
+    write_file(tmp, content)
+    let _mv = exec("mv -f '" + tmp + "' '" + path + "'")
+}
+
+fn build_infra(ts: str, mac_j: str, ubu_j: str, htz_j: str) -> str {
+    return "{\"ts\":\"" + ts + "\",\"source\":\"modules/probe.hexa\",\"hosts\":{\"ubu\":" + ubu_j + ",\"htz\":" + htz_j + ",\"mac\":" + mac_j + "}}\n"
+}
+
+fn self_test() -> void {
+    // 1. json 합성 경계 케이스
+    let off_u = ubu_json("")
+    if off_u != "{\"status\":\"offline\",\"reason\":\"ssh timeout\"}" {
+        panic("self_test FAIL [ubu_json empty]")
+    }
+    let off_h = htz_json("bad")
+    if off_h != "{\"status\":\"offline\",\"reason\":\"parse_fail\"}" {
+        panic("self_test FAIL [htz_json short]")
+    }
+
+    // 2. Mac 합성 — core sample 실제 호출
+    let v = sample()
+    let mj = mac_json(v)
+    if len(mj) < 20 { panic("self_test FAIL [mac_json len]") }
+
+    // 3. infra 합성
+    let infra = build_infra("2026-04-13T00:00:00Z", mj, off_u, off_h)
+    if len(infra) < 80 { panic("self_test FAIL [infra len]") }
+
+    println("  ✅ probe self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let ts = ts_iso()
+    let v = sample()
+    let ubu_j = ubu_json(probe_ubu_csv())
+    let htz_j = htz_json(probe_htz_csv())
+    let mac_j = mac_json(v)
+
+    let infra = build_infra(ts, mac_j, ubu_j, htz_j)
+    write_atomic(INFRA_STATE, infra)
+}
+
+main()

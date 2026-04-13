@@ -74,14 +74,23 @@
       "id": "M2_probe",
       "title": "신규 probe — Mac/원격 vitals 수집 (core 사용)",
       "priority": "P1",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-13",
       "deps": ["M0_archive_split", "M1_l0_strict"],
       "exit_criteria": [
         "modules/probe.hexa 작성 — core sample() 활용",
         "Mac + ubu + htz 3호스트 vitals → nexus/shared/infra_state.json",
         "launchd plist + StartInterval=60s",
         "self-test 포함, L0 등록"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": 37,
+        "airgenome_commit": "93d53a8f",
+        "self_test": "PASS",
+        "production_run": "infra_state.json 23:02 갱신 · 3호스트 active",
+        "plist": "shared/launchagents/com.airgenome.probe.plist (StartInterval=60s)",
+        "nexus_pr": "pending — projects.airgenome.L0 에 modules/probe.hexa 추가"
+      }
     },
     {
       "id": "M3_dispatch",
