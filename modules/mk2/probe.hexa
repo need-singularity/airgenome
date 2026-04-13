@@ -3,12 +3,12 @@
 // 책임:
 //   1. SSH ubu + hetzner (5s timeout) → load/ram/gpu 수집
 //   2. Mac sysctl → load
-//   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신 (L0 load_balancer 가 읽는 계약 유지)
+//   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신 (L0 load_balancer 계약 유지)
 //   4. L0 load_balancer.hexa subprocess 호출 → dispatch_state.json 갱신
 //   5. L0 mac_compute_zero.hexa subprocess 호출 → AG6 enforcement
 //   6. ~/.airgenome/mk2/state.json 에 mk2_epoch + 경로 인덱스 기록
 //
-// 하네스 원칙: silent_success — stdout 0바이트, stderr 는 실패 시만 JSON 1줄
+// 하네스 원칙: silent_success — stdout 0바이트
 
 let HOME = env("HOME")
 let STATE_DIR = HOME + "/.airgenome/mk2"
@@ -19,71 +19,57 @@ let MC_ZERO = HOME + "/Dev/airgenome/modules/mac_compute_zero.hexa"
 let LOAD_BAL = HOME + "/Dev/airgenome/modules/load_balancer.hexa"
 let HEXA_BIN = HOME + "/Dev/airgenome/nexus/shared/bin/hexa"
 
-fn ts_iso() -> str {
-    let r = try { exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim() } catch e { "?" }
+fn safe_exec(cmd: str) -> str {
+    let mut r = ""
+    try { r = exec(cmd).trim() } catch e {}
     return r
+}
+
+fn ts_iso() -> str {
+    return safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
 }
 
 fn now_epoch() -> str {
-    let r = try { exec("date +%s").trim() } catch e { "0" }
-    return r
+    return safe_exec("date +%s")
 }
 
-// 단일 ssh 호출로 ubu 지표 수집 — awk 로 1줄 CSV 반환
 // 포맷: LOAD,RAM_TOTAL_MB,RAM_USED_MB,GPU_UTIL,GPU_VRAM_USED_MB,GPU_VRAM_TOTAL_MB
-fn probe_ubu_one_line() -> str {
+fn probe_ubu_csv() -> str {
     let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{print \\$2 \\\",\\\" \\$3}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \"); echo \"$L,$M,$G\"' 2>/dev/null"
-    let r = try { exec(cmd).trim() } catch e { "" }
-    return r
+    return safe_exec(cmd)
 }
 
-fn probe_htz_one_line() -> str {
+fn probe_htz_csv() -> str {
     let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{print \\$2 \\\",\\\" \\$3}\"); echo \"$L,$N,$M\"' 2>/dev/null"
-    let r = try { exec(cmd).trim() } catch e { "" }
-    return r
+    return safe_exec(cmd)
 }
 
 fn mac_load() -> str {
-    let r = try { exec("sysctl -n vm.loadavg | awk '{print $2}'").trim() } catch e { "0.0" }
+    let r = safe_exec("sysctl -n vm.loadavg | awk '{print $2}'")
+    if r == "" { return "0.0" }
     return r
 }
 
-// CSV → JSON (ubu)
 fn ubu_json(csv: str) -> str {
-    let empty_str = ""
-    if csv == empty_str {
+    if csv == "" {
         return "{\"status\":\"offline\",\"reason\":\"ssh timeout\"}"
     }
     let parts = csv.split(",")
-    let n = len(parts)
-    if n < 6 {
+    if len(parts) < 6 {
         return "{\"status\":\"offline\",\"reason\":\"parse_fail\"}"
     }
-    let load = parts[0]
-    let ram_total = parts[1]
-    let ram_used = parts[2]
-    let gpu_util = parts[3]
-    let gpu_used = parts[4]
-    let gpu_total = parts[5]
-    return "{\"status\":\"active\",\"load\":\"" + load + "\",\"ram_used_mb\":" + ram_used + ",\"ram_total_mb\":" + ram_total + ",\"gpu_util\":" + gpu_util + ",\"gpu_vram_used_mb\":" + gpu_used + ",\"gpu_vram_total_mb\":" + gpu_total + "}"
+    return "{\"status\":\"active\",\"load\":\"" + parts[0] + "\",\"ram_used_mb\":" + parts[2] + ",\"ram_total_mb\":" + parts[1] + ",\"gpu_util\":" + parts[3] + ",\"gpu_vram_used_mb\":" + parts[4] + ",\"gpu_vram_total_mb\":" + parts[5] + "}"
 }
 
-// CSV → JSON (htz)
 fn htz_json(csv: str) -> str {
-    let empty_str = ""
-    if csv == empty_str {
+    if csv == "" {
         return "{\"status\":\"offline\",\"reason\":\"ssh timeout\"}"
     }
     let parts = csv.split(",")
-    let n = len(parts)
-    if n < 4 {
+    if len(parts) < 4 {
         return "{\"status\":\"offline\",\"reason\":\"parse_fail\"}"
     }
-    let load = parts[0]
-    let threads = parts[1]
-    let ram_total = parts[2]
-    let ram_used = parts[3]
-    return "{\"status\":\"active\",\"load\":\"" + load + "\",\"cpu_threads\":" + threads + ",\"ram_used_mb\":" + ram_used + ",\"ram_total_mb\":" + ram_total + "}"
+    return "{\"status\":\"active\",\"load\":\"" + parts[0] + "\",\"cpu_threads\":" + parts[1] + ",\"ram_used_mb\":" + parts[3] + ",\"ram_total_mb\":" + parts[2] + "}"
 }
 
 fn mac_json(load_s: str) -> str {
@@ -93,18 +79,18 @@ fn mac_json(load_s: str) -> str {
 fn write_atomic(path: str, content: str) {
     let tmp = path + ".tmp"
     try { write_file(tmp, content) } catch e {}
-    try { exec("mv -f '" + tmp + "' '" + path + "'") } catch e {}
+    let _unused = safe_exec("mv -f '" + tmp + "' '" + path + "'")
 }
 
 fn main() {
-    try { exec("mkdir -p '" + STATE_DIR + "'") } catch e {}
+    let _mkd = safe_exec("mkdir -p '" + STATE_DIR + "'")
 
     let ts = ts_iso()
     let ep = now_epoch()
 
     // 1~3. Probe
-    let ubu_csv = probe_ubu_one_line()
-    let htz_csv = probe_htz_one_line()
+    let ubu_csv = probe_ubu_csv()
+    let htz_csv = probe_htz_csv()
     let mac_ld = mac_load()
 
     let ubu_j = ubu_json(ubu_csv)
@@ -116,16 +102,14 @@ fn main() {
     write_atomic(INFRA_STATE, infra)
 
     // 5. L0 load_balancer → dispatch_state.json 갱신
-    try { exec(HEXA_BIN + " run '" + LOAD_BAL + "' >/dev/null 2>&1") } catch e {}
+    let _lb = safe_exec(HEXA_BIN + " '" + LOAD_BAL + "' >/dev/null 2>&1")
 
     // 6. L0 mac_compute_zero → AG6 enforcement
-    try { exec(HEXA_BIN + " run '" + MC_ZERO + "' >/dev/null 2>&1") } catch e {}
+    let _mc = safe_exec(HEXA_BIN + " '" + MC_ZERO + "' >/dev/null 2>&1")
 
     // 7. mk2 state.json — mk2_epoch + 경로 인덱스
     let mk2 = "{\"mk2_epoch\":" + ep + ",\"ts\":\"" + ts + "\",\"probe\":\"mk2/probe.hexa\",\"infra_state\":\"" + INFRA_STATE + "\",\"dispatch_state\":\"" + DISPATCH_STATE + "\"}\n"
     write_atomic(MK2_STATE, mk2)
-
-    // silent_success — stdout 침묵
 }
 
 main()
