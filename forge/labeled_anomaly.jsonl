@@ -1,3 +1,0 @@
-{"ts":"2026-04-13T15:00:00Z","pid":99999,"comm":"synthetic_test","label":"CPU_SPIKE"}
-{"ts":"2026-04-13T15:00:00Z","pid":99999,"comm":"synthetic_test","label":"MEM_LEAK"}
-{"ts":"2026-04-13T15:00:00Z","pid":99999,"comm":"synthetic_test","label":"FORK_BOMB"}

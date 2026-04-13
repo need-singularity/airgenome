@@ -4,6 +4,11 @@
 core/core.hexa @need-singularity
 core/test/core_test.hexa @need-singularity
 modules/probe.hexa @need-singularity
+modules/dispatch.hexa @need-singularity
+modules/harvest.hexa @need-singularity
+modules/label.hexa @need-singularity
+modules/forecast.hexa @need-singularity
+shared/config/label_rules.jsonl @need-singularity
 shared/config/roadmap/airgenome.json @need-singularity
 cl @need-singularity
 CLAUDE.md @need-singularity

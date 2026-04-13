@@ -23,6 +23,10 @@ forge/vitals_ring.state
 forge/genomes.pack
 forge/genomes.pack.bak
 forge/dispatch.log.*
+forge/genomes.ring
+forge/labeled_anomaly.jsonl
+forge/forecast.jsonl
+forge/load_balancer.log
 _ttest.hexa
 target/
 Cargo.lock
