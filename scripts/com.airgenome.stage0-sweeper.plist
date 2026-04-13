@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  airgenome stage0-sweeper — hexa stage1 가 stage0 위임 후 timeout 시 자식 orphan 누적.
+  60s 주기로 5분 이상 매달린 hexa_stage0 SIGKILL.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.stage0-sweeper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/ghost/Dev/airgenome/scripts/sweep_stage0_zombies.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-stage0-sweeper.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-stage0-sweeper.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>LowPriorityIO</key>
+    <true/>
+</dict>
+</plist>
