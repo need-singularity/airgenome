@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ag3_loop — AG3 연속 돌파 루프 (ONCE 모드, 골화 2026-04-10)
+  while-true + exec(ssh)×3-5 + sleep 9~10h 누적 → 81% CPU 폭주 (D1) 후 ONCE 전환.
+  state file로 last_write_idx / idle_ticks 복원 → anomaly delta 연속성 유지.
+  StartInterval로 launchd가 5초 주기 담당. ag3-feed / sampler 동일 패턴.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.ag3-loop</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>export AG3LOOP_ONCE=1 HOME=/Users/ghost; exec /Users/ghost/.hx/bin/hexa /Users/ghost/Dev/airgenome/modules/ag3_loop.hexa</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>5</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>TMPDIR</key>
+        <string>/Volumes/AIRGENOME_RAM/tmp</string>
+        <key>AG3LOOP_ONCE</key>
+        <string>1</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Volumes/AIRGENOME_RAM/logs/ag3-loop.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/AIRGENOME_RAM/logs/ag3-loop.err</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

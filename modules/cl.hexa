@@ -1032,11 +1032,14 @@ fn print_help() -> void {
 }
 
 fn main() {
+    println("[cl.hexa] main() start")
     let argv = args()
+    println("[cl.hexa] argc=" + to_string(len(argv)))
     let cmd = ""
     if len(argv) > 2 {
         cmd = argv[2]
     }
+    println("[cl.hexa] cmd=" + cmd)
 
     if cmd == "" {
         let accounts = bootstrap_accounts()
@@ -1094,7 +1097,7 @@ fn main() {
         show_usage_dashboard()
     }
     if cmd == "add" {
-        if len(argv) > 4 {
+        if len(argv) > 5 {
             add_account(argv[3], argv[4])
         }
         if len(argv) <= 4 {

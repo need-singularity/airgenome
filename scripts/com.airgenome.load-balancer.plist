@@ -11,14 +11,8 @@
         <string>/Users/ghost/Dev/airgenome/modules/load_balancer.hexa</string>
     </array>
 
-    <key>StartInterval</key>
-    <integer>30</integer>
-
-    <key>RunAtLoad</key>
+    <key>Disabled</key>
     <true/>
-
-    <key>ThrottleInterval</key>
-    <integer>30</integer>
 
     <key>StandardOutPath</key>
     <string>/Users/ghost/Dev/airgenome/forge/load_balancer.stdout.log</string>

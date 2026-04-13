@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launcher-cap — AG4 사전 캡 enforcement watchdog
+  ONCE 모드: 내부 루프 없이 StartInterval=20초마다 한 번 실행
+  launcher PID 수집 → count > 8이면 oldest 정리
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.launcher-cap</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ghost/.hx/bin/hexa</string>
+        <string>/Users/ghost/Dev/airgenome/launcher_cap.hexa</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StartInterval</key>
+    <integer>20</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/ghost/.cargo/bin:/Users/ghost/.hx/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/airgenome-cap.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/airgenome-cap.err</string>
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+</dict>
+</plist>

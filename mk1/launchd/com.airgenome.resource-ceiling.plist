@@ -3,22 +3,29 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.airgenome.mac-compute-zero</string>
+    <string>com.airgenome.resource-ceiling</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/Users/ghost/Dev/airgenome/nexus/shared/bin/hexa</string>
-        <string>/Users/ghost/Dev/airgenome/modules/mac_compute_zero.hexa</string>
+        <string>/Users/ghost/Dev/airgenome/modules/resource_ceiling.hexa</string>
+        <string>monitor</string>
     </array>
 
-    <key>Disabled</key>
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <key>RunAtLoad</key>
     <true/>
 
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
     <key>StandardOutPath</key>
-    <string>/Users/ghost/Dev/airgenome/forge/mac_compute_zero.stdout.log</string>
+    <string>/Users/ghost/Dev/airgenome/forge/resource_ceiling.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/ghost/Dev/airgenome/forge/mac_compute_zero.stderr.log</string>
+    <string>/Users/ghost/Dev/airgenome/forge/resource_ceiling.stderr.log</string>
 
     <key>WorkingDirectory</key>
     <string>/Users/ghost/Dev/airgenome</string>

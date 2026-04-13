@@ -1,0 +1,323 @@
+// airgenome/modules/cl_runner.hexa — cl bash wrapper 의 hexa native 대체
+//
+// 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
+//   ossified / stable / failing / evolution_log 섹션
+//
+// 역할: cl (bash) 의 wrapper 기능을 hexa 로 이식.
+//   1. --effort <level> 파싱
+//   2. login 서브커맨드 → CLAUDE_CONFIG_DIR auth
+//   3. non-launch 서브커맨드 → cl.hexa 위임
+//   4. launch 경로 → cl.hexa 로 대시보드 + 계정 선택, claude CLI 실행,
+//      rate-limit 감지 시 자동 계정 전환
+//
+// 절대규칙 (2026-04-07 수렴진화):
+//   1. zsh 배열은 1-based (cl bash 흔적이나 여기선 0-based 표준)
+//   2. 세션 종료 후 usage 갱신 전 `claude -p ok --max-turns 1` → 키체인 갱신
+//   3. accounts.json config_dir trailing slash 금지
+//   4. usage.hexa: $HEXA $AIRGENOME/modules/usage.hexa -- one NAME
+//   5. 쿨다운 초기화: echo '{}' > ~/.airgenome/refresh-cooldown.json
+
+// ── Paths ──
+let HOME = env("HOME")
+let AIRGENOME = HOME + "/Dev/airgenome"
+let HEXA = AIRGENOME + "/nexus/shared/bin/hexa.real"
+let ACCOUNTS_FILE = HOME + "/.airgenome/accounts.json"
+let STATE_FILE = HOME + "/.airgenome/cl-state.json"
+let USAGE_CACHE = HOME + "/.airgenome/usage-cache.json"
+let LOGFILE = "/tmp/cl-claude-output.log"
+
+// ── Rate limit patterns (BrokenPipe, usage cap, 429 등) ──
+fn rate_patterns() {
+    return [
+        "rate.limit",
+        "limit.reached",
+        "usage.cap",
+        "rate_limit_error",
+        "Too.many.requests",
+        "overloaded_error",
+        "over.your.usage.limit",
+        "exceeded.*limit"
+    ]
+}
+
+// ── JSON helpers (awk/grep/sed 경유) ──
+fn json_get(file: string, key: string) -> string {
+    let cmd = "sed 's/\"//g;s/.*" + key + " *: *//;s/[,}].*//' '" + file + "' 2>/dev/null | tr -d ' '"
+    return exec(cmd).trim()
+}
+
+fn json_config_dir(name: string) -> string {
+    let cmd = "grep -oE '\"name\":\\s*\"[^\"]*\"|\"config_dir\":\\s*\"[^\"]*\"' '" + ACCOUNTS_FILE + "' 2>/dev/null | sed 's/\"//g;s/: */|/' | awk -F'|' -v n='" + name + "' '{if($1==\"name\")cur=$2;if($1==\"config_dir\"&&cur==n){print $2;exit}}'"
+    return exec(cmd).trim()
+}
+
+fn json_cache_field(name: string, field: string) -> string {
+    let cmd = "sed 's/.*\"" + name + "\":{//;s/}.*//' '" + USAGE_CACHE + "' 2>/dev/null | grep -o '\"" + field + "\":[^,}]*' | sed 's/[^:]*://;s/\"//g'"
+    return exec(cmd).trim()
+}
+
+// ── --effort flag parsing ──
+// 결과 tuple: (effort_level, remaining_args_as_array)
+fn parse_effort(av: [string]) -> [string] {
+    let mut effort = "max"
+    let mut rest = []
+    let mut i = 0
+    while i < len(av) {
+        let a = av[i]
+        if a == "--effort" {
+            if i + 1 < len(av) {
+                effort = av[i + 1]
+                i = i + 2
+            } else {
+                i = i + 1
+            }
+        } else {
+            if a.starts_with("--effort=") {
+                effort = a.substring(9, len(a))
+                i = i + 1
+            } else {
+                rest = rest.push(a)
+                i = i + 1
+            }
+        }
+    }
+    // Validate effort
+    let valid = effort == "low" || effort == "medium" || effort == "high" || effort == "max"
+    if valid == false {
+        eprintln("ERROR(cl): --effort must be one of: low, medium, high, max (got: " + effort + ")")
+        exit(2)
+    }
+    // Encode as first element, rest follows
+    let mut result = [effort]
+    let mut j = 0
+    while j < len(rest) {
+        result = result.push(rest[j])
+        j = j + 1
+    }
+    return result
+}
+
+// ── login handler ──
+fn cmd_login(target: string) {
+    let mut tgt = target
+    if len(tgt) == 0 {
+        tgt = json_get(STATE_FILE, "active")
+    }
+    if len(tgt) == 0 {
+        println("  ✗ 계정 지정 필요: cl login claude3")
+        exit(1)
+    }
+    let dir = json_config_dir(tgt)
+    if len(dir) == 0 {
+        println("  ✗ 계정 없음: " + tgt)
+        exit(1)
+    }
+    println("  ⬡ 로그인: " + tgt + " (" + dir + ")")
+    println("")
+    exec("CLAUDE_CONFIG_DIR='" + dir + "' ~/.local/bin/claude auth login")
+}
+
+// ── non-launch subcommand 위임 ──
+fn cmd_delegate(args_list: [string]) {
+    // args_list: ["pick", "claude3"] 같은 형태
+    let mut cmd = "cd '" + AIRGENOME + "' && '" + HEXA + "' run modules/cl.hexa"
+    let mut i = 0
+    while i < len(args_list) {
+        cmd = cmd + " '" + args_list[i] + "'"
+        i = i + 1
+    }
+    cmd = cmd + " 2>&1"
+    let out = exec(cmd)
+    println(out)
+}
+
+// ── launch loop (rate-limit 자동 전환) ──
+fn cmd_launch(effort: string, extra_args: [string]) {
+    // LAUNCH marker 로 cl.hexa 와 통신
+    let marker = "/tmp/cl-launch-" + to_string(exec("echo $$").trim())
+    exec("rm -f '" + marker + "'")
+
+    // cl.hexa 실행하여 계정 선택 (대시보드 + TTY read)
+    let mut hexa_cmd = "cd '" + AIRGENOME + "' && CL_LAUNCH_MARKER='" + marker + "' '" + HEXA + "' run modules/cl.hexa"
+    let mut i = 0
+    while i < len(extra_args) {
+        hexa_cmd = hexa_cmd + " '" + extra_args[i] + "'"
+        i = i + 1
+    }
+    // 파이프 필터로 LAUNCH: prefix 추출 (marker 파일 경유로 대체)
+    hexa_cmd = hexa_cmd + " 2>&1 | while IFS= read -r line; do case \"$line\" in LAUNCH:*) echo \"${line#LAUNCH:}\" > '" + marker + "' ;; *) printf '%s\\n' \"$line\" ;; esac; done"
+    exec(hexa_cmd)
+
+    // marker 확인
+    let launch_dir = exec("[ -f '" + marker + "' ] && cat '" + marker + "' 2>/dev/null").trim()
+    exec("rm -f '" + marker + "'")
+
+    if len(launch_dir) == 0 { return }
+
+    // 활성 계정명
+    let current_name_raw = json_get(STATE_FILE, "active")
+    let mut current_name = current_name_raw
+    if len(current_name) == 0 { current_name = "unknown" }
+    let mut current_dir = launch_dir
+    let mut switch_count = 0
+
+    // 최대 전환 횟수 (removed=false 계정 수 - 1)
+    let max_switches_raw = exec("grep -oE '\"removed\":[a-z]+' '" + ACCOUNTS_FILE + "' 2>/dev/null | grep -c 'false'").trim()
+    let mut max_switches = to_int(max_switches_raw)
+    if max_switches > 1 { max_switches = max_switches - 1 } else { max_switches = 1 }
+
+    let mut running = true
+    while running {
+        println("")
+        println("  ▶ Claude Code 시작 [" + current_name + "]")
+        println("  ─────────────────────────────────────")
+        println("  ⬡ effort=" + effort)
+
+        // claude CLI 실행 (blocking)
+        exec("CLAUDE_CONFIG_DIR='" + current_dir + "' ~/.local/bin/claude --effort " + effort)
+
+        // 세션 종료 후 usage 갱신 (background)
+        let refresh = "echo '{}' > '" + HOME + "/.airgenome/refresh-cooldown.json'; CLAUDE_CONFIG_DIR='" + current_dir + "' ~/.local/bin/claude -p 'ok' --max-turns 1 >/dev/null 2>&1; cd '" + AIRGENOME + "' && '" + HEXA + "' " + AIRGENOME + "/modules/usage.hexa -- one '" + current_name + "' >/dev/null 2>&1"
+        exec("(" + refresh + ") &")
+
+        // 최근 대화 로그에서 rate-limit 감지
+        let tail_cmd = "find '" + current_dir + "/projects' -name '*.jsonl' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1 | xargs tail -50 2>/dev/null"
+        let tail_out = exec(tail_cmd)
+        exec("printf '%s' '" + tail_out.replace("'", "'\\''") + "' > '" + LOGFILE + "'")
+
+        // rate-limit 감지
+        let patterns = rate_patterns()
+        let mut hit = false
+        let mut pi = 0
+        while pi < len(patterns) {
+            let check = exec("grep -qiE '" + patterns[pi] + "' '" + LOGFILE + "' 2>/dev/null && echo 1 || echo 0").trim()
+            if check == "1" { hit = true }
+            pi = pi + 1
+        }
+
+        if hit && switch_count < max_switches {
+            println("")
+            println("  ⚠ Rate limit 감지! 자동 계정 전환 중...")
+
+            // 다음 계정 선택 (week_all_pct 최저, 현재 아님, 100% 아님)
+            let pick_cmd = "grep -oE '\"name\":\\s*\"[^\"]*\"|\"config_dir\":\\s*\"[^\"]*\"|\"removed\":\\s*[a-z]+' '" + ACCOUNTS_FILE + "' 2>/dev/null | sed 's/\"//g;s/: */|/' | awk -F'|' '{if($1==\"name\")n=$2;if($1==\"removed\"){r=$2;if(n!=\"\")print n\"|\"r;n=\"\"}}'"
+            let entries = exec(pick_cmd).trim()
+            let mut next_name = ""
+            let mut best_pct = 1000
+            if len(entries) > 0 {
+                let lines = entries.split("\n")
+                let mut ei = 0
+                while ei < len(lines) {
+                    let parts = lines[ei].split("|")
+                    if len(parts) >= 2 {
+                        let cand = parts[0]
+                        let removed = parts[1]
+                        let is_current = cand == current_name
+                        let is_removed = removed == "true"
+                        if is_current == false && is_removed == false {
+                            let w_raw = json_cache_field(cand, "week_all_pct")
+                            let mut w = 999
+                            if len(w_raw) > 0 { w = to_int(w_raw) }
+                            if w < 100 && w < best_pct {
+                                best_pct = w
+                                next_name = cand
+                            }
+                        }
+                    }
+                    ei = ei + 1
+                }
+            }
+
+            if len(next_name) == 0 {
+                println("  ✗ 사용 가능한 계정 없음 — 모두 소진")
+                running = false
+            } else {
+                let next_dir = json_config_dir(next_name)
+                if len(next_dir) == 0 {
+                    println("  ✗ 계정 디렉토리 없음: " + next_name)
+                    running = false
+                } else {
+                    exec("echo '{\"active\":\"" + next_name + "\"}' > '" + STATE_FILE + "'")
+                    let s_pct_raw = json_cache_field(next_name, "session_pct")
+                    let w_pct_raw = json_cache_field(next_name, "week_all_pct")
+                    let mut s_pct = "?"
+                    let mut w_pct = "?"
+                    if len(s_pct_raw) > 0 { s_pct = s_pct_raw }
+                    if len(w_pct_raw) > 0 { w_pct = w_pct_raw }
+                    println("  ⬡ " + next_name + "  session=" + s_pct + "%  week=" + w_pct + "%")
+                    println("    " + next_dir)
+                    current_dir = next_dir
+                    current_name = next_name
+                    switch_count = switch_count + 1
+                    println("  ↻ 전환 " + to_string(switch_count) + "/" + to_string(max_switches) + " → " + current_name)
+                    println("")
+                    exec("sleep 1")
+                }
+            }
+        } else {
+            if switch_count >= max_switches {
+                println("  ✗ 최대 전환 횟수 도달 (" + to_string(max_switches) + ")")
+            }
+            running = false
+        }
+    }
+
+    println("")
+    println("  ⬡ cl 종료 (전환 " + to_string(switch_count) + "회)")
+
+    // cleanup: 세션 등록 해제
+    let pid = to_string(exec("echo $$").trim())
+    exec("cd '" + AIRGENOME + "' && '" + HEXA + "' run modules/cl.hexa unregister '" + pid + "' 2>/dev/null")
+    exec("rm -f '" + LOGFILE + "'")
+}
+
+// ── main ──
+fn main() {
+    let av = args()
+    // av = [bin, script, user_args...]
+    // skip bin + script
+    let mut user_args = []
+    let mut i = 2
+    while i < len(av) {
+        user_args = user_args.push(av[i])
+        i = i + 1
+    }
+
+    // Hexa binary 존재 확인
+    let hexa_check = exec("test -x '" + HEXA + "' && echo ok").trim()
+    if hexa_check != "ok" {
+        eprintln("ERROR(cl): vendored hexa.real 누락 — " + HEXA)
+        exit(127)
+    }
+
+    // --effort parse
+    let parsed = parse_effort(user_args)
+    let effort = parsed[0]
+    let mut rest = []
+    let mut p = 1
+    while p < len(parsed) {
+        rest = rest.push(parsed[p])
+        p = p + 1
+    }
+
+    // 서브커맨드 dispatch
+    if len(rest) > 0 {
+        let sub = rest[0]
+        if sub == "login" {
+            let mut tgt = ""
+            if len(rest) > 1 { tgt = rest[1] }
+            cmd_login(tgt)
+            return
+        }
+        let is_delegate = sub == "pick" || sub == "add" || sub == "remove" || sub == "help" || sub == "status" || sub == "u" || sub == "sessions" || sub == "unregister"
+        if is_delegate {
+            cmd_delegate(rest)
+            return
+        }
+    }
+
+    // default: launch
+    cmd_launch(effort, rest)
+}
+
+main()
