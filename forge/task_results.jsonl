@@ -691,3 +691,6 @@
 {"id":"htz_2026-04-12T23:34:22Z","ts":"2026-04-12T23:34:22Z","task":"blast_htz_17","host":"htz","status":"done","bytes":57486,"depth":3}
 {"id":"htz_2026-04-12T23:39:28Z","ts":"2026-04-12T23:39:28Z","task":"blast_htz_17","host":"htz","status":"done","bytes":63870,"depth":3}
 {"id":"htz_2026-04-12T23:40:34Z","ts":"2026-04-12T23:40:34Z","task":"blast_htz_17","host":"htz","status":"done","bytes":70518,"depth":3}
+{"id":"htz_2026-04-12T23:46:00Z","ts":"2026-04-12T23:46:00Z","task":"blast_htz_17","host":"htz","status":"done","bytes":66612,"depth":3}
+{"id":"htz_2026-04-12T23:47:07Z","ts":"2026-04-12T23:47:07Z","task":"blast_htz_17","host":"htz","status":"done","bytes":88181,"depth":3}
+{"id":"htz_2026-04-12T23:52:43Z","ts":"2026-04-12T23:52:43Z","task":"blast_htz_17","host":"htz","status":"done","bytes":84447,"depth":3}
