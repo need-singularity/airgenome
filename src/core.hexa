@@ -1,18 +1,37 @@
 // ⛔ CORE — L0 불변식 (육각 투영 6축 코어 60바이트 게놈. 수정 전 유저 승인 필수)
 // airgenome/src/core.hexa — lib.rs + resource_guard.rs → hexa-lang
 // Replaces Rust implementation with pure hexa
+//
+// 2026-04-13: hexa-lang stage1 호환 재작성.
+//   - comptime { N } → 직접 상수 (hexa-lang comptime expr 미지원)
+//   - enum Severity → int 상수 (hexa-lang variant enum 런타임 void 평가)
+//   - consciousness AirgenomeCore { assert ... } → fn self_test() + panic on fail
 
 // ═══════════════════════════════════════════════════════════════════════
 //  6-AXIS HEXAGON
 // ═══════════════════════════════════════════════════════════════════════
 
-let AXIS_COUNT = comptime { 6 }
-let PAIR_COUNT = comptime { 15 }
-let GENOME_BYTES = comptime { 60 }
+let AXIS_COUNT = 6
+let PAIR_COUNT = 15
+let GENOME_BYTES = 60
 
-enum Axis { Cpu, Ram, Gpu, Npu, Power, Io }
-enum Severity { Ok, Warn, Critical }
-enum ThrottleLevel { Normal, Warn, Critical }
+// Axis indices (원: enum Axis { Cpu, Ram, Gpu, Npu, Power, Io })
+let AXIS_CPU = 0
+let AXIS_RAM = 1
+let AXIS_GPU = 2
+let AXIS_NPU = 3
+let AXIS_POWER = 4
+let AXIS_IO = 5
+
+// Severity levels (원: enum Severity)
+let SEV_OK = 0
+let SEV_WARN = 1
+let SEV_CRITICAL = 2
+
+// Throttle levels (원: enum ThrottleLevel)
+let THROTTLE_NORMAL = 0
+let THROTTLE_WARN = 1
+let THROTTLE_CRITICAL = 2
 
 struct Vitals {
     cpu: float, ram: float, gpu: float,
@@ -35,12 +54,12 @@ fn sample() -> Vitals {
     }
 }
 
-fn assess(v: Vitals, cpu_ceil: float, ram_ceil: float, swap_ceil: float) -> Severity {
-    if v.cpu > cpu_ceil { return Severity.Critical }
-    if v.ram > ram_ceil { return Severity.Critical }
-    if v.power > swap_ceil { return Severity.Critical }
-    if v.cpu > cpu_ceil * 0.8 { return Severity.Warn }
-    return Severity.Ok
+fn assess(v: Vitals, cpu_ceil: float, ram_ceil: float, swap_ceil: float) -> int {
+    if v.cpu > cpu_ceil { return SEV_CRITICAL }
+    if v.ram > ram_ceil { return SEV_CRITICAL }
+    if v.power > swap_ceil { return SEV_CRITICAL }
+    if v.cpu > cpu_ceil * 0.8 { return SEV_WARN }
+    return SEV_OK
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -85,7 +104,7 @@ fn firing(v: Vitals) -> str {
 
 fn rule_severity(rule_idx: int, v: Vitals) -> int {
     // 0=Ok 1=Warn 2=Critical
-    return 0
+    return SEV_OK
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -171,40 +190,40 @@ struct AdaptiveThrottle {
 fn new_throttle(limits: SoftLimits) -> AdaptiveThrottle {
     return AdaptiveThrottle {
         limits: limits,
-        current_level: 0,
+        current_level: THROTTLE_NORMAL,
         checks: 0,
         throttled_count: 0
     }
 }
 
-// Returns: [level (0/1/2), batch_scale * 100 (int), sleep_ms]
+// Returns updated AdaptiveThrottle.
 // level: 0=Normal 1=Warn 2=Critical
 fn check_and_adapt(t: AdaptiveThrottle) -> AdaptiveThrottle {
     t.checks = t.checks + 1
     let rss = current_rss_mb()
 
     if rss >= t.limits.critical_rss_mb {
-        t.current_level = 2
+        t.current_level = THROTTLE_CRITICAL
         t.throttled_count = t.throttled_count + 1
     } else if rss >= t.limits.warn_rss_mb {
-        t.current_level = 1
+        t.current_level = THROTTLE_WARN
         t.throttled_count = t.throttled_count + 1
     } else {
-        t.current_level = 0
+        t.current_level = THROTTLE_NORMAL
     }
     return t
 }
 
 fn throttle_batch_scale(t: AdaptiveThrottle) -> float {
-    if t.current_level == 0 { return 1.0 }
-    if t.current_level == 1 { return t.limits.batch_scale_factor }
+    if t.current_level == THROTTLE_NORMAL { return 1.0 }
+    if t.current_level == THROTTLE_WARN { return t.limits.batch_scale_factor }
     // Critical: 25%
     return t.limits.batch_scale_factor * 0.5
 }
 
 fn throttle_sleep_ms(t: AdaptiveThrottle) -> int {
-    if t.current_level == 0 { return 0 }
-    if t.current_level == 1 { return t.limits.throttle_sleep_ms }
+    if t.current_level == THROTTLE_NORMAL { return 0 }
+    if t.current_level == THROTTLE_WARN { return t.limits.throttle_sleep_ms }
     // Critical: 3x sleep
     return t.limits.throttle_sleep_ms * 3
 }
@@ -220,8 +239,8 @@ fn throttle_maybe_sleep(t: AdaptiveThrottle) -> void {
 fn throttle_status(t: AdaptiveThrottle) -> str {
     let rss = current_rss_mb()
     let mut lvl = "Normal"
-    if t.current_level == 1 { lvl = "Warn" }
-    if t.current_level == 2 { lvl = "Critical" }
+    if t.current_level == THROTTLE_WARN { lvl = "Warn" }
+    if t.current_level == THROTTLE_CRITICAL { lvl = "Critical" }
     return "rss=" + to_string(rss) + "MB level=" + lvl + " checks=" + to_string(t.checks) + " throttled=" + to_string(t.throttled_count)
 }
 
@@ -242,10 +261,28 @@ fn init_default_guard() -> AdaptiveThrottle {
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
-consciousness AirgenomeCore {
-    assert AXIS_COUNT == 6
-    assert PAIR_COUNT == 15
-    assert GENOME_BYTES == 60
+fn assert_eq_int(label: str, actual: int, expected: int) -> void {
+    if actual != expected {
+        panic("self_test FAIL [" + label + "]: expected=" + to_string(expected) + " actual=" + to_string(actual))
+    }
+}
+
+fn assert_eq_float(label: str, actual: float, expected: float) -> void {
+    if actual != expected {
+        panic("self_test FAIL [" + label + "]: expected=" + to_string(expected) + " actual=" + to_string(actual))
+    }
+}
+
+fn assert_true(label: str, cond: bool) -> void {
+    if cond == false {
+        panic("self_test FAIL [" + label + "]: condition false")
+    }
+}
+
+fn self_test() -> void {
+    assert_eq_int("AXIS_COUNT", AXIS_COUNT, 6)
+    assert_eq_int("PAIR_COUNT", PAIR_COUNT, 15)
+    assert_eq_int("GENOME_BYTES", GENOME_BYTES, 60)
 
     let v = sample()
     println("⬡ airgenome core (hexa)")
@@ -254,30 +291,32 @@ consciousness AirgenomeCore {
     println("  swap: " + to_string(to_int(v.power)) + "%")
 
     let sev = assess(v, 75.0, 70.0, 30.0)
-    if sev == Severity.Ok { println("  ✅ OK") }
-    if sev == Severity.Warn { println("  ⚠ WARN") }
-    if sev == Severity.Critical { println("  🔴 CRITICAL") }
+    if sev == SEV_OK { println("  ✅ OK") }
+    if sev == SEV_WARN { println("  ⚠ WARN") }
+    if sev == SEV_CRITICAL { println("  🔴 CRITICAL") }
 
     // Verify vitals_get accessor
-    assert vitals_get(v, 0) == v.cpu
-    assert vitals_get(v, 1) == v.ram
+    assert_eq_float("vitals_get(0)", vitals_get(v, 0), v.cpu)
+    assert_eq_float("vitals_get(1)", vitals_get(v, 1), v.ram)
 
     // Verify hard/soft limit defaults
     let hl = default_hard_limits()
-    assert hl.max_rss_mb == 512
-    assert hl.nice_level == 10
+    assert_eq_int("hl.max_rss_mb", hl.max_rss_mb, 512)
+    assert_eq_int("hl.nice_level", hl.nice_level, 10)
 
     let sl = default_soft_limits()
-    assert sl.warn_rss_mb == 384
-    assert sl.critical_rss_mb == 480
-    assert sl.critical_rss_mb > sl.warn_rss_mb
+    assert_eq_int("sl.warn_rss_mb", sl.warn_rss_mb, 384)
+    assert_eq_int("sl.critical_rss_mb", sl.critical_rss_mb, 480)
+    assert_true("sl.critical > sl.warn", sl.critical_rss_mb > sl.warn_rss_mb)
 
     // Verify throttle init
     let t = new_throttle(sl)
-    assert t.current_level == 0
-    assert t.checks == 0
-    assert throttle_batch_scale(t) == 1.0
-    assert throttle_sleep_ms(t) == 0
+    assert_eq_int("t.current_level", t.current_level, 0)
+    assert_eq_int("t.checks", t.checks, 0)
+    assert_eq_float("throttle_batch_scale", throttle_batch_scale(t), 1.0)
+    assert_eq_int("throttle_sleep_ms", throttle_sleep_ms(t), 0)
 
     println("  ✅ lib.rs port verified")
 }
+
+self_test()
