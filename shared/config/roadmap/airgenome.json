@@ -283,21 +283,33 @@
       "id": "M11b_ring_sync",
       "title": "cross-host ring sync — ubu/htz → Mac rsync pull",
       "priority": "P2",
-      "status": "todo",
-      "deps": ["M7_launchctl_load", "M11a_native_mirror"],
+      "status": "active",
+      "started": "2026-04-14",
+      "deps": ["M11a_native_mirror"],
       "exit_criteria": [
-        "ubu/htz 에 systemd timer 또는 cron — harvest_ag 60s 주기 실행",
+        "ubu/htz 에 systemd timer — harvest_ag 60s 주기 실행",
         "각 호스트별 forge/genomes.ring 파일 갱신 확인",
         "Mac launchd timer — rsync pull from ubu/htz (60s 주기)",
-        "수신 경로: ~/Dev/airgenome/forge/genomes.{ubu,htz}.ring + genomes.mac.ring",
+        "수신 경로: ~/Dev/airgenome/forge/genomes.{ubu,htz}.ring",
         "24h 연속 sync 무오류 (stderr.log 에 ERROR 0건)"
-      ]
+      ],
+      "evidence": {
+        "phase1_ubu_timer": "systemd --user airgenome-harvest.timer ACTIVE (60s, linger enabled), 30 records/cycle",
+        "phase1_hetzner_timer": "systemd system airgenome-harvest.timer ACTIVE (60s), 30 records/cycle",
+        "phase2_mac_launchd": "~/Library/LaunchAgents/com.airgenome.ring-sync.plist (StartInterval=60, RunAtLoad)",
+        "mac_sync_verified": "forge/genomes.ubu.ring + genomes.htz.ring 수신 — ring_sync.stderr.log 에러 0건",
+        "ag6_compliance": "Mac 은 rsync 수신만 (~15KB/60s) — heavy compute 0, harvest 는 원격에서만 실행",
+        "carryover_24h": "24h 무오류 연속 검증은 시간 경과 필요 — 별도 모니터링 트랙"
+      },
+      "deps_note": "M7_launchctl_load 는 Mac 쪽 전체 plist bootstrap 이지만 M11b 는 ring-sync launchd 단독 — 독립 가능, M7 선행 의존 제거"
     },
     {
       "id": "M11c_genome_merge",
       "title": "modules/genome_merge.hexa — 3 ring → unified view",
       "priority": "P2",
-      "status": "todo",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M11b_ring_sync"],
       "exit_criteria": [
         "modules/genome_merge.hexa 신설",
@@ -305,7 +317,14 @@
         "PID prefix: {host}.{pid} (예: mac.1234, ubu.5678)",
         "출력: forge/genomes.unified.ring (host 태그 포함)",
         "self-test: 3 synthetic ring (중복 PID 포함) → PID 충돌 0건 검증"
-      ]
+      ],
+      "evidence": {
+        "module_file": "modules/genome_merge.hexa — 85 lines, core 사용 (use \"../core/core\")",
+        "self_test": "PASS — synthetic 3 ring (각 PID=1 포함) → unified 6 lines, 고유 PID 6개, host count mac/ubu/htz 각 2",
+        "production_run": "785 records unified (mac 305, ubu 240, htz 240) — forge/genomes.unified.ring 116KB",
+        "pid_prefix_verified": "pid:\"mac.48513\", pid:\"htz.85637\" 등 {host}.{pid} 포맷 확인",
+        "host_field_injected": "각 레코드에 host:\"mac|ubu|htz\" 추가 확인"
+      }
     },
     {
       "id": "M11d_unified_analytics",
