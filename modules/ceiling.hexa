@@ -1,4 +1,4 @@
-// mk2/ceiling.hexa — Mk2 auto_fill 트리거 (15분 장기 체크, 기본 Disabled)
+// ceiling.hexa — auto_fill 트리거 (15분 장기 체크, 기본 Disabled)
 //
 // 책임:
 //   ~/Dev/nexus/shared/infra_state.json 읽기
@@ -6,12 +6,12 @@
 //   `ssh <host> systemctl start auto_fill@*` 1회 호출
 //
 // 비폴링 — StartInterval=900 (15분). launchd Disabled=true 기본.
-// 활성화: launchctl enable gui/501/com.airgenome.mk2-ceiling
+// 활성화: launchctl enable gui/501/com.airgenome.ceiling
 //
 // 하네스 원칙: silent_success
 
 let HOME = env("HOME")
-let STATE_DIR = HOME + "/.airgenome/mk2"
+let STATE_DIR = HOME + "/.airgenome"
 let CEILING_LOG = STATE_DIR + "/ceiling_log.jsonl"
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
 let THRESHOLD = 50  // free% 미달 시 auto_fill trigger

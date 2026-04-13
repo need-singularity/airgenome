@@ -150,7 +150,7 @@ fn heavy_hit(cmd: str) -> str {
 
 fn verb_pre_bash() {
     let cmd = env("CLAUDE_TOOL_INPUT")
-    let ep = read_mk2_epoch()
+    let ep = read_epoch()
     let now = now_epoch_int()
     let age = now - ep
 
@@ -230,15 +230,15 @@ fn verb_post_bash() {
 // ─── Verb: status ───
 
 fn verb_status() {
-    let ep = read_mk2_epoch()
+    let ep = read_epoch()
     let now = now_epoch_int()
     let age = now - ep
     let load_s = mac_load_1m()
     let alive_s = if remote_alive() { "Y" } else { "N" }
-    println("mk2_epoch=" + to_string(ep) + " age=" + to_string(age) + "s")
+    println("epoch=" + to_string(ep) + " age=" + to_string(age) + "s")
     println("mac_load_1m=" + load_s)
     println("remote_alive=" + alive_s)
-    println("state_file=" + MK2_STATE)
+    println("state_file=" + STATE_FILE)
     println("gate_log=" + GATE_LOG)
     exit(0)
 }
