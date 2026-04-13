@@ -327,11 +327,36 @@
       }
     },
     {
+      "id": "M11_hygiene_paths",
+      "title": "RING/forge 경로 env override — core helper 일원화",
+      "priority": "P3",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M11c_genome_merge"],
+      "exit_criteria": [
+        "core/core.hexa — airgenome_root() / forge_dir() / ring_path() helper 추가",
+        "AIRGENOME_ROOT 환경변수로 root override 지원 (미설정 시 $HOME/Dev/airgenome 폴백)",
+        "harvest/label/forecast/genome_merge — hardcoded 경로 제거, helper 호출로 교체",
+        "Mac + ubu + htz 모두 self-test PASS (회귀 0)",
+        "ubu/htz 재배포 후 60s 이상 harvest 무중단 확인"
+      ],
+      "evidence": {
+        "core_helpers": "airgenome_root() / forge_dir() / ring_path(name) — env(\"AIRGENOME_ROOT\") 우선",
+        "modules_touched": "harvest.hexa, label.hexa, forecast.hexa, genome_merge.hexa — HOME 직접 사용 0건",
+        "core_test_extended": "core_test.hexa + core self_test 모두 helper 검증 추가",
+        "mac_self_test": "core_test + 4 modules self-test all PASS",
+        "ubu_self_test": "harvest/label/forecast/genome_merge 4/4 PASS — bin 재빌드 완료",
+        "hetzner_self_test": "harvest/label/forecast/genome_merge 4/4 PASS — bin 재빌드 완료",
+        "override_demo": "AIRGENOME_ROOT=/tmp/agtest_X → forge_dir()=/tmp/agtest_X/forge 확인"
+      }
+    },
+    {
       "id": "M11d_unified_analytics",
       "title": "label/forecast 를 unified ring 으로 확장",
       "priority": "P2",
       "status": "todo",
-      "deps": ["M11c_genome_merge"],
+      "deps": ["M11c_genome_merge", "M11_hygiene_paths"],
       "exit_criteria": [
         "label.hexa — unified ring 읽기 + host 필드 포함 라벨링",
         "shared/config/label_rules.jsonl — host 조건 (예: host=ubu AND cpu>90) 지원",

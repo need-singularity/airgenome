@@ -15,10 +15,9 @@
 
 use "../core/core"
 
-let HOME = env("HOME")
-let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
-let RULES = HOME + "/Dev/airgenome/shared/config/label_rules.jsonl"
-let OUT = HOME + "/Dev/airgenome/forge/labeled_anomaly.jsonl"
+let RING = ring_path("genomes.ring")
+let RULES = airgenome_root() + "/shared/config/label_rules.jsonl"
+let OUT = ring_path("labeled_anomaly.jsonl")
 let SCAN_LINES = 1000
 
 struct Rule {
@@ -145,7 +144,7 @@ fn read_recent_genomes() -> list {
 
 fn run_label() -> int {
     // 출력 디렉토리 보장
-    let _ = exec("mkdir -p '" + HOME + "/Dev/airgenome/forge'")
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
 
     let rules = load_rules()
     if len(rules) == 0 { return 0 }

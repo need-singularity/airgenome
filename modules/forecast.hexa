@@ -22,9 +22,8 @@
 
 use "../core/core"
 
-let HOME = env("HOME")
-let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
-let OUT  = HOME + "/Dev/airgenome/forge/forecast.jsonl"
+let RING = ring_path("genomes.ring")
+let OUT  = ring_path("forecast.jsonl")
 let SCAN_LINES = 5000
 let TOP_N_PIDS = 20
 
@@ -170,7 +169,7 @@ fn ts_iso() -> str {
 }
 
 fn run_forecast() -> int {
-    let _ = exec("mkdir -p '" + HOME + "/Dev/airgenome/forge'")
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
     let genomes = read_recent_genomes()
     if len(genomes) == 0 { return 0 }
 

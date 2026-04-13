@@ -20,8 +20,7 @@
 
 use "../core/core"
 
-let HOME = env("HOME")
-let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
+let RING = ring_path("genomes.ring")
 let MAX_LINES = 5000   // ~2~3 MB cap (한 줄 ~500 bytes 가정)
 let TOP_N = 30
 let DIFF_THRESHOLD = 10  // axis diff > 10 → 이상
@@ -209,7 +208,7 @@ fn run_harvest() -> int {
     if n < 5 { n = 5 }
 
     // 2. ring 디렉토리 보장
-    ensure_dir(HOME + "/Dev/airgenome/forge")
+    ensure_dir(forge_dir())
 
     // 3. ps 샘플
     let ts = ts_iso()

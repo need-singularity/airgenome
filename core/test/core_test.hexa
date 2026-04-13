@@ -67,6 +67,14 @@ fn main() -> void {
     let g = init_default_guard()
     chk("guard.checks == 0", g.checks == 0)
 
+    // 9. runtime paths — fallback (AIRGENOME_ROOT 미설정 가정)
+    let home = env("HOME")
+    let want_root = home + "/Dev/airgenome"
+    chk("airgenome_root fallback", airgenome_root() == want_root)
+    chk("forge_dir fallback", forge_dir() == want_root + "/forge")
+    chk("ring_path joins", ring_path("genomes.ring") == want_root + "/forge/genomes.ring")
+    chk("ring_path .ubu", ring_path("genomes.ubu.ring") == want_root + "/forge/genomes.ubu.ring")
+
     println("  ✅ core_test PASS")
 }
 

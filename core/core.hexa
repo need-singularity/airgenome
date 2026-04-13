@@ -268,6 +268,28 @@ fn init_default_guard() -> AdaptiveThrottle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  RUNTIME PATHS — env("AIRGENOME_ROOT") override 지원
+//
+//  목적: harvest/label/forecast/genome_merge 의 hardcoded
+//        "$HOME/Dev/airgenome/forge/..." 경로를 함수로 통일.
+//        AIRGENOME_ROOT 미설정 시 기존 동작 보존 (회귀 0).
+// ═══════════════════════════════════════════════════════════════════════
+
+fn airgenome_root() -> str {
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/Dev/airgenome"
+}
+
+fn forge_dir() -> str {
+    return airgenome_root() + "/forge"
+}
+
+fn ring_path(name: str) -> str {
+    return forge_dir() + "/" + name
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -325,6 +347,12 @@ fn self_test() -> void {
     chk_eq_int("t.checks", t.checks, 0)
     chk_eq_float("throttle_batch_scale", throttle_batch_scale(t), 1.0)
     chk_eq_int("throttle_sleep_ms", throttle_sleep_ms(t), 0)
+
+    // Verify runtime paths — default fallback (AIRGENOME_ROOT 미설정 가정)
+    let home = env("HOME")
+    let expected_root = home + "/Dev/airgenome"
+    chk_true("forge_dir contains /forge", forge_dir() == expected_root + "/forge")
+    chk_true("ring_path joins name", ring_path("genomes.ring") == expected_root + "/forge/genomes.ring")
 
     println("  ✅ lib.rs port verified")
 }

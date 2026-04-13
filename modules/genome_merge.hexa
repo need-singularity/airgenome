@@ -18,12 +18,11 @@
 
 use "../core/core"
 
-let HOME = env("HOME")
-let FORGE = HOME + "/Dev/airgenome/forge"
-let MAC_RING = FORGE + "/genomes.ring"
-let UBU_RING = FORGE + "/genomes.ubu.ring"
-let HTZ_RING = FORGE + "/genomes.htz.ring"
-let UNIFIED  = FORGE + "/genomes.unified.ring"
+let FORGE    = forge_dir()
+let MAC_RING = ring_path("genomes.ring")
+let UBU_RING = ring_path("genomes.ubu.ring")
+let HTZ_RING = ring_path("genomes.htz.ring")
+let UNIFIED  = ring_path("genomes.unified.ring")
 
 // 호스트 ring 한 개를 unified 에 append.
 // 파일 없으면 0 반환, 있으면 처리된 라인 수.
