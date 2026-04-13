@@ -33,7 +33,9 @@ let MAX_CONCURRENT_STR = load_config_val("max_concurrent")
 let MAX_CONCURRENT = if len(MAX_CONCURRENT_STR) == 0 { 2 } else { try { to_int(MAX_CONCURRENT_STR) } catch e { 2 } }
 // fallback: config 로드 실패 시 기본값 2
 fn safe_max_concurrent() -> int {
-    if MAX_CONCURRENT < 1 { return 2 }
+    // 2026-04-13 workaround: stage0 파서가 `Ident < 1 {` 를 generic type로 오인
+    // → `1 > Ident` 순서 뒤집기.
+    if 1 > MAX_CONCURRENT { return 2 }
     return MAX_CONCURRENT
 }
 
@@ -1030,8 +1032,8 @@ fn print_help() -> void {
 fn main() {
     let argv = args()
     let cmd = ""
-    if len(argv) > 3 {
-        cmd = argv[3]
+    if len(argv) > 0 {
+        cmd = argv[0]
     }
 
     if cmd == "" {
@@ -1076,8 +1078,8 @@ fn main() {
         }
     }
     if cmd == "pick" {
-        if len(argv) > 4 {
-            resolve_launch(argv[4])
+        if len(argv) > 1 {
+            resolve_launch(argv[1])
         }
         if len(argv) <= 4 {
             println("usage: cl pick <name>")
@@ -1091,24 +1093,24 @@ fn main() {
     }
     if cmd == "add" {
         if len(argv) > 5 {
-            add_account(argv[4], argv[5])
+            add_account(argv[1], argv[2])
         }
         if len(argv) <= 5 {
             println("usage: cl add <name> <config_dir>")
         }
     }
     if cmd == "remove" {
-        if len(argv) > 4 {
-            remove_account(argv[4])
+        if len(argv) > 1 {
+            remove_account(argv[1])
         }
         if len(argv) <= 4 {
             println("usage: cl remove <name>")
         }
     }
     if cmd == "unregister" {
-        if len(argv) > 4 {
-            race_unregister(argv[4])
-            println("  ✓ 세션 해제: pid=" + argv[4])
+        if len(argv) > 1 {
+            race_unregister(argv[1])
+            println("  ✓ 세션 해제: pid=" + argv[1])
         }
         if len(argv) <= 4 {
             println("usage: cl unregister <pid>")
@@ -1127,7 +1129,7 @@ fn main() {
     // ─── nexus 라우팅: cl todo / cl go (shared/blowup/ 자연창발) ───
     if cmd == "todo" {
         let mut target = ""
-        if len(argv) > 4 { target = argv[4] }
+        if len(argv) > 1 { target = argv[1] }
         let nexus_todo = HOME + "/Dev/nexus/shared/blowup/todo.hexa"
         let hexa_bin = HOME + "/Dev/hexa-lang/target/release/hexa"
         let mut out = ""
