@@ -115,13 +115,22 @@
       "id": "M4_harvest",
       "title": "신규 harvest — 60-byte hexagon per process (T7-T14 재구현)",
       "priority": "P1",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-13",
       "deps": ["M2_probe"],
       "exit_criteria": [
         "modules/harvest.hexa — core AdaptiveThrottle 로 self-guard",
         "ring buffer (forge/genomes.ring) 단일 파일",
         "T7-T14 의미 보존 (per_process_sig → genome → sigdiff → anomaly)"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": "pending",
+        "self_test": "PASS (parse_proc_line, comm_safe, ema, abs_int, encode_genome len, sigdiff empty)",
+        "production_run": "60 lines in forge/genomes.ring (30 procs × 2 runs), anomaly_total=0 (안정 baseline)",
+        "throttle_integrated": "core.AdaptiveThrottle + check_and_adapt + throttle_maybe_sleep + batch_scale 적용",
+        "macos_quirk": "tac 미존재 → tail -r 로 reverse",
+        "nexus_pr": "pending — L0 promote modules/harvest.hexa"
+      }
     },
     {
       "id": "M5_label",
