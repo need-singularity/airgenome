@@ -34,13 +34,15 @@ fn now_epoch() -> str {
 }
 
 // 포맷: LOAD,RAM_TOTAL_MB,RAM_USED_MB,GPU_UTIL,GPU_VRAM_USED_MB,GPU_VRAM_TOTAL_MB
+// G1 수정: free -m 의 $7(available) 사용 → used = total - available.
+// buff/cache 제외한 실제 가용치 반영, L0 load_balancer 의 ram% 계산도 실측 일치.
 fn probe_ubu_csv() -> str {
-    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{print \\$2 \\\",\\\" \\$3}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \"); echo \"$L,$M,$G\"' 2>/dev/null"
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); G=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d \" \"); echo \"$L,$M,$G\"' 2>/dev/null"
     return safe_exec(cmd)
 }
 
 fn probe_htz_csv() -> str {
-    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{print \\$2 \\\",\\\" \\$3}\"); echo \"$L,$N,$M\"' 2>/dev/null"
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); echo \"$L,$N,$M\"' 2>/dev/null"
     return safe_exec(cmd)
 }
 
