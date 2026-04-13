@@ -39,12 +39,27 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/mk2/gate.hexa pre-bash",
+            "timeout": 3
+          }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           {
             "type": "command",
             "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa guard",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/mk2/gate.hexa pre-agent",
+            "timeout": 3
           }
         ]
       }
