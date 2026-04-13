@@ -1,5 +1,9 @@
 // airgenome/modules/cl.hexa — Claude Code multi-account launcher
 // python3-free: 순수 hexa + awk/grep/sed
+//
+// 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
+//   ossified / stable / failing / evolution_log 섹션
+// 수정 시 해당 섹션 업데이트 필수.
 
 let VERSION = "0.4.0"
 // (paths resolved below as R_ACCOUNTS, R_STATE, R_USAGE_CACHE)
