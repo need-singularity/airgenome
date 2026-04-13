@@ -24,7 +24,7 @@ HexaVal init_default_guard(void);
 HexaVal chk_eq_int(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_eq_float(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_true(HexaVal label, HexaVal cond);
-HexaVal (HexaVal );
+HexaVal Core__self_test(void);
 HexaVal ts_iso(void);
 HexaVal ensure_dir(HexaVal path);
 HexaVal ps_top_n(HexaVal n);
@@ -41,7 +41,7 @@ HexaVal append_ring(HexaVal line);
 HexaVal rotate_if_full(void);
 HexaVal ema(HexaVal curr, HexaVal prev);
 HexaVal run_harvest(void);
-HexaVal (HexaVal );
+HexaVal Harvest__self_test(void);
 HexaVal u_main(void);
 
 HexaVal AXIS_COUNT;
@@ -409,12 +409,7 @@ HexaVal chk_true(HexaVal label, HexaVal cond) {
 }
 
 
-HexaVal (HexaVal ) {
-    hexa_int(67);
-    hexa_call0(ore__self_test);
-    hexa_map_new();
-    void;
-    hexa_map_new();
+HexaVal Core__self_test(void) {
     chk_eq_int(hexa_str("AXIS_COUNT"), hexa_val_snapshot_array(AXIS_COUNT), hexa_int(6));
     chk_eq_int(hexa_str("PAIR_COUNT"), hexa_val_snapshot_array(PAIR_COUNT), hexa_int(15));
     chk_eq_int(hexa_str("GENOME_BYTES"), hexa_val_snapshot_array(GENOME_BYTES), hexa_int(60));
@@ -701,12 +696,7 @@ HexaVal run_harvest(void) {
 }
 
 
-HexaVal (HexaVal ) {
-    hexa_int(72);
-    hexa_call0(arvest__self_test);
-    hexa_map_new();
-    void;
-    hexa_map_new();
+HexaVal Harvest__self_test(void) {
     HexaVal p1 = parse_proc_line(hexa_str("1234  12.5  3.2  524288 /Applications/Foo"));
     if (hexa_truthy(hexa_bool(!hexa_truthy(hexa_eq(hexa_map_get_ic(p1, "pid", &__hexa_ic_64), hexa_int(1234)))))) {
         /* PanicStmt */
@@ -765,8 +755,7 @@ HexaVal u_main(void) {
     if (hexa_truthy(hexa_bool(__extension__ ({ HexaVal __l=(hexa_int(hexa_len(a))); HexaVal __r=(hexa_int(3)); (__l.tag==TAG_FLOAT||__r.tag==TAG_FLOAT) ? ((__l.tag==TAG_FLOAT?__l.f:(double)__l.i) >= (__r.tag==TAG_FLOAT?__r.f:(double)__r.i)) : (__l.i >= __r.i); })))) {
         HexaVal sub = hexa_index_get(a, hexa_int(2));
         if (hexa_truthy(hexa_eq(sub, hexa_str("self-test")))) {
-            hexa_int(72);
-            hexa_call0(arvest__self_test);
+            Harvest__self_test();
             return hexa_void();
         }
     }
@@ -795,8 +784,7 @@ int main(int argc, char** argv) {
     THROTTLE_CRITICAL = hexa_int(2);
     _hard_limits_applied = hexa_int(0);
     if (hexa_truthy(hexa_eq(hexa_env_var(hexa_str("CORE_SELF_TEST")), hexa_str("1")))) {
-        hexa_int(67);
-        hexa_call0(ore__self_test);
+        Core__self_test();
     }
     HOME = hexa_env_var(hexa_str("HOME"));
     RING = hexa_add(HOME, hexa_str("/Dev/airgenome/forge/genomes.ring"));

@@ -24,7 +24,7 @@ HexaVal init_default_guard(void);
 HexaVal chk_eq_int(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_eq_float(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_true(HexaVal label, HexaVal cond);
-HexaVal core__self_test(void);
+HexaVal Core__self_test(void);
 HexaVal jq_field(HexaVal line, HexaVal expr);
 HexaVal to_int_safe(HexaVal s);
 HexaVal parse_rule(HexaVal line);
@@ -38,7 +38,7 @@ HexaVal make_labeled_line(HexaVal genome_line, HexaVal label);
 HexaVal append_out(HexaVal line);
 HexaVal read_recent_genomes(void);
 HexaVal run_label(void);
-HexaVal label__self_test(void);
+HexaVal Label__self_test(void);
 HexaVal u_main(void);
 
 HexaVal AXIS_COUNT;
@@ -211,10 +211,10 @@ HexaVal vitals_get(HexaVal v, HexaVal axis) {
 }
 
 
-HexaVal core__Rule(HexaVal name) {
+HexaVal Core__Rule(HexaVal name) {
     static const char* const _k[] = {"name"};
     HexaVal _v[] = {name};
-    return hexa_struct_pack_map("core__Rule", 1, _k, _v);
+    return hexa_struct_pack_map("Core__Rule", 1, _k, _v);
 }
 
 
@@ -404,7 +404,7 @@ HexaVal chk_true(HexaVal label, HexaVal cond) {
 }
 
 
-HexaVal core__self_test(void) {
+HexaVal Core__self_test(void) {
     chk_eq_int(hexa_str("AXIS_COUNT"), hexa_val_snapshot_array(AXIS_COUNT), hexa_int(6));
     chk_eq_int(hexa_str("PAIR_COUNT"), hexa_val_snapshot_array(PAIR_COUNT), hexa_int(15));
     chk_eq_int(hexa_str("GENOME_BYTES"), hexa_val_snapshot_array(GENOME_BYTES), hexa_int(60));
@@ -442,10 +442,10 @@ HexaVal core__self_test(void) {
 }
 
 
-HexaVal label__Rule(HexaVal label, HexaVal axis, HexaVal op, HexaVal threshold, HexaVal and_axis, HexaVal and_op, HexaVal and_threshold, HexaVal has_and) {
+HexaVal Label__Rule(HexaVal label, HexaVal axis, HexaVal op, HexaVal threshold, HexaVal and_axis, HexaVal and_op, HexaVal and_threshold, HexaVal has_and) {
     static const char* const _k[] = {"label", "axis", "op", "threshold", "and_axis", "and_op", "and_threshold", "has_and"};
     HexaVal _v[] = {label, axis, op, threshold, and_axis, and_op, and_threshold, has_and};
-    return hexa_struct_pack_map("label__Rule", 8, _k, _v);
+    return hexa_struct_pack_map("Label__Rule", 8, _k, _v);
 }
 
 
@@ -482,39 +482,7 @@ HexaVal parse_rule(HexaVal line) {
     HexaVal and_axis = to_int_safe(hexa_val_snapshot_array(aaxis_s));
     HexaVal and_op = jq_field(hexa_val_snapshot_array(line), hexa_str(".and_op"));
     HexaVal and_threshold = to_int_safe(hexa_val_snapshot_array(jq_field(hexa_val_snapshot_array(line), hexa_str(".and_threshold"))));
-    return label__Rule;
-    hexa_map_new();
-    label;
-    hexa_map_new();
-    label;
-    hexa_map_new();
-    axis;
-    hexa_map_new();
-    axis;
-    hexa_map_new();
-    op;
-    hexa_map_new();
-    op;
-    hexa_map_new();
-    threshold;
-    hexa_map_new();
-    threshold;
-    hexa_map_new();
-    and_axis;
-    hexa_map_new();
-    and_axis;
-    hexa_map_new();
-    and_op;
-    hexa_map_new();
-    and_op;
-    hexa_map_new();
-    and_threshold;
-    hexa_map_new();
-    and_threshold;
-    hexa_map_new();
-    has_and;
-    hexa_map_new();
-    has_and;
+    return Label__Rule(label, axis, op, threshold, and_axis, and_op, and_threshold, has_and);
     return hexa_void();
 }
 
@@ -660,7 +628,7 @@ HexaVal run_label(void) {
 }
 
 
-HexaVal label__self_test(void) {
+HexaVal Label__self_test(void) {
     if (hexa_truthy(hexa_bool(!hexa_truthy(op_match(hexa_int(100), hexa_str("gt"), hexa_int(50)))))) {
         /* PanicStmt */
     }
@@ -732,7 +700,7 @@ HexaVal u_main(void) {
     if (hexa_truthy(hexa_bool(__extension__ ({ HexaVal __l=(hexa_int(hexa_len(a))); HexaVal __r=(hexa_int(3)); (__l.tag==TAG_FLOAT||__r.tag==TAG_FLOAT) ? ((__l.tag==TAG_FLOAT?__l.f:(double)__l.i) >= (__r.tag==TAG_FLOAT?__r.f:(double)__r.i)) : (__l.i >= __r.i); })))) {
         HexaVal sub = hexa_index_get(a, hexa_int(2));
         if (hexa_truthy(hexa_eq(sub, hexa_str("self-test")))) {
-            label__self_test();
+            Label__self_test();
             return hexa_void();
         }
     }
@@ -761,14 +729,13 @@ int main(int argc, char** argv) {
     THROTTLE_CRITICAL = hexa_int(2);
     _hard_limits_applied = hexa_int(0);
     if (hexa_truthy(hexa_eq(hexa_env_var(hexa_str("CORE_SELF_TEST")), hexa_str("1")))) {
-        core__self_test();
+        Core__self_test();
     }
     HOME = hexa_env_var(hexa_str("HOME"));
     RING = hexa_add(HOME, hexa_str("/Dev/airgenome/forge/genomes.ring"));
     RULES = hexa_add(HOME, hexa_str("/Dev/airgenome/shared/config/label_rules.jsonl"));
     OUT = hexa_add(HOME, hexa_str("/Dev/airgenome/forge/labeled_anomaly.jsonl"));
     SCAN_LINES = hexa_int(1000);
-    hexa_map_new();
     u_main();
     return 0;
 }

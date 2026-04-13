@@ -24,7 +24,7 @@ HexaVal init_default_guard(void);
 HexaVal chk_eq_int(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_eq_float(HexaVal label, HexaVal actual, HexaVal expected);
 HexaVal chk_true(HexaVal label, HexaVal cond);
-HexaVal core__self_test(void);
+HexaVal Core__self_test(void);
 HexaVal jqx(HexaVal expr, HexaVal path);
 HexaVal to_int_safe(HexaVal s);
 HexaVal score_compute(HexaVal cpu_free, HexaVal ram_free, HexaVal load_int);
@@ -38,7 +38,7 @@ HexaVal best_of(HexaVal cat, HexaVal u, HexaVal h, HexaVal m, HexaVal gate);
 HexaVal write_atomic(HexaVal path, HexaVal content);
 HexaVal build_dispatch(HexaVal ts, HexaVal u, HexaVal h, HexaVal m, HexaVal gate);
 HexaVal ts_iso(void);
-HexaVal dispatch__self_test(void);
+HexaVal Dispatch__self_test(void);
 HexaVal u_main(void);
 
 HexaVal AXIS_COUNT;
@@ -408,7 +408,7 @@ HexaVal chk_true(HexaVal label, HexaVal cond) {
 }
 
 
-HexaVal core__self_test(void) {
+HexaVal Core__self_test(void) {
     chk_eq_int(hexa_str("AXIS_COUNT"), hexa_val_snapshot_array(AXIS_COUNT), hexa_int(6));
     chk_eq_int(hexa_str("PAIR_COUNT"), hexa_val_snapshot_array(PAIR_COUNT), hexa_int(15));
     chk_eq_int(hexa_str("GENOME_BYTES"), hexa_val_snapshot_array(GENOME_BYTES), hexa_int(60));
@@ -689,7 +689,7 @@ HexaVal ts_iso(void) {
 }
 
 
-HexaVal dispatch__self_test(void) {
+HexaVal Dispatch__self_test(void) {
     HexaVal s0 = score_compute(hexa_int(0), hexa_int(0), hexa_int(10));
     if (hexa_truthy(hexa_bool(!hexa_truthy(hexa_eq(s0, hexa_int(0)))))) {
         /* PanicStmt */
@@ -752,7 +752,7 @@ HexaVal u_main(void) {
     if (hexa_truthy(hexa_bool(__extension__ ({ HexaVal __l=(hexa_int(hexa_len(a))); HexaVal __r=(hexa_int(3)); (__l.tag==TAG_FLOAT||__r.tag==TAG_FLOAT) ? ((__l.tag==TAG_FLOAT?__l.f:(double)__l.i) >= (__r.tag==TAG_FLOAT?__r.f:(double)__r.i)) : (__l.i >= __r.i); })))) {
         HexaVal sub = hexa_index_get(a, hexa_int(2));
         if (hexa_truthy(hexa_eq(sub, hexa_str("self-test")))) {
-            dispatch__self_test();
+            Dispatch__self_test();
             return hexa_void();
         }
     }
@@ -786,7 +786,7 @@ int main(int argc, char** argv) {
     THROTTLE_CRITICAL = hexa_int(2);
     _hard_limits_applied = hexa_int(0);
     if (hexa_truthy(hexa_eq(hexa_env_var(hexa_str("CORE_SELF_TEST")), hexa_str("1")))) {
-        core__self_test();
+        Core__self_test();
     }
     HOME = hexa_env_var(hexa_str("HOME"));
     INFRA_STATE = hexa_add(HOME, hexa_str("/Dev/nexus/shared/infra_state.json"));

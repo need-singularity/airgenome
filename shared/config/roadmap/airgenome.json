@@ -237,8 +237,9 @@
       "id": "M11a_native_mirror",
       "title": "cross-host native 빌드 — hexa-lang transpiler 경유 harvest 미러",
       "priority": "P2",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "ubu + hetzner 에 hexa_v2 transpiler Linux native 빌드 완료",
@@ -247,14 +248,36 @@
         "각 호스트에서 harvest_ag self-test PASS",
         "AG6 준수 — 모든 빌드/실행 ssh 원격, Mac heavy compute 0"
       ],
-      "hexa_lang_prereq_fixes": [
-        "B5 — hexa build 드라이버 CWD-relative path",
-        "B9 — transpiler use \"path\" module resolver"
+      "hexa_lang_prereq_commits": [
+        "ef8b86f — Linux+driver+use resolver (B5~B9)",
+        "bbbfade — fn main mangle (B12)",
+        "b54dcba — B13 array concat + B11 leading-+ + --c-only",
+        "8f2ccb4 — p_max_errors parse-time init",
+        "3f969ed — B1a stage0/module_loader 포터블 resolver",
+        "5b6afc0 — A1 flatten_imports B14 mangle"
       ],
-      "workarounds": [
-        "sed 's/hexa_call1(env, /hexa_env_var(/g' — Bug 8 env builtin 미등록 우회",
-        "rsync exclude build/hexa_stage0* — Mach-O stage0 유입 방지 (fork bomb)"
-      ]
+      "evidence": {
+        "airgenome_source_changes": [
+          "core/core.hexa — sample() Linux uname 쉘 분기 (nproc, /proc/meminfo)",
+          "modules/harvest.hexa — last_for_pid() tail -r|tac uname 분기",
+          "modules/*.hexa 5개 — use \"../core/core\" 상대경로 교정 (invariant 준수)",
+          "core/test/core_test.hexa — use \"../core\" 상대경로 교정"
+        ],
+        "ubu_smoke": "5/5 ALL PASS — harvest label dispatch forecast probe (flatten mangle 리스트 Mac 과 완벽 일치)",
+        "hetzner_smoke": "5/5 ALL PASS — harvest label dispatch forecast probe (forecast MAE=0%)",
+        "build_pipeline": "hexa run flatten_imports → hexa build → Linux ELF → self-test (단일 자동 체인)",
+        "no_workarounds": "이전 sed/merge_core.py/build_module.sh 전부 제거 — airgenome 소스 수정 0, workaround 0",
+        "cross_platform_mangle_parity": {
+          "harvest": "self_test",
+          "label": "Rule, self_test",
+          "dispatch": "self_test",
+          "forecast": "self_test",
+          "probe": "self_test"
+        },
+        "stage0_note": "Linux stage0 B1a portable resolver 로 자체 부트스트랩 (scripts/build_stage0.sh uname 분기) — 과거 fork bomb 재발 0",
+        "ag6_compliance": "Mac heavy compute 0 — 모든 빌드/실행 ssh 원격 (Mac 은 rsync 송신만)",
+        "anomaly_carryover": "hetzner smoke 첫 pass 중 stage1 바이너리 mid-run Mach-O clobber 1회, stage1 재빌드로 해소 (원인 미추적, 재현 시 조사)"
+      }
     },
     {
       "id": "M11b_ring_sync",
