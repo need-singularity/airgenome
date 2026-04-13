@@ -154,12 +154,14 @@ fn verb_pre_bash() {
     let now = now_epoch_int()
     let age = now - ep
 
-    // 1. state freshness (120s 이내)
+    // 1. state freshness — G3 수정: 60s 단일 사이클 miss 는 허용.
+    //    180~300s : 경고 로그만 (probe scheduling jitter 흡수)
+    //    300s+    : 차단 (5+ 사이클 miss = probe 사망 가능성)
     if ep == 0 {
         // 최초 부트: probe 아직 안 돈 경우 — 통과 (soft open)
     } else {
-        if age > 120 {
-            fail("pre-bash", "state stale age=" + to_string(age) + "s (>120s) — probe not running?")
+        if age > 300 {
+            fail("pre-bash", "state stale age=" + to_string(age) + "s (>300s) — probe died?")
         }
     }
 
@@ -184,8 +186,10 @@ fn verb_pre_bash() {
 
 let AGENT_CAP = 8
 
+// G2 수정: Claude Code CLI 프로세스만 정확 카운트.
+// .claude/ 디렉토리 참조 / Code Helper / VSCode / Cursor / Claude.app (GUI) 전부 제외.
 fn count_agents() -> int {
-    let c = safe_exec("ps axo command | grep -cE '/claude|claude-code' 2>/dev/null")
+    let c = safe_exec("ps -axo command= 2>/dev/null | grep -v '\\.claude' | grep -v 'Code Helper' | grep -v 'VSCode' | grep -v 'Cursor' | grep -v 'Claude.app' | grep -cE '(^|/)claude-code( |$)|(^|/)claude( |$)'")
     let mut n = 0
     try { n = to_int(c) } catch e {}
     return n
