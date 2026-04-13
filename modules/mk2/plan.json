@@ -1,0 +1,309 @@
+{
+  "$schema": "ai-native-plan/v1",
+  "id": "airgenome-mk2-minimal-monitor-gate",
+  "version": "0.1.0",
+  "created": "2026-04-13",
+  "owner": "dancinlife",
+  "status": "draft",
+
+  "context": {
+    "project": "airgenome",
+    "problem": "8개 launchd 워커가 5-60s 폴링, hexa_stage0 인터프리터 콜드스타트 × 2280회/시간, 상시 CPU 370%",
+    "trigger": "2026-04-13 11:45 Path C (hexa_full.hexa) 재빌드 완료 → 새 인터프리터 전환 적기",
+    "constraint": [
+      "미니멀 — 폴링 최소화",
+      "모니터링+게이트는 메인 기능",
+      "AG3/AG4/AG6/AG7/R-MAC-01 방어 유지",
+      "롤백 가능 (mk1 아카이브 보존)"
+    ],
+    "target": {
+      "wakeups_per_hour": { "before": 2280, "after_max": 70 },
+      "steady_cpu_pct": { "before": 370, "after_max": 30 },
+      "workers": { "before": 8, "after_max": 2 }
+    }
+  },
+
+  "archive": {
+    "destination": "/Users/ghost/Dev/airgenome/mk1",
+    "modules": [
+      { "from": "modules/resource_coordinator.hexa", "poll_sec": 10, "role": "L3+L4+L5 통합 gate" },
+      { "from": "modules/resource_ceiling.hexa", "poll_sec": 30, "role": "천장 모니터 + auto_fill" },
+      { "from": "modules/launcher_cap.hexa", "poll_sec": 20, "role": "AG4 launcher ≤8" },
+      { "from": "modules/mac_compute_zero.hexa", "poll_sec": 30, "role": "AG6 enforcement" },
+      { "from": "modules/load_balancer.hexa", "poll_sec": 30, "role": "AG7 dispatch_state" },
+      { "from": "modules/auto_dispatch.hexa", "poll_sec": 5, "role": "OFFLOAD_O1 throttle" },
+      { "from": "modules/ag3_loop.hexa", "poll_sec": 5, "role": "AG3 게놈 스캔" },
+      { "from": "modules/infra_probe.hexa", "poll_sec": 60, "role": "원격 상태 수집" }
+    ],
+    "plists": [
+      "com.airgenome.resource-coordinator.plist",
+      "com.airgenome.resource-ceiling.plist",
+      "com.airgenome.launcher-cap.plist",
+      "com.airgenome.mac-compute-zero.plist",
+      "com.airgenome.load-balancer.plist",
+      "com.airgenome.auto-dispatch.plist",
+      "com.airgenome.ag3-loop.plist",
+      "com.airgenome.ag3-loop-once.plist",
+      "com.airgenome.infra-probe.plist"
+    ]
+  },
+
+  "mk2": {
+    "base_dir": "/Users/ghost/Dev/airgenome/modules/mk2",
+    "state_file": "~/.airgenome/mk2/state.json",
+    "log_file": "~/.airgenome/mk2/gate.log",
+    "components": [
+      {
+        "id": "probe",
+        "file": "modules/mk2/probe.hexa",
+        "launchd": {
+          "label": "com.airgenome.mk2-probe",
+          "StartInterval": 60,
+          "RunAtLoad": true,
+          "KeepAlive": false
+        },
+        "responsibilities": [
+          "ssh ubu + ssh hetzner (병렬, 5s timeout) → load/ram/gpu",
+          "Mac sysctl vm.loadavg + top 10 pcpu",
+          "AG7 best_host per task_type 계산 (inline)",
+          "state.json 원자적 write (tmp → rename)",
+          "mk2_epoch = unix_time 갱신"
+        ],
+        "budget": {
+          "runtime_ms_max": 5000,
+          "memory_mb_max": 50,
+          "wakeups_per_hour": 60
+        }
+      },
+      {
+        "id": "gate",
+        "file": "modules/mk2/gate.hexa",
+        "launchd": null,
+        "invoked_by": "Claude Code hook (PreToolUse/PostToolUse) + CLI",
+        "verbs": {
+          "pre-bash": {
+            "trigger": "PreToolUse matcher=Bash",
+            "timeout_sec": 3,
+            "checks": [
+              "mk2_epoch 신선도 (<120s)",
+              "Mac load < AG6 threshold",
+              "원격 호스트 idle 확인 (AG6)",
+              "heavy keyword 감지 시 차단"
+            ]
+          },
+          "pre-agent": {
+            "trigger": "PreToolUse matcher=Agent",
+            "timeout_sec": 3,
+            "checks": [
+              "동시 Agent ≤8 (AG4)",
+              "launcher 프로세스 count 제한"
+            ]
+          },
+          "post-bash": {
+            "trigger": "PostToolUse matcher=Bash",
+            "timeout_sec": 3,
+            "checks": [
+              "state=R + elapsed>5min hexa 좀비 kill",
+              "gate.log 1줄 기록"
+            ]
+          },
+          "status": {
+            "trigger": "CLI",
+            "timeout_sec": 3,
+            "output": "state.json 요약"
+          }
+        },
+        "budget": {
+          "runtime_ms_max": 200,
+          "state_write": false
+        }
+      },
+      {
+        "id": "ceiling",
+        "file": "modules/mk2/ceiling.hexa",
+        "optional": true,
+        "launchd": {
+          "label": "com.airgenome.mk2-ceiling",
+          "StartInterval": 900,
+          "Disabled": true,
+          "RunAtLoad": false
+        },
+        "responsibilities": [
+          "state.json 읽기",
+          "ubu/hetzner 50% 미달 시 systemctl start auto_fill@* (SSH 1회)"
+        ],
+        "budget": {
+          "runtime_ms_max": 10000,
+          "wakeups_per_hour": 4
+        }
+      }
+    ]
+  },
+
+  "hooks_config": {
+    "file": "/Users/ghost/Dev/airgenome/.claude/settings.json",
+    "additions": {
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "command": "hexa run ~/Dev/airgenome/modules/mk2/gate.hexa pre-bash",
+          "timeout": 3
+        },
+        {
+          "matcher": "Agent",
+          "command": "hexa run ~/Dev/airgenome/modules/mk2/gate.hexa pre-agent",
+          "timeout": 3
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Bash",
+          "command": "hexa run ~/Dev/airgenome/modules/mk2/gate.hexa post-bash",
+          "timeout": 3
+        }
+      ]
+    },
+    "preserve": ["기존 nexus hook-entry.hexa 체인 유지 — 병렬 등록"]
+  },
+
+  "steps": [
+    {
+      "id": "S1-archive",
+      "order": 1,
+      "title": "mk1 디렉토리 생성 + 기존 모듈/plist 이동",
+      "actions": [
+        "mkdir -p /Users/ghost/Dev/airgenome/mk1/launchd",
+        "launchctl bootout gui/501/com.airgenome.<label> × 9",
+        "mv modules/{resource_coordinator,resource_ceiling,launcher_cap,mac_compute_zero,load_balancer,auto_dispatch,ag3_loop,infra_probe}.hexa mk1/",
+        "mv ~/Library/LaunchAgents/com.airgenome.{모두}.plist mk1/launchd/",
+        "write mk1/README.md (복구 절차)"
+      ],
+      "verify": [
+        "launchctl list | grep airgenome 에서 9개 label 부재",
+        "ps axo command | grep airgenome/modules 에 위 8개 0건"
+      ]
+    },
+    {
+      "id": "S2-mk2-probe",
+      "order": 2,
+      "blocked_by": ["S1-archive"],
+      "title": "probe.hexa 작성 + launchd 등록 + 수동 1회 실행",
+      "actions": [
+        "write modules/mk2/probe.hexa",
+        "write ~/Library/LaunchAgents/com.airgenome.mk2-probe.plist",
+        "hexa run modules/mk2/probe.hexa (manual)",
+        "launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.airgenome.mk2-probe.plist"
+      ],
+      "verify": [
+        "~/.airgenome/mk2/state.json 생성",
+        "jq .mk2_epoch state.json 이 60s 이내 값",
+        "2분 대기 후 state.json mtime 갱신"
+      ]
+    },
+    {
+      "id": "S3-mk2-gate",
+      "order": 3,
+      "blocked_by": ["S2-mk2-probe"],
+      "title": "gate.hexa 작성 (4 verbs)",
+      "actions": [
+        "write modules/mk2/gate.hexa",
+        "hexa run modules/mk2/gate.hexa status (smoke)",
+        "hexa run modules/mk2/gate.hexa pre-bash (dry)",
+        "hexa run modules/mk2/gate.hexa post-bash (dry)"
+      ],
+      "verify": [
+        "4 verbs exit 0",
+        "runtime <200ms 각각",
+        "~/.airgenome/mk2/gate.log 1줄 기록"
+      ]
+    },
+    {
+      "id": "S4-hooks",
+      "order": 4,
+      "blocked_by": ["S3-mk2-gate"],
+      "title": ".claude/settings.json 에 Mk2 hook 3개 추가",
+      "actions": [
+        "edit airgenome/.claude/settings.json — hooks.PreToolUse + hooks.PostToolUse 에 추가",
+        "기존 hook-entry.hexa 체인 보존"
+      ],
+      "verify": [
+        "jq .hooks.PreToolUse settings.json 에서 gate.hexa 확인",
+        "airgenome 디렉토리에서 Bash 1회 실행 → gate.log 새 줄 기록"
+      ]
+    },
+    {
+      "id": "S5-ceiling-optional",
+      "order": 5,
+      "optional": true,
+      "blocked_by": ["S2-mk2-probe"],
+      "title": "ceiling.hexa 작성 (비활성 상태로)",
+      "actions": [
+        "write modules/mk2/ceiling.hexa",
+        "write ~/Library/LaunchAgents/com.airgenome.mk2-ceiling.plist (Disabled=true)"
+      ],
+      "verify": [
+        "launchctl list | grep mk2-ceiling 부재 (Disabled)",
+        "수동 hexa run ceiling.hexa 동작"
+      ]
+    },
+    {
+      "id": "S6-soak",
+      "order": 6,
+      "blocked_by": ["S4-hooks"],
+      "title": "30분 부하 측정 + 예산 검증",
+      "actions": [
+        "uptime 1분 평균 기록 × 3회 (0, 15, 30분)",
+        "ps axo pcpu,command | awk $1>30 && /hexa/ 카운트",
+        "launchctl list | grep airgenome 카운트"
+      ],
+      "verify": [
+        "uptime 1min avg < 2.0",
+        "high-CPU hexa count = 0 (hook 실행 순간 제외)",
+        "airgenome launchd 활성 = 1–2 (mk2-probe [+mk2-ceiling])"
+      ]
+    }
+  ],
+
+  "rollback": {
+    "trigger": "S2~S6 중 어느 단계라도 실패 시",
+    "steps": [
+      "launchctl bootout mk2-probe / mk2-ceiling",
+      "cp mk1/launchd/*.plist ~/Library/LaunchAgents/",
+      "cp mk1/*.hexa modules/",
+      "launchctl bootstrap gui/501 <각 plist>",
+      "settings.json 에서 mk2 hook 3개 제거 (git revert)",
+      "modules/mk2/ 디렉토리는 보존 (재시도용)"
+    ]
+  },
+
+  "safety": {
+    "L0_protected": false,
+    "git_branch_suggested": "feat/mk2-minimal-monitor-gate",
+    "commit_per_step": true,
+    "destructive_operations": [
+      "launchctl bootout × 9 (복구 가능, plist 보존)",
+      "파일 mv (복구 가능)",
+      "settings.json 편집 (git revert 가능)"
+    ],
+    "requires_sudo": false,
+    "requires_permission_prompt": false
+  },
+
+  "references": {
+    "claude_md": "/Users/ghost/Dev/airgenome/CLAUDE.md",
+    "rules_common": "/Users/ghost/Dev/nexus/shared/rules/common.json",
+    "rules_airgenome": "/Users/ghost/Dev/nexus/shared/rules/airgenome.json",
+    "infrastructure": "/Users/ghost/Dev/nexus/shared/config/infrastructure.json",
+    "existing_hook_wrapper": "/Users/ghost/Dev/nexus/shared/hooks/hook-entry.hexa",
+    "plan_md_original": "/Users/ghost/.claude/plans/ticklish-drifting-beacon.md",
+    "memory": [
+      "project_gate_architecture.md",
+      "project_ag6-mac-compute-zero.md",
+      "project_ag7-load-balancer.md",
+      "project_ag8-dispatcher-goal.md",
+      "project_d1_incident_2026_04_10.md",
+      "project_launchagent-ssot.md",
+      "project_launchd_once_mode.md"
+    ]
+  }
+}
