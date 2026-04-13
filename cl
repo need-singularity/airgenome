@@ -1,15 +1,14 @@
 #!/bin/sh
 # cl — Claude Code multi-account launcher
-#
-# 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
-
-echo "[cl] 시작…" >&2
+echo "[cl:1] 시작 pid=$$" >&2
 HEXA="$HOME/Dev/airgenome/nexus/shared/bin/hexa.real"
 AIRGENOME="$HOME/Dev/airgenome"
-if [ ! -x "$HEXA" ]; then
-    echo "ERROR(cl): hexa.real 누락 — $HEXA" >&2
-    exit 127
-fi
-cd "$AIRGENOME" || exit 1
-echo "[cl] hexa.real run modules/cl.hexa $@" >&2
-exec "$HEXA" run modules/cl.hexa "$@"
+echo "[cl:2] HEXA=$HEXA" >&2
+test -x "$HEXA" || { echo "ERROR: hexa.real 누락" >&2; exit 127; }
+cd "$AIRGENOME" || { echo "ERROR: cd $AIRGENOME" >&2; exit 1; }
+echo "[cl:3] cwd=$(pwd) args=$@" >&2
+echo "[cl:4] run 시작" >&2
+"$HEXA" run modules/cl.hexa "$@"
+ECODE=$?
+echo "[cl:5] 종료 EC=$ECODE" >&2
+exit $ECODE
