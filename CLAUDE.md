@@ -1,10 +1,25 @@
-# airgenome — OS 게놈 스캐너
+# airgenome — OS 게놈 스캐너 (rebuild v2)
+
+**v1 동결: 2026-04-13** — phantom L0 발견으로 archive/v1/ 로 이동. core 분리 + roadmap 주도 재구축.
+
+structure:
+  core/             core.hexa + test/core_test.hexa — 외부 의존 0, self-contained 라이브러리
+  shared/config/    roadmap/airgenome.json (rebuild v2 SSOT) — milestones + invariants
+  archive/v1/       v1 시점 모든 module/script/data — read-only
+
+invariants (shared/config/roadmap/airgenome.json#invariants):
+- core 는 외부 hexa import 안 함
+- 신규 module 은 use "../core/core" 만 허용
+- L0 자격: 파일 존재 + parse 통과 + self-test 통과
+- archive 부활은 PR + roadmap 등록 + L0 갱신
+- roadmap.json 의 milestones 에 없는 코드는 작성 금지
 
 commands: shared/config/commands.json — autonomous 블록으로 Claude Code가 작업 중 smash/free/todo/go/keep 자율 판단·실행
 rules: ~/Dev/nexus/shared/rules/common.json (R0~R32) + ~/Dev/nexus/shared/rules/airgenome.json (AG1~AG9)
 L0 Guard: `hexa ~/Dev/nexus/shared/lockdown/l0_guard.hexa <verify|sync|merge|status>`
 
 ref:
+  roadmap   shared/config/roadmap/airgenome.json        rebuild v2 SSOT
   rules     ~/Dev/nexus/shared/rules/common.json        R0~R32
   project   ~/Dev/nexus/shared/rules/airgenome.json     AG1~AG9
   lock      ~/Dev/nexus/shared/lockdown/lockdown.json   L0/L1/L2
