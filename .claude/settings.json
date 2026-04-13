@@ -6,17 +6,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa prompt ~/Dev/nexus/shared/hooks/nexus-prompt-scan.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa prompt ~/Dev/nexus/shared/hooks/nexus-prompt-scan.hexa",
             "timeout": 3
           },
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa prompt ~/Dev/nexus/shared/hooks/go-parallel.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa prompt ~/Dev/nexus/shared/hooks/go-parallel.hexa",
             "timeout": 3
           },
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/lockdown/l0_guard.hexa verify",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/lockdown/l0_guard.hexa verify",
             "timeout": 10
           }
         ]
@@ -28,12 +28,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/block-forbidden-ext.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/block-forbidden-ext.hexa",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/absolute-rules-loader.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa pretool ~/Dev/nexus/shared/hooks/absolute-rules-loader.hexa",
             "timeout": 5
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa guard",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa guard",
             "timeout": 5
           }
         ]
@@ -55,12 +55,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-bash.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-bash.hexa",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/hexa-grammar-guard.hexa",
             "timeout": 10
           },
           {
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-edit.hexa",
+            "command": "/Users/ghost/Dev/nexus/shared/scripts/bin/hexa-hook-filter.sh hexa run ~/Dev/nexus/shared/hooks/hook-entry.hexa post ~/Dev/nexus/shared/hooks/nexus-post-edit.hexa",
             "timeout": 10
           },
           {
