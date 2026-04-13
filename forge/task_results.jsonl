@@ -694,3 +694,9 @@
 {"id":"htz_2026-04-12T23:46:00Z","ts":"2026-04-12T23:46:00Z","task":"blast_htz_17","host":"htz","status":"done","bytes":66612,"depth":3}
 {"id":"htz_2026-04-12T23:47:07Z","ts":"2026-04-12T23:47:07Z","task":"blast_htz_17","host":"htz","status":"done","bytes":88181,"depth":3}
 {"id":"htz_2026-04-12T23:52:43Z","ts":"2026-04-12T23:52:43Z","task":"blast_htz_17","host":"htz","status":"done","bytes":84447,"depth":3}
+{"id":"ubu_void","ts":"void","task":"blast_ubu_void","host":"ubu","status":"done","bytes":58,"depth":3}
+{"id":"void","ts":"void","project":"void","task":"void","host":"void","status":"void","bytes":0,"output":"void"}
+{"id":"void","ts":"void","project":"void","task":"void","host":"void","status":"void","bytes":0,"output":"void"}
+{"id":"ubu_void","ts":"void","task":"blast_ubu_void","host":"ubu","status":"done","bytes":91,"depth":3}
+{"id":"void","ts":"void","project":"void","task":"void","host":"void","status":"void","bytes":0,"output":"void"}
+{"id":"void","ts":"void","project":"void","task":"void","host":"void","status":"void","bytes":0,"output":"void"}
