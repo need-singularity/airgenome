@@ -3,13 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.airgenome.mk2-probe</string>
+    <string>com.airgenome.probe</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ghost/Dev/airgenome/nexus/shared/bin/hexa</string>
-        <string>run</string>
-        <string>/Users/ghost/Dev/airgenome/modules/mk2/probe.hexa</string>
+        <string>/Users/ghost/Dev/hexa-lang/build/hexa_stage0</string>
+        <string>/Users/ghost/Dev/airgenome/modules/probe.hexa</string>
     </array>
 
     <key>StartInterval</key>
@@ -22,10 +21,10 @@
     <integer>60</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/mk2/probe.stdout.log</string>
+    <string>/Users/ghost/.airgenome/probe.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/mk2/probe.stderr.log</string>
+    <string>/Users/ghost/.airgenome/probe.stderr.log</string>
 
     <key>WorkingDirectory</key>
     <string>/Users/ghost/Dev/airgenome</string>

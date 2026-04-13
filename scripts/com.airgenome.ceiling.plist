@@ -3,29 +3,31 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.airgenome.resource-ceiling</string>
+    <string>com.airgenome.ceiling</string>
+
+    <key>Disabled</key>
+    <true/>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ghost/Dev/airgenome/nexus/shared/bin/hexa</string>
-        <string>/Users/ghost/Dev/airgenome/modules/resource_ceiling.hexa</string>
-        <string>monitor</string>
+        <string>/Users/ghost/Dev/hexa-lang/build/hexa_stage0</string>
+        <string>/Users/ghost/Dev/airgenome/modules/ceiling.hexa</string>
     </array>
 
     <key>StartInterval</key>
-    <integer>30</integer>
+    <integer>900</integer>
 
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
 
     <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <integer>900</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/ghost/Dev/airgenome/forge/resource_ceiling.stdout.log</string>
+    <string>/Users/ghost/.airgenome/ceiling.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/ghost/Dev/airgenome/forge/resource_ceiling.stderr.log</string>
+    <string>/Users/ghost/.airgenome/ceiling.stderr.log</string>
 
     <key>WorkingDirectory</key>
     <string>/Users/ghost/Dev/airgenome</string>

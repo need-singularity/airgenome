@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/mk2/gate.hexa pre-bash",
+            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/gate.hexa pre-bash",
             "timeout": 3
           }
         ]
@@ -58,7 +58,7 @@
           },
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/mk2/gate.hexa pre-agent",
+            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/gate.hexa pre-agent",
             "timeout": 3
           }
         ]
@@ -85,7 +85,7 @@
           },
           {
             "type": "command",
-            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/mk2/gate.hexa post-bash",
+            "command": "/Users/ghost/Dev/hexa-lang/build/hexa_stage0 /Users/ghost/Dev/airgenome/modules/gate.hexa post-bash",
             "timeout": 3
           }
         ]

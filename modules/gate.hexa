@@ -1,7 +1,7 @@
-// mk2/gate.hexa — Mk2 hook 게이트 (Claude Code PreToolUse/PostToolUse + CLI)
+// gate.hexa — hook 게이트 (Claude Code PreToolUse/PostToolUse + CLI)
 //
 // Verbs:
-//   pre-bash  — Bash 도구 실행 직전. mk2_epoch 신선도 + Mac load + AG6 + heavy keyword 차단
+//   pre-bash  — Bash 도구 실행 직전. state epoch 신선도 + Mac load + AG6 + heavy keyword 차단
 //   pre-agent — Agent 도구 실행 직전. 동시 Agent ≤8 (AG4)
 //   post-bash — Bash 실행 직후. state=R + elapsed>5min hexa 좀비 kill
 //   status    — CLI 수동 호출. state.json 요약 stdout
@@ -13,8 +13,8 @@
 //   - 실행 <200ms
 
 let HOME = env("HOME")
-let STATE_DIR = HOME + "/.airgenome/mk2"
-let MK2_STATE = STATE_DIR + "/state.json"
+let STATE_DIR = HOME + "/.airgenome"
+let STATE_FILE = STATE_DIR + "/state.json"
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
 let GATE_LOG = STATE_DIR + "/gate_log.jsonl"
 let MISTAKES_LOG = STATE_DIR + "/mistakes.jsonl"
@@ -57,11 +57,11 @@ fn ensure_state_dir() {
 
 // ─── State readers ───
 
-fn read_mk2_epoch() -> int {
-    if file_exists(MK2_STATE) == false { return 0 }
-    let raw = safe_exec("cat '" + MK2_STATE + "' 2>/dev/null")
-    // naive: "mk2_epoch":<int>
-    let key = "\"mk2_epoch\":"
+fn read_epoch() -> int {
+    if file_exists(STATE_FILE) == false { return 0 }
+    let raw = safe_exec("cat '" + STATE_FILE + "' 2>/dev/null")
+    // naive: "epoch":<int>
+    let key = "\"epoch\":"
     let idx = raw.index_of(key)
     if idx < 0 { return 0 }
     let after = raw.substring(idx + len(key), len(raw))
@@ -150,7 +150,7 @@ fn heavy_hit(cmd: str) -> str {
 
 fn verb_pre_bash() {
     let cmd = env("CLAUDE_TOOL_INPUT")
-    let ep = read_mk2_epoch()
+    let ep = read_epoch()
     let now = now_epoch_int()
     let age = now - ep
 
@@ -230,15 +230,15 @@ fn verb_post_bash() {
 // ─── Verb: status ───
 
 fn verb_status() {
-    let ep = read_mk2_epoch()
+    let ep = read_epoch()
     let now = now_epoch_int()
     let age = now - ep
     let load_s = mac_load_1m()
     let alive_s = if remote_alive() { "Y" } else { "N" }
-    println("mk2_epoch=" + to_string(ep) + " age=" + to_string(age) + "s")
+    println("epoch=" + to_string(ep) + " age=" + to_string(age) + "s")
     println("mac_load_1m=" + load_s)
     println("remote_alive=" + alive_s)
-    println("state_file=" + MK2_STATE)
+    println("state_file=" + STATE_FILE)
     println("gate_log=" + GATE_LOG)
     exit(0)
 }

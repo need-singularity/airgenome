@@ -1,4 +1,4 @@
-// mk2/probe.hexa — Mk2 미니멀 모니터 (60s launchd 단일샷)
+// probe.hexa — 미니멀 모니터 (60s launchd 단일샷)
 //
 // 책임:
 //   1. SSH ubu + hetzner (5s timeout) → load/ram/gpu 수집
@@ -6,13 +6,13 @@
 //   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신 (L0 load_balancer 계약 유지)
 //   4. L0 load_balancer.hexa subprocess 호출 → dispatch_state.json 갱신
 //   5. L0 mac_compute_zero.hexa subprocess 호출 → AG6 enforcement
-//   6. ~/.airgenome/mk2/state.json 에 mk2_epoch + 경로 인덱스 기록
+//   6. ~/.airgenome/state.json 에 epoch + 경로 인덱스 기록
 //
 // 하네스 원칙: silent_success — stdout 0바이트
 
 let HOME = env("HOME")
-let STATE_DIR = HOME + "/.airgenome/mk2"
-let MK2_STATE = STATE_DIR + "/state.json"
+let STATE_DIR = HOME + "/.airgenome"
+let STATE_FILE = STATE_DIR + "/state.json"
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
 let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
 let MC_ZERO = HOME + "/Dev/airgenome/modules/mac_compute_zero.hexa"
@@ -98,7 +98,7 @@ fn main() {
     let mac_j = mac_json(mac_ld)
 
     // 4. infra_state.json 원자적 write (L0 load_balancer 계약)
-    let infra = "{\"ts\":\"" + ts + "\",\"source\":\"mk2/probe.hexa\",\"hosts\":{\"ubu\":" + ubu_j + ",\"htz\":" + htz_j + ",\"mac\":" + mac_j + "}}\n"
+    let infra = "{\"ts\":\"" + ts + "\",\"source\":\"probe.hexa\",\"hosts\":{\"ubu\":" + ubu_j + ",\"htz\":" + htz_j + ",\"mac\":" + mac_j + "}}\n"
     write_atomic(INFRA_STATE, infra)
 
     // 5. L0 load_balancer → dispatch_state.json 갱신
@@ -107,9 +107,9 @@ fn main() {
     // 6. L0 mac_compute_zero → AG6 enforcement
     let _mc = safe_exec(HEXA_BIN + " '" + MC_ZERO + "' >/dev/null 2>&1")
 
-    // 7. mk2 state.json — mk2_epoch + 경로 인덱스
-    let mk2 = "{\"mk2_epoch\":" + ep + ",\"ts\":\"" + ts + "\",\"probe\":\"mk2/probe.hexa\",\"infra_state\":\"" + INFRA_STATE + "\",\"dispatch_state\":\"" + DISPATCH_STATE + "\"}\n"
-    write_atomic(MK2_STATE, mk2)
+    // 7. state.json — epoch + 경로 인덱스
+    let state = "{\"epoch\":" + ep + ",\"ts\":\"" + ts + "\",\"probe\":\"probe.hexa\",\"infra_state\":\"" + INFRA_STATE + "\",\"dispatch_state\":\"" + DISPATCH_STATE + "\"}\n"
+    write_atomic(STATE_FILE, state)
 }
 
 main()
