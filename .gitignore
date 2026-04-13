@@ -28,6 +28,9 @@ forge/genomes.*.ring
 forge/labeled_anomaly.jsonl
 forge/forecast.jsonl
 forge/load_balancer.log
+forge/throttle_history.jsonl
+forge/predictive_throttle_state.json
+forge/genomes.unified.ring.tmp
 _ttest.hexa
 target/
 Cargo.lock
