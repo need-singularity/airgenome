@@ -4,6 +4,13 @@
 # - /login → direct CLAUDE_CONFIG_DIR auth (no symlink dance)
 # - 순수 awk/grep/sed — python3 제거
 #
+# 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
+#   ossified[] — 검증 완료 + 재현 가능
+#   stable[]   — 회귀 없이 장기 동작
+#   failing[]  — 현재 버그(수정 대상)
+#   evolution_log[] — 수렴진화 이력
+# 수정 시 해당 섹션 업데이트 필수.
+#
 # ═══════════════════════════════════════════════════════════════
 # 절대규칙 (2026-04-07 수렴진화)
 #

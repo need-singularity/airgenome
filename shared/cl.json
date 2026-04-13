@@ -1,0 +1,128 @@
+{
+  "_meta": {
+    "name": "cl (Claude Code multi-account launcher) 골화 레지스트리",
+    "path": "~/Dev/airgenome/cl (wrapper) + modules/cl.hexa (logic)",
+    "created": "2026-04-13",
+    "updated": "2026-04-13",
+    "description": "cl 멀티-어카운트 런처의 골화/안정/실패 항목을 누적. HEXA-SPEAK 수렴진화 추적.",
+    "rule": "골화=검증 PASS + 재현 가능, 안정=회귀 없음 장기 동작, 실패=현재 버그(수정 대상)",
+    "linked_from": [
+      "airgenome/cl (top comment)",
+      "airgenome/modules/cl.hexa (top comment)"
+    ]
+  },
+
+  "ossified": [
+    {
+      "id": "OSS-CL-DISPATCHER",
+      "name": "zsh wrapper + hexa.real 분리",
+      "since": "2026-04-13",
+      "evidence": "cl shell script 이 HEXA=hexa.real 고정, hexa-lang stage1 dispatcher 와 격리됨. Rate limit auto-switch / login / effort flag 파이프라인",
+      "location": "~/Dev/airgenome/cl:59"
+    },
+    {
+      "id": "OSS-CL-SUBCOMMANDS",
+      "name": "7 subcommand routing",
+      "since": "2026-04-07",
+      "evidence": "pick/add/remove/help/status/u/sessions/unregister — hexa run 으로 cl.hexa 위임",
+      "location": "airgenome/cl:125"
+    },
+    {
+      "id": "OSS-CL-CONFIG-DIR-NO-TRAILING-SLASH",
+      "name": "accounts.json config_dir trailing slash 금지",
+      "since": "2026-04-07 수렴진화",
+      "evidence": "trailing slash 있으면 projects/ 경로 조합 시 `//projects` 이중 슬래시 → glob 실패"
+    },
+    {
+      "id": "OSS-CL-ZSH-1BASED",
+      "name": "zsh 배열 1-based",
+      "since": "2026-04-07",
+      "evidence": "${arr[$i]} 는 1-based (bash 0-based 아님)"
+    },
+    {
+      "id": "OSS-CL-USAGE-REFRESH",
+      "name": "세션 종료 후 `claude -p ok --max-turns 1` 으로 키체인 갱신",
+      "since": "2026-04-07",
+      "evidence": "Claude Code 는 세션 유효 시 키체인 update 생략 → usage.hexa 이전 값 표시 버그 회피"
+    }
+  ],
+
+  "stable": [
+    {
+      "id": "STB-CL-DASHBOARD",
+      "name": "실시간 대시보드 표시",
+      "evidence": "cl (no args) → Usage 테이블 + week_pct / session_pct 막대그래프"
+    },
+    {
+      "id": "STB-CL-RATE-LIMIT-SWITCH",
+      "name": "Rate limit 자동 계정 전환",
+      "evidence": "RATE_PATTERNS (rate_limit_error, over usage limit 등) 감지 시 pick_next_account(low week_pct) 로 자동 전환"
+    },
+    {
+      "id": "STB-CL-FSWATCH",
+      "name": "새 계정 자동 감지",
+      "evidence": "fswatch -r ~/.claude-claude*/.claude.json → add_account"
+    }
+  ],
+
+  "failing": [
+    {
+      "id": "BUG-CL-VOID-METHODS",
+      "name": ".split on void / .contains on void cascading",
+      "severity": "medium",
+      "discovered": "2026-04-13",
+      "symptom": "cl / cl help 실행 시 60+ 'Runtime error: unknown method .X on void' — exec() 또는 read_file() 반환값이 void인 경우 .trim() → .split() 체인 cascading",
+      "location": "modules/cl.hexa list_accounts / get_config_dir_for / resolve_launch 주변",
+      "fix": {
+        "status": "TODO",
+        "approach": "exec 반환값 nullable 체크 + 기본값 fallback (let s = out ?? \"\")"
+      }
+    },
+    {
+      "id": "BUG-CL-NO-RESPONSE-ANIMA",
+      "name": "anima 디렉토리에서 cl 무반응 (보고만, 재현 실패)",
+      "severity": "low",
+      "discovered": "2026-04-13",
+      "symptom": "anima dir에서 `cl` 실행 시 사용자 보고 무반응. 내부 테스트 (alarm 5s perl) 에서는 대시보드 정상 출력",
+      "location": "환경 의존 — ~/.zshrc state / TTY lock / Claude Code alias shadowing 가능성",
+      "fix": {
+        "status": "WORKAROUND",
+        "approach": "env -i HOME=$HOME PATH=$PATH ~/Dev/airgenome/cl — 클린 env 로 정상 동작 확인. 원인 환경 pollution 추정."
+      }
+    }
+  ],
+
+  "evolution_log": [
+    {
+      "date": "2026-04-07",
+      "event": "cl2 → cl v0.4.0 python3-free 수렴 (awk/grep/sed 만)",
+      "commit": null
+    },
+    {
+      "date": "2026-04-13 09:32",
+      "event": "hexa-lang stage1 dispatcher 전환 후유증 — args() argv 누락으로 cl.hexa 호환 불가. HEXA=hexa.real 고정으로 격리"
+    },
+    {
+      "date": "2026-04-13 11:40",
+      "event": "stage0 재빌드 완료 (aa3060c). cl 실행 가능해짐"
+    },
+    {
+      "date": "2026-04-13 12:05",
+      "event": "host_args 슬라이스 + cl.hexa argv 인덱스 shift (commit b159b1e). args()=[bin, script, user1..] 기준 정렬"
+    },
+    {
+      "date": "2026-04-13 12:10",
+      "event": "MAX_CONCURRENT < 1 { → 1 > MAX_CONCURRENT workaround (parser generic ambiguity). cl.json 골화 신설"
+    }
+  ],
+
+  "test_baseline": {
+    "date": "2026-04-13 12:10",
+    "cl_help": "PASS — v0.4.0 commands list 출력",
+    "cl_status": "PASS — 계정 현황 요약",
+    "cl_u": "PASS — 상세 대시보드",
+    "cl_no_args": "PARTIAL — 대시보드 정상, TTY read 대기",
+    "cl_pick_NAME": "UNTESTED",
+    "cl_add_NAME_DIR": "UNTESTED"
+  }
+}
