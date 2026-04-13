@@ -1,24 +1,10 @@
 # L0 코어 보호 — lockdown.json SSOT 자동 생성
 # 변경 시 @need-singularity 승인 필수
 # 수동 편집 금지 — hexa shared/scripts/sync_codeowners.hexa 로 재생성
-src/core.hexa @need-singularity
-modules/resource_guard.hexa @need-singularity
-modules/guard.hexa @need-singularity
-modules/forge.hexa @need-singularity
-modules/implant.hexa @need-singularity
-modules/ubu_bridge.hexa @need-singularity
-modules/ag3_shipper.hexa @need-singularity
-modules/ag3_menubar_feed.hexa @need-singularity
-modules/growth_bus_sync.hexa @need-singularity
-modules/gate_client.hexa @need-singularity
-modules/cl.hexa @need-singularity
-modules/mac_compute_zero.hexa @need-singularity
-scripts/com.airgenome.mac-compute-zero.plist @need-singularity
-modules/load_balancer.hexa @need-singularity
-scripts/com.airgenome.load-balancer.plist @need-singularity
+core/core.hexa @need-singularity
+core/test/core_test.hexa @need-singularity
+shared/config/roadmap/airgenome.json @need-singularity
 cl @need-singularity
 CLAUDE.md @need-singularity
 nexus/shared/bin/hexa @need-singularity
 nexus/shared/bin/hexa.real @need-singularity
-modules/usage.hexa @need-singularity
-scripts/com.airgenome.usage-refresh.plist @need-singularity

@@ -1,0 +1,73 @@
+// airgenome/core/test/core_test.hexa
+// core 분리 검증 — core 외부 의존 0, public API 정상 동작
+//
+// 실행: hexa run core/test/core_test.hexa
+// L0 guard parse-check 도 이 파일 검증
+
+use "/Users/ghost/Dev/airgenome/core/core"
+
+fn assert(label: str, cond: bool) -> void {
+    if cond == false {
+        panic("[core_test FAIL] " + label)
+    }
+}
+
+fn main() -> void {
+    println("⬡ core_test starting")
+
+    // 1. constants
+    assert("AXIS_COUNT", AXIS_COUNT == 6)
+    assert("PAIR_COUNT", PAIR_COUNT == 15)
+    assert("GENOME_BYTES", GENOME_BYTES == 60)
+
+    // 2. severity / throttle level enums (int 상수)
+    assert("SEV_OK == 0", SEV_OK == 0)
+    assert("SEV_CRITICAL > SEV_WARN", SEV_CRITICAL > SEV_WARN)
+    assert("THROTTLE_NORMAL == 0", THROTTLE_NORMAL == 0)
+
+    // 3. Vitals + sample
+    let v = sample()
+    assert("v.cpu >= 0", v.cpu >= 0.0)
+    assert("v.ram >= 0", v.ram >= 0.0)
+    println("  sample: cpu=" + to_string(to_int(v.cpu)) + "% ram=" + to_string(to_int(v.ram)) + "% swap=" + to_string(to_int(v.power)) + "%")
+
+    // 4. assess
+    let sev_low = assess(make_v(10.0, 10.0), 75.0, 70.0, 30.0)
+    assert("low sev = OK", sev_low == SEV_OK)
+    let sev_high = assess(make_v(90.0, 50.0), 75.0, 70.0, 30.0)
+    assert("high cpu = CRITICAL", sev_high == SEV_CRITICAL)
+
+    // 5. vitals_get accessor
+    let tv = make_v(11.0, 22.0)
+    assert("get(0)=cpu", vitals_get(tv, 0) == 11.0)
+    assert("get(1)=ram", vitals_get(tv, 1) == 22.0)
+    assert("get(99)=0", vitals_get(tv, 99) == 0.0)
+
+    // 6. hard limits defaults
+    let hl = default_hard_limits()
+    assert("hl.max_rss_mb == 512", hl.max_rss_mb == 512)
+    assert("hl.nice_level == 10", hl.nice_level == 10)
+
+    // 7. soft limits + throttle
+    let sl = default_soft_limits()
+    assert("sl.warn_rss_mb == 384", sl.warn_rss_mb == 384)
+    assert("sl.critical > warn", sl.critical_rss_mb > sl.warn_rss_mb)
+
+    let t = new_throttle(sl)
+    assert("t.checks == 0", t.checks == 0)
+    assert("t.level == NORMAL", t.current_level == THROTTLE_NORMAL)
+    assert("scale == 1.0", throttle_batch_scale(t) == 1.0)
+    assert("sleep_ms == 0", throttle_sleep_ms(t) == 0)
+
+    // 8. combined guard
+    let g = init_default_guard()
+    assert("guard.checks == 0", g.checks == 0)
+
+    println("  ✅ core_test PASS")
+}
+
+fn make_v(cpu: float, ram: float) -> Vitals {
+    return Vitals { cpu: cpu, ram: ram, gpu: 0.0, npu: 0.0, power: 0.0, io: 0.0 }
+}
+
+main()
