@@ -1030,11 +1030,14 @@ fn print_help() -> void {
 }
 
 fn main() {
+    println("[cl.hexa] main() start")
     let argv = args()
+    println("[cl.hexa] argc=" + to_string(len(argv)))
     let cmd = ""
     if len(argv) > 2 {
         cmd = argv[2]
     }
+    println("[cl.hexa] cmd=" + cmd)
 
     if cmd == "" {
         let accounts = bootstrap_accounts()
