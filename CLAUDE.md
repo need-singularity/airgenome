@@ -16,7 +16,7 @@ invariants (shared/config/roadmap/airgenome.json#invariants):
 
 commands: shared/config/commands.json — autonomous 블록으로 Claude Code가 작업 중 smash/free/todo/go/keep 자율 판단·실행
 rules: ~/Dev/nexus/shared/rules/common.json (R0~R32) + ~/Dev/nexus/shared/rules/airgenome.json (AG1~AG9)
-L0 Guard: `hexa ~/Dev/nexus/shared/lockdown/l0_guard.hexa <verify|sync|merge|status>`
+L0 Guard: `hexa ~/Dev/nexus/shared/harness/l0_guard.hexa <verify|sync|merge|status>`
 
 ref:
   roadmap   shared/config/roadmap/airgenome.json        rebuild v2 SSOT

@@ -15,7 +15,7 @@
 //   { ts, source: "modules/dispatch.hexa", selection: { compute, gpu, heavy, mac_only },
 //     scores: { <host>: { compute, gpu, heavy } }, ag6_gate: "active"|"open" }
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"

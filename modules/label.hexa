@@ -13,7 +13,7 @@
 // 라벨 (예시 rule, 확장 가능):
 //   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let RING = HOME + "/Dev/airgenome/forge/genomes.ring"

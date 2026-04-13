@@ -20,7 +20,7 @@
 //   - try/catch 미사용
 //   - int 연산만 (float quirk 우회)
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let RING = HOME + "/Dev/airgenome/forge/genomes.ring"

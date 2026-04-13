@@ -7,7 +7,7 @@
 // NOTE: hexa-lang stage1 의 float 산술/비교 (`*`, `>`, `<`, `==`) 가 잘못된 결과 반환.
 //       float 의존 assertion 은 to_int 변환 후 수행. core 자체는 이미 to_int 우회 적용됨.
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core"
 
 fn chk(label: str, cond: bool) -> void {
     if cond == false {

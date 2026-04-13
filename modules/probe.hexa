@@ -12,7 +12,7 @@
 //   - exec 실패는 빈 문자열로 판정
 //   - AG6: Mac heavy compute 금지 — sysctl/uptime 만 사용, ssh outbound 만
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"

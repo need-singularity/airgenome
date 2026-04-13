@@ -18,7 +18,7 @@
 //   - try/catch 미사용
 //   - ring 단일 파일, MAX_LINES 초과 시 head 절반 truncate (rotate-in-place)
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
@@ -137,8 +137,9 @@ fn read_ring_lines() -> list {
 
 // 동일 PID 의 마지막 게놈 라인을 jq 로 추출 (없으면 빈 문자열)
 fn last_for_pid(pid: int) -> str {
-    // macOS 는 tac 없음 — tail -r 로 reverse
-    let cmd = "tail -2000 '" + RING + "' 2>/dev/null | tail -r | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"
+    // macOS tac 부재 — Linux=tac, mac=tail -r
+    let rev = "if [ \"$(uname)\" = \"Linux\" ]; then tac; else tail -r; fi"
+    let cmd = "tail -2000 '" + RING + "' 2>/dev/null | " + rev + " | jq -c 'select(.pid == " + to_string(pid) + ")' 2>/dev/null | head -1"
     return exec(cmd).trim()
 }
 

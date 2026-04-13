@@ -60,7 +60,7 @@
       "deps": ["M0_archive_split"],
       "target_repo": "nexus",
       "exit_criteria": [
-        "nexus/shared/lockdown/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
+        "nexus/shared/harness/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
         "각 L0 .hexa 파일을 hexa run 으로 검증 (timeout 보호)",
         "PASS 기준: 파일 존재 + 파싱 통과. self-test 는 별도 스위치"
       ],
@@ -234,17 +234,67 @@
       ]
     },
     {
-      "id": "M11_cross_host_genome",
-      "title": "cross-host genome 합성 — 호스트별 ring → 통합 view",
+      "id": "M11a_native_mirror",
+      "title": "cross-host native 빌드 — hexa-lang transpiler 경유 harvest 미러",
+      "priority": "P2",
+      "status": "active",
+      "started": "2026-04-14",
+      "deps": ["M4_harvest"],
+      "exit_criteria": [
+        "ubu + hetzner 에 hexa_v2 transpiler Linux native 빌드 완료",
+        "core.hexa → Linux ELF (CORE_SELF_TEST=1 PASS)",
+        "harvest/probe/dispatch/label/forecast 5개 모듈 → Linux ELF 각각 빌드 성공",
+        "각 호스트에서 harvest_ag self-test PASS",
+        "AG6 준수 — 모든 빌드/실행 ssh 원격, Mac heavy compute 0"
+      ],
+      "hexa_lang_prereq_fixes": [
+        "B5 — hexa build 드라이버 CWD-relative path",
+        "B9 — transpiler use \"path\" module resolver"
+      ],
+      "workarounds": [
+        "sed 's/hexa_call1(env, /hexa_env_var(/g' — Bug 8 env builtin 미등록 우회",
+        "rsync exclude build/hexa_stage0* — Mach-O stage0 유입 방지 (fork bomb)"
+      ]
+    },
+    {
+      "id": "M11b_ring_sync",
+      "title": "cross-host ring sync — ubu/htz → Mac rsync pull",
       "priority": "P2",
       "status": "todo",
-      "deps": ["M4_harvest", "M7_launchctl_load"],
+      "deps": ["M7_launchctl_load", "M11a_native_mirror"],
       "exit_criteria": [
-        "ubu/htz 에 harvest 미러 — ssh-runnable 변형 또는 native 빌드",
-        "각 호스트의 forge/genomes.ring 을 mac 로 sync (rsync over ssh, AG6 준수)",
-        "modules/genome_merge.hexa — 3호스트 ring → 단일 통합 ring (host 태그 추가)",
-        "통합 ring 의 PID 충돌 회피 (host 네임스페이스 prefix)",
-        "label/forecast 가 통합 ring 도 처리 — 추가 호스트 차원 적용"
+        "ubu/htz 에 systemd timer 또는 cron — harvest_ag 60s 주기 실행",
+        "각 호스트별 forge/genomes.ring 파일 갱신 확인",
+        "Mac launchd timer — rsync pull from ubu/htz (60s 주기)",
+        "수신 경로: ~/Dev/airgenome/forge/genomes.{ubu,htz}.ring + genomes.mac.ring",
+        "24h 연속 sync 무오류 (stderr.log 에 ERROR 0건)"
+      ]
+    },
+    {
+      "id": "M11c_genome_merge",
+      "title": "modules/genome_merge.hexa — 3 ring → unified view",
+      "priority": "P2",
+      "status": "todo",
+      "deps": ["M11b_ring_sync"],
+      "exit_criteria": [
+        "modules/genome_merge.hexa 신설",
+        "입력: genomes.{mac,ubu,htz}.ring 3개",
+        "PID prefix: {host}.{pid} (예: mac.1234, ubu.5678)",
+        "출력: forge/genomes.unified.ring (host 태그 포함)",
+        "self-test: 3 synthetic ring (중복 PID 포함) → PID 충돌 0건 검증"
+      ]
+    },
+    {
+      "id": "M11d_unified_analytics",
+      "title": "label/forecast 를 unified ring 으로 확장",
+      "priority": "P2",
+      "status": "todo",
+      "deps": ["M11c_genome_merge"],
+      "exit_criteria": [
+        "label.hexa — unified ring 읽기 + host 필드 포함 라벨링",
+        "shared/config/label_rules.jsonl — host 조건 (예: host=ubu AND cpu>90) 지원",
+        "forecast.hexa — host×pid 2차원 시계열 예측",
+        "self-test: 3호스트 synthetic unified ring → label + forecast 정상 출력"
       ]
     },
     {
