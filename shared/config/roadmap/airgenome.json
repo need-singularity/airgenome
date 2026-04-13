@@ -54,15 +54,21 @@
       "id": "M1_l0_strict",
       "title": "L0 guard parse-check 추가 — phantom 차단",
       "priority": "P0",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-13",
+      "completed": "2026-04-13",
       "deps": ["M0_archive_split"],
       "target_repo": "nexus",
       "exit_criteria": [
         "nexus/shared/lockdown/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
         "각 L0 .hexa 파일을 hexa run 으로 검증 (timeout 보호)",
         "PASS 기준: 파일 존재 + 파싱 통과. self-test 는 별도 스위치"
-      ]
+      ],
+      "evidence": {
+        "nexus_pr": 34,
+        "airgenome_verify_after": "21 PASS / 0 FAIL (parse 2건 추가)",
+        "nexus_self_verify": "9 FAIL parse phantom 즉시 발견"
+      }
     },
     {
       "id": "M2_probe",
