@@ -1,0 +1,132 @@
+// mk2/ceiling.hexa — Mk2 auto_fill 트리거 (15분 장기 체크, 기본 Disabled)
+//
+// 책임:
+//   ~/Dev/nexus/shared/infra_state.json 읽기
+//   ubu/hetzner 의 free CPU 또는 free RAM < 50% 미달 시
+//   `ssh <host> systemctl start auto_fill@*` 1회 호출
+//
+// 비폴링 — StartInterval=900 (15분). launchd Disabled=true 기본.
+// 활성화: launchctl enable gui/501/com.airgenome.mk2-ceiling
+//
+// 하네스 원칙: silent_success
+
+let HOME = env("HOME")
+let STATE_DIR = HOME + "/.airgenome/mk2"
+let CEILING_LOG = STATE_DIR + "/ceiling_log.jsonl"
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let THRESHOLD = 50  // free% 미달 시 auto_fill trigger
+
+fn safe_exec(cmd: str) -> str {
+    let mut r = ""
+    try { r = exec(cmd).trim() } catch e {}
+    return r
+}
+
+fn ts_iso() -> str {
+    return safe_exec("date -u +%Y-%m-%dT%H:%M:%SZ")
+}
+
+fn json_escape(s: str) -> str {
+    let mut r = s
+    r = r.replace("\\", "\\\\")
+    r = r.replace("\"", "\\\"")
+    return r
+}
+
+fn log_line(msg: str) {
+    let _mkd = safe_exec("mkdir -p '" + STATE_DIR + "'")
+    let line = "{\"ts\":\"" + ts_iso() + "\",\"msg\":\"" + json_escape(msg) + "\"}"
+    let _append = safe_exec("echo '" + line.replace("'", "'\\''") + "' >> '" + CEILING_LOG + "'")
+}
+
+// naive: "<host>":{...,"free_cpu":N,"free_ram":N,...} → free_cpu/free_ram 추출
+fn extract_free_cpu(raw: str, host: str) -> int {
+    // dispatch_state.json 포맷 사용 가정 (free_cpu/free_ram 키)
+    let tag = "\"" + host + "\""
+    let idx = raw.index_of(tag)
+    if idx < 0 { return 100 }
+    let after = raw.substring(idx, len(raw))
+    let key = "\"free_cpu\":"
+    let ki = after.index_of(key)
+    if ki < 0 { return 100 }
+    let val = after.substring(ki + len(key), len(after))
+    let comma = val.index_of(",")
+    let rbrace = val.index_of("}")
+    let mut end = len(val)
+    if comma >= 0 { end = comma }
+    if rbrace >= 0 {
+        if rbrace < end { end = rbrace }
+    }
+    let s = val.substring(0, end).trim()
+    let mut n = 100
+    try { n = to_int(s) } catch e {}
+    return n
+}
+
+fn extract_free_ram(raw: str, host: str) -> int {
+    let tag = "\"" + host + "\""
+    let idx = raw.index_of(tag)
+    if idx < 0 { return 100 }
+    let after = raw.substring(idx, len(raw))
+    let key = "\"free_ram\":"
+    let ki = after.index_of(key)
+    if ki < 0 { return 100 }
+    let val = after.substring(ki + len(key), len(after))
+    let comma = val.index_of(",")
+    let rbrace = val.index_of("}")
+    let mut end = len(val)
+    if comma >= 0 { end = comma }
+    if rbrace >= 0 {
+        if rbrace < end { end = rbrace }
+    }
+    let s = val.substring(0, end).trim()
+    let mut n = 100
+    try { n = to_int(s) } catch e {}
+    return n
+}
+
+// dispatch_state 가 더 적합 (free% 계산 후 상태)
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+
+fn main() {
+    if file_exists(DISPATCH_STATE) == false {
+        log_line("skip: dispatch_state missing")
+        return
+    }
+    let raw = safe_exec("cat '" + DISPATCH_STATE + "' 2>/dev/null")
+    if raw == "" {
+        log_line("skip: empty dispatch_state")
+        return
+    }
+
+    let ubu_cpu = extract_free_cpu(raw, "ubu")
+    let ubu_ram = extract_free_ram(raw, "ubu")
+    let htz_cpu = extract_free_cpu(raw, "htz")
+    let htz_ram = extract_free_ram(raw, "htz")
+
+    // trigger 조건: free_cpu 또는 free_ram < THRESHOLD
+    if ubu_cpu < THRESHOLD {
+        log_line("ubu low cpu=" + to_string(ubu_cpu) + " — auto_fill trigger")
+        let _a = safe_exec("ssh -o ConnectTimeout=5 ubu 'systemctl --user start auto_fill@* 2>/dev/null || true' >/dev/null 2>&1")
+    }
+    if ubu_ram < THRESHOLD {
+        log_line("ubu low ram=" + to_string(ubu_ram))
+    }
+    if htz_cpu < THRESHOLD {
+        log_line("htz low cpu=" + to_string(htz_cpu) + " — auto_fill trigger")
+        let _b = safe_exec("ssh -o ConnectTimeout=5 hetzner 'systemctl --user start auto_fill@* 2>/dev/null || true' >/dev/null 2>&1")
+    }
+    if htz_ram < THRESHOLD {
+        log_line("htz low ram=" + to_string(htz_ram))
+    }
+
+    // silent_success: trigger 없으면 heartbeat만
+    let all_ok = if ubu_cpu >= THRESHOLD { true } else { false }
+    if all_ok {
+        if htz_cpu >= THRESHOLD {
+            log_line("heartbeat: all above " + to_string(THRESHOLD) + "%")
+        }
+    }
+}
+
+main()

@@ -1,5 +1,9 @@
 // airgenome/modules/cl.hexa — Claude Code multi-account launcher
 // python3-free: 순수 hexa + awk/grep/sed
+//
+// 골화 레지스트리: ~/Dev/airgenome/shared/cl.json
+//   ossified / stable / failing / evolution_log 섹션
+// 수정 시 해당 섹션 업데이트 필수.
 
 let VERSION = "0.4.0"
 // (paths resolved below as R_ACCOUNTS, R_STATE, R_USAGE_CACHE)
@@ -33,8 +37,6 @@ let MAX_CONCURRENT_STR = load_config_val("max_concurrent")
 let MAX_CONCURRENT = if len(MAX_CONCURRENT_STR) == 0 { 2 } else { try { to_int(MAX_CONCURRENT_STR) } catch e { 2 } }
 // fallback: config 로드 실패 시 기본값 2
 fn safe_max_concurrent() -> int {
-    // 2026-04-13 workaround: stage0 파서가 `Ident < 1 {` 를 generic type로 오인
-    // → `1 > Ident` 순서 뒤집기.
     if 1 > MAX_CONCURRENT { return 2 }
     return MAX_CONCURRENT
 }
@@ -1084,7 +1086,7 @@ fn main() {
         if len(argv) > 3 {
             resolve_launch(argv[3])
         }
-        if len(argv) <= 4 {
+        if len(argv) <= 3 {
             println("usage: cl pick <name>")
         }
     }
@@ -1098,7 +1100,7 @@ fn main() {
         if len(argv) > 5 {
             add_account(argv[3], argv[4])
         }
-        if len(argv) <= 5 {
+        if len(argv) <= 4 {
             println("usage: cl add <name> <config_dir>")
         }
     }
@@ -1106,7 +1108,7 @@ fn main() {
         if len(argv) > 3 {
             remove_account(argv[3])
         }
-        if len(argv) <= 4 {
+        if len(argv) <= 3 {
             println("usage: cl remove <name>")
         }
     }
@@ -1115,7 +1117,7 @@ fn main() {
             race_unregister(argv[3])
             println("  ✓ 세션 해제: pid=" + argv[3])
         }
-        if len(argv) <= 4 {
+        if len(argv) <= 3 {
             println("usage: cl unregister <pid>")
         }
     }
