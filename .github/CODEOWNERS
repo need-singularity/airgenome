@@ -3,6 +3,7 @@
 # 수동 편집 금지 — hexa shared/scripts/sync_codeowners.hexa 로 재생성
 core/core.hexa @need-singularity
 core/test/core_test.hexa @need-singularity
+modules/probe.hexa @need-singularity
 shared/config/roadmap/airgenome.json @need-singularity
 cl @need-singularity
 CLAUDE.md @need-singularity
