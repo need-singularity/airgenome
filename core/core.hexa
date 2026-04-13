@@ -55,10 +55,19 @@ fn sample() -> Vitals {
 }
 
 fn assess(v: Vitals, cpu_ceil: float, ram_ceil: float, swap_ceil: float) -> int {
-    if v.cpu > cpu_ceil { return SEV_CRITICAL }
-    if v.ram > ram_ceil { return SEV_CRITICAL }
-    if v.power > swap_ceil { return SEV_CRITICAL }
-    if v.cpu > cpu_ceil * 0.8 { return SEV_WARN }
+    // hexa-lang stage1 float 산술/비교 (`*`, `>`, `<`, `==`) 가 잘못된 결과 반환.
+    // 우회: to_int 변환 직후 모든 비교/산술을 int 로 수행. 1% 정밀도 손실 허용 (vitals 0~100% 범위).
+    let cpu_i = to_int(v.cpu)
+    let ram_i = to_int(v.ram)
+    let pow_i = to_int(v.power)
+    let cpu_ceil_i = to_int(cpu_ceil)
+    let ram_ceil_i = to_int(ram_ceil)
+    let swap_ceil_i = to_int(swap_ceil)
+    let cpu_warn_i = (cpu_ceil_i * 8) / 10
+    if cpu_i > cpu_ceil_i { return SEV_CRITICAL }
+    if ram_i > ram_ceil_i { return SEV_CRITICAL }
+    if pow_i > swap_ceil_i { return SEV_CRITICAL }
+    if cpu_i > cpu_warn_i { return SEV_WARN }
     return SEV_OK
 }
 
@@ -261,28 +270,28 @@ fn init_default_guard() -> AdaptiveThrottle {
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
-fn assert_eq_int(label: str, actual: int, expected: int) -> void {
+fn chk_eq_int(label: str, actual: int, expected: int) -> void {
     if actual != expected {
         panic("self_test FAIL [" + label + "]: expected=" + to_string(expected) + " actual=" + to_string(actual))
     }
 }
 
-fn assert_eq_float(label: str, actual: float, expected: float) -> void {
+fn chk_eq_float(label: str, actual: float, expected: float) -> void {
     if actual != expected {
         panic("self_test FAIL [" + label + "]: expected=" + to_string(expected) + " actual=" + to_string(actual))
     }
 }
 
-fn assert_true(label: str, cond: bool) -> void {
+fn chk_true(label: str, cond: bool) -> void {
     if cond == false {
         panic("self_test FAIL [" + label + "]: condition false")
     }
 }
 
 fn self_test() -> void {
-    assert_eq_int("AXIS_COUNT", AXIS_COUNT, 6)
-    assert_eq_int("PAIR_COUNT", PAIR_COUNT, 15)
-    assert_eq_int("GENOME_BYTES", GENOME_BYTES, 60)
+    chk_eq_int("AXIS_COUNT", AXIS_COUNT, 6)
+    chk_eq_int("PAIR_COUNT", PAIR_COUNT, 15)
+    chk_eq_int("GENOME_BYTES", GENOME_BYTES, 60)
 
     let v = sample()
     println("⬡ airgenome core (hexa)")
@@ -296,25 +305,25 @@ fn self_test() -> void {
     if sev == SEV_CRITICAL { println("  🔴 CRITICAL") }
 
     // Verify vitals_get accessor
-    assert_eq_float("vitals_get(0)", vitals_get(v, 0), v.cpu)
-    assert_eq_float("vitals_get(1)", vitals_get(v, 1), v.ram)
+    chk_eq_float("vitals_get(0)", vitals_get(v, 0), v.cpu)
+    chk_eq_float("vitals_get(1)", vitals_get(v, 1), v.ram)
 
     // Verify hard/soft limit defaults
     let hl = default_hard_limits()
-    assert_eq_int("hl.max_rss_mb", hl.max_rss_mb, 512)
-    assert_eq_int("hl.nice_level", hl.nice_level, 10)
+    chk_eq_int("hl.max_rss_mb", hl.max_rss_mb, 512)
+    chk_eq_int("hl.nice_level", hl.nice_level, 10)
 
     let sl = default_soft_limits()
-    assert_eq_int("sl.warn_rss_mb", sl.warn_rss_mb, 384)
-    assert_eq_int("sl.critical_rss_mb", sl.critical_rss_mb, 480)
-    assert_true("sl.critical > sl.warn", sl.critical_rss_mb > sl.warn_rss_mb)
+    chk_eq_int("sl.warn_rss_mb", sl.warn_rss_mb, 384)
+    chk_eq_int("sl.critical_rss_mb", sl.critical_rss_mb, 480)
+    chk_true("sl.critical > sl.warn", sl.critical_rss_mb > sl.warn_rss_mb)
 
     // Verify throttle init
     let t = new_throttle(sl)
-    assert_eq_int("t.current_level", t.current_level, 0)
-    assert_eq_int("t.checks", t.checks, 0)
-    assert_eq_float("throttle_batch_scale", throttle_batch_scale(t), 1.0)
-    assert_eq_int("throttle_sleep_ms", throttle_sleep_ms(t), 0)
+    chk_eq_int("t.current_level", t.current_level, 0)
+    chk_eq_int("t.checks", t.checks, 0)
+    chk_eq_float("throttle_batch_scale", throttle_batch_scale(t), 1.0)
+    chk_eq_int("throttle_sleep_ms", throttle_sleep_ms(t), 0)
 
     println("  ✅ lib.rs port verified")
 }
