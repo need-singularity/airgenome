@@ -87,13 +87,20 @@
       "id": "M3_dispatch",
       "title": "신규 dispatch — infra_state 기반 호스트 선택 (AG6/AG7)",
       "priority": "P1",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-13",
       "deps": ["M2_probe"],
       "exit_criteria": [
         "modules/dispatch.hexa — task type → best host",
         "AG6 Mac compute zero 준수 (원격 가용 시 mac 차단)",
         "AG7 score 기반 dispatch_state.json 출력"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": "pending",
+        "self_test": "PASS",
+        "production_run": "dispatch_state.json 생성 확인 — selection={compute,gpu,heavy}→ubu, mac_only→mac, ag6_gate=active",
+        "nexus_pr": "pending — L0 promote modules/dispatch.hexa"
+      }
     },
     {
       "id": "M4_harvest",

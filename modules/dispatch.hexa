@@ -1,0 +1,275 @@
+// modules/dispatch.hexa — infra_state 기반 호스트 선택기 (AG6 + AG7)
+//
+// 책임:
+//   1. nexus/shared/infra_state.json 을 jq 로 파싱 (Mac compute zero — I/O 만)
+//   2. AG7 score = host health (cpu_free*w_cpu + ram_free*w_ram - load_penalty)
+//   3. AG6 gate: ubu OR htz active 이면 mac 은 compute/gpu/heavy 후보 제외
+//   4. task_type 별 best_host 계산 → dispatch_state.json 원자적 기록
+//
+// 제약:
+//   - use "../core/core" 만 (invariants AG-core-only)
+//   - try/catch 미사용 (hexa-lang stage1)
+//   - Mac 에서 heavy compute 0 — 모든 집계는 jq (외부) 또는 int 연산만
+//
+// 출력 스키마 (dispatch_state.json):
+//   { ts, source: "modules/dispatch.hexa", selection: { compute, gpu, heavy, mac_only },
+//     scores: { <host>: { compute, gpu, heavy } }, ag6_gate: "active"|"open" }
+
+use "/Users/ghost/Dev/airgenome/core/core"
+
+let HOME = env("HOME")
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+
+// 공백 안전 jq 추출 — 누락 필드는 빈 문자열 반환
+fn jqx(expr: str, path: str) -> str {
+    let cmd = "jq -r '" + expr + " // \"\"' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    // hexa-lang to_int 가 "1.01" 같은 float 문자열에 silent-fail.
+    // 점 앞 정수부만 추출 후 변환.
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    return to_int(head)
+}
+
+// AG7 score — 100 = perfect, 0 = dead. int 연산만 (float quirk 우회)
+fn score_compute(cpu_free: int, ram_free: int, load_int: int) -> int {
+    // cpu_free(0~100) * 4 + ram_free(0~100) * 4 - load*20. 상한 100 클램프
+    let raw = cpu_free * 4 + ram_free * 4 - load_int * 20
+    if raw < 0 { return 0 }
+    if raw > 100 { return 100 }
+    return raw
+}
+
+fn score_gpu(status: str, gpu_util: int, vram_free_pct: int) -> int {
+    if status != "active" { return 0 }
+    // GPU 가용 = (100 - util) * 2 + vram_free * 2 → 0~400 → /4 → 0~100
+    let raw = (100 - gpu_util) * 2 + vram_free_pct * 2
+    let clamped = raw / 4
+    if clamped > 100 { return 100 }
+    if clamped < 0 { return 0 }
+    return clamped
+}
+
+fn score_heavy(cpu_free: int, ram_free: int, threads: int) -> int {
+    // heavy = compute score + thread bonus (threads>=16:+20, >=8:+10, else 0)
+    let base = score_compute(cpu_free, ram_free, 0)
+    let bonus = 0
+    if threads >= 16 { bonus = 20 }
+    else { if threads >= 8 { bonus = 10 } }
+    let s = base + bonus
+    if s > 100 { return 100 }
+    return s
+}
+
+struct HostView {
+    name: str
+    status: str
+    compute: int
+    gpu: int
+    heavy: int
+}
+
+fn view_ubu(path: str) -> HostView {
+    let st = jqx(".hosts.ubu.status", path)
+    if st != "active" {
+        return HostView { name: "ubu", status: st, compute: 0, gpu: 0, heavy: 0 }
+    }
+    let load_s = jqx(".hosts.ubu.load", path)
+    let load_i = to_int_safe(load_s)
+    let ram_total = to_int_safe(jqx(".hosts.ubu.ram_total_mb", path))
+    let ram_used = to_int_safe(jqx(".hosts.ubu.ram_used_mb", path))
+    let ram_free = 0
+    if ram_total > 0 {
+        ram_free = (ram_total - ram_used) * 100 / ram_total
+    }
+    // ubu cpu_free 불명 — load 기반 근사 (load 1 미만 ≈ 90% free)
+    let cpu_free = 90
+    if load_i >= 2 { cpu_free = 50 }
+    if load_i >= 4 { cpu_free = 20 }
+    let gpu_util = to_int_safe(jqx(".hosts.ubu.gpu_util", path))
+    let vram_t = to_int_safe(jqx(".hosts.ubu.gpu_vram_total_mb", path))
+    let vram_u = to_int_safe(jqx(".hosts.ubu.gpu_vram_used_mb", path))
+    let vram_free = 0
+    if vram_t > 0 {
+        vram_free = (vram_t - vram_u) * 100 / vram_t
+    }
+    return HostView {
+        name: "ubu", status: "active",
+        compute: score_compute(cpu_free, ram_free, load_i),
+        gpu: score_gpu("active", gpu_util, vram_free),
+        heavy: score_heavy(cpu_free, ram_free, 8)
+    }
+}
+
+fn view_htz(path: str) -> HostView {
+    let st = jqx(".hosts.htz.status", path)
+    if st != "active" {
+        return HostView { name: "htz", status: st, compute: 0, gpu: 0, heavy: 0 }
+    }
+    let load_i = to_int_safe(jqx(".hosts.htz.load", path))
+    let threads = to_int_safe(jqx(".hosts.htz.cpu_threads", path))
+    let ram_total = to_int_safe(jqx(".hosts.htz.ram_total_mb", path))
+    let ram_used = to_int_safe(jqx(".hosts.htz.ram_used_mb", path))
+    let ram_free = 0
+    if ram_total > 0 {
+        ram_free = (ram_total - ram_used) * 100 / ram_total
+    }
+    // htz cpu_free — load / threads 로 근사
+    let cpu_free = 80
+    if threads > 0 {
+        let util_pct = load_i * 100 / threads
+        if util_pct > 100 { util_pct = 100 }
+        cpu_free = 100 - util_pct
+    }
+    return HostView {
+        name: "htz", status: "active",
+        compute: score_compute(cpu_free, ram_free, 0),
+        gpu: 0,
+        heavy: score_heavy(cpu_free, ram_free, threads)
+    }
+}
+
+fn view_mac(path: str) -> HostView {
+    let st = jqx(".hosts.mac.status", path)
+    if st != "active" {
+        return HostView { name: "mac", status: st, compute: 0, gpu: 0, heavy: 0 }
+    }
+    let cpu_pct = to_int_safe(jqx(".hosts.mac.cpu_pct", path))
+    let ram_pct = to_int_safe(jqx(".hosts.mac.ram_pct", path))
+    let cpu_free = 100 - cpu_pct
+    let ram_free = 100 - ram_pct
+    return HostView {
+        name: "mac", status: "active",
+        compute: score_compute(cpu_free, ram_free, 0),
+        gpu: 0,
+        heavy: score_heavy(cpu_free, ram_free, 8)
+    }
+}
+
+// AG6: mac 은 원격 가용 시 compute/gpu/heavy 후보에서 제외
+fn ag6_gate_active(u: HostView, h: HostView) -> bool {
+    if u.status == "active" { return true }
+    if h.status == "active" { return true }
+    return false
+}
+
+fn best_of(cat: str, u: HostView, h: HostView, m: HostView, gate: bool) -> str {
+    let u_s = 0
+    let h_s = 0
+    let m_s = 0
+    if cat == "compute" { u_s = u.compute; h_s = h.compute; m_s = m.compute }
+    if cat == "gpu"     { u_s = u.gpu;     h_s = h.gpu;     m_s = m.gpu }
+    if cat == "heavy"   { u_s = u.heavy;   h_s = h.heavy;   m_s = m.heavy }
+    if gate { m_s = 0 }  // AG6 — mac 차단
+
+    // tie-breaker: ubu > htz > mac
+    let best_name = "none"
+    let best_score = 0
+    if u_s > best_score { best_name = "ubu"; best_score = u_s }
+    if h_s > best_score { best_name = "htz"; best_score = h_s }
+    if m_s > best_score { best_name = "mac"; best_score = m_s }
+    return best_name
+}
+
+fn write_atomic(path: str, content: str) -> void {
+    let tmp = path + ".tmp"
+    write_file(tmp, content)
+    let _mv = exec("mv -f '" + tmp + "' '" + path + "'")
+}
+
+fn build_dispatch(ts: str, u: HostView, h: HostView, m: HostView, gate: bool) -> str {
+    let sel_compute = best_of("compute", u, h, m, gate)
+    let sel_gpu     = best_of("gpu",     u, h, m, gate)
+    let sel_heavy   = best_of("heavy",   u, h, m, gate)
+    let sel_mac     = "mac"
+    if m.status != "active" { sel_mac = "none" }
+
+    let gate_str = "open"
+    if gate { gate_str = "active" }
+
+    let scores_u = "{\"ubu\":{\"compute\":" + to_string(u.compute) + ",\"gpu\":" + to_string(u.gpu) + ",\"heavy\":" + to_string(u.heavy) + "},"
+    let scores_h = "\"htz\":{\"compute\":" + to_string(h.compute) + ",\"gpu\":" + to_string(h.gpu) + ",\"heavy\":" + to_string(h.heavy) + "},"
+    let scores_m = "\"mac\":{\"compute\":" + to_string(m.compute) + ",\"gpu\":" + to_string(m.gpu) + ",\"heavy\":" + to_string(m.heavy) + "}}"
+    let scores = scores_u + scores_h + scores_m
+
+    let head = "{\"ts\":\"" + ts + "\",\"source\":\"modules/dispatch.hexa\","
+    let sel = "\"selection\":{\"compute\":\"" + sel_compute + "\",\"gpu\":\"" + sel_gpu + "\",\"heavy\":\"" + sel_heavy + "\",\"mac_only\":\"" + sel_mac + "\"},"
+    let tail = "\"scores\":" + scores + ",\"ag6_gate\":\"" + gate_str + "\"}\n"
+    return head + sel + tail
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn self_test() -> void {
+    // 1. score_compute 경계
+    let s0 = score_compute(0, 0, 10)
+    if s0 != 0 { panic("self_test FAIL [score_compute zero]") }
+    let s1 = score_compute(100, 100, 0)
+    if s1 != 100 { panic("self_test FAIL [score_compute full]") }
+    let s2 = score_compute(50, 50, 1)
+    if s2 != 100 { panic("self_test FAIL [score_compute mid]") }  // 50*4+50*4-20 = 380 → clamp 100
+
+    // 2. score_gpu 경계
+    let g0 = score_gpu("offline", 0, 100)
+    if g0 != 0 { panic("self_test FAIL [score_gpu offline]") }
+    let g1 = score_gpu("active", 0, 100)
+    if g1 != 100 { panic("self_test FAIL [score_gpu full]") }
+
+    // 3. score_heavy 경계
+    let h1 = score_heavy(100, 100, 32)
+    if h1 != 100 { panic("self_test FAIL [score_heavy 32t]") }
+    let h2 = score_heavy(100, 100, 4)
+    if h2 != 100 { panic("self_test FAIL [score_heavy 4t]") }  // 100+0 = 100
+
+    // 4. best_of AG6 gate — mac 차단 시 best 는 ubu/htz 중 하나
+    let mac_only = HostView { name: "mac", status: "active", compute: 90, gpu: 0, heavy: 90 }
+    let ubu_ok   = HostView { name: "ubu", status: "active", compute: 50, gpu: 80, heavy: 40 }
+    let htz_off  = HostView { name: "htz", status: "offline", compute: 0, gpu: 0, heavy: 0 }
+    let pick_gated = best_of("compute", ubu_ok, htz_off, mac_only, true)
+    if pick_gated != "ubu" { panic("self_test FAIL [AG6 gate did not block mac]") }
+    let pick_open = best_of("compute", ubu_ok, htz_off, mac_only, false)
+    if pick_open != "mac" { panic("self_test FAIL [open gate mac=90 not picked]") }
+
+    // 5. AG6 gate 판정
+    let gate_on = ag6_gate_active(ubu_ok, htz_off)
+    if !gate_on { panic("self_test FAIL [gate should be on when ubu active]") }
+    let all_off = HostView { name: "x", status: "offline", compute: 0, gpu: 0, heavy: 0 }
+    let gate_off = ag6_gate_active(all_off, all_off)
+    if gate_off { panic("self_test FAIL [gate should be off when all remote offline]") }
+
+    // 6. build_dispatch 출력 합성
+    let out = build_dispatch("2026-04-13T00:00:00Z", ubu_ok, htz_off, mac_only, true)
+    if len(out) < 100 { panic("self_test FAIL [build_dispatch len]") }
+
+    println("  ✅ dispatch self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let u = view_ubu(INFRA_STATE)
+    let h = view_htz(INFRA_STATE)
+    let m = view_mac(INFRA_STATE)
+    let gate = ag6_gate_active(u, h)
+    let ts = ts_iso()
+    let out = build_dispatch(ts, u, h, m, gate)
+    write_atomic(DISPATCH_STATE, out)
+}
+
+main()
