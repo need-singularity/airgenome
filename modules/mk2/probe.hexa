@@ -11,8 +11,8 @@
 // 하네스 원칙: silent_success — stdout 0바이트
 
 let HOME = env("HOME")
-let STATE_DIR = HOME + "/.airgenome/mk2"
-let MK2_STATE = STATE_DIR + "/state.json"
+let STATE_DIR = HOME + "/.airgenome"
+let STATE_FILE = STATE_DIR + "/state.json"
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
 let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
 let MC_ZERO = HOME + "/Dev/airgenome/modules/mac_compute_zero.hexa"
