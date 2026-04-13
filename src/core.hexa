@@ -319,4 +319,10 @@ fn self_test() -> void {
     println("  ✅ lib.rs port verified")
 }
 
-self_test()
+// 자동 self-test 게이팅 — CORE_SELF_TEST=1 일 때만 실행.
+// 이유: use "src/core" 임포트마다 ps/sysctl/vm_stat 부하 발생,
+//       L0 guard parse-check 등 단순 검증에도 부담.
+// standalone 검증: CORE_SELF_TEST=1 hexa run src/core.hexa
+if env("CORE_SELF_TEST") == "1" {
+    self_test()
+}
