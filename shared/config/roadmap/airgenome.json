@@ -97,8 +97,9 @@
       "id": "M3_dispatch",
       "title": "신규 dispatch — infra_state 기반 호스트 선택 (AG6/AG7)",
       "priority": "P1",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-13",
+      "completed": "2026-04-14",
       "deps": ["M2_probe"],
       "exit_criteria": [
         "modules/dispatch.hexa — task type → best host",
@@ -106,18 +107,19 @@
         "AG7 score 기반 dispatch_state.json 출력"
       ],
       "evidence": {
-        "airgenome_pr": "pending",
+        "airgenome_pr": 39,
         "self_test": "PASS",
         "production_run": "dispatch_state.json 생성 확인 — selection={compute,gpu,heavy}→ubu, mac_only→mac, ag6_gate=active",
-        "nexus_pr": "pending — L0 promote modules/dispatch.hexa"
+        "nexus_pr": "in-flight (chore/m3-m6-l0)"
       }
     },
     {
       "id": "M4_harvest",
       "title": "신규 harvest — 60-byte hexagon per process (T7-T14 재구현)",
       "priority": "P1",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-13",
+      "completed": "2026-04-14",
       "deps": ["M2_probe"],
       "exit_criteria": [
         "modules/harvest.hexa — core AdaptiveThrottle 로 self-guard",
@@ -125,20 +127,21 @@
         "T7-T14 의미 보존 (per_process_sig → genome → sigdiff → anomaly)"
       ],
       "evidence": {
-        "airgenome_pr": "pending",
+        "airgenome_pr": 41,
         "self_test": "PASS (parse_proc_line, comm_safe, ema, abs_int, encode_genome len, sigdiff empty)",
         "production_run": "60 lines in forge/genomes.ring (30 procs × 2 runs), anomaly_total=0 (안정 baseline)",
         "throttle_integrated": "core.AdaptiveThrottle + check_and_adapt + throttle_maybe_sleep + batch_scale 적용",
         "macos_quirk": "tac 미존재 → tail -r 로 reverse",
-        "nexus_pr": "pending — L0 promote modules/harvest.hexa"
+        "nexus_pr": "in-flight (chore/m3-m6-l0)"
       }
     },
     {
       "id": "M5_label",
       "title": "T15 semantic labeling — anomaly → behavior 라벨",
       "priority": "P2",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-13",
+      "completed": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "modules/label.hexa — rule-based classifier",
@@ -146,28 +149,31 @@
         "labeled_anomaly.jsonl 출력 (CPU_SPIKE/FORK_BOMB/MEM_LEAK/IO_STORM)"
       ],
       "evidence": {
-        "airgenome_pr": "pending",
+        "airgenome_pr": 42,
         "self_test": "PASS (op_match 5 cases, parse_rule with/without AND, rule_match boundary, json_escape)",
         "production_run": "synthetic anomaly (CPU=95, RAM=60) → 3 labels (CPU_SPIKE, MEM_LEAK, FORK_BOMB) → forge/labeled_anomaly.jsonl",
-        "ssot_rules": "shared/config/label_rules.jsonl — 5 rules (CPU_SPIKE/MEM_LEAK/FORK_BOMB/IO_STORM/GPU_HOG), all thresholds 외부화"
+        "ssot_rules": "shared/config/label_rules.jsonl — 5 rules (CPU_SPIKE/MEM_LEAK/FORK_BOMB/IO_STORM/GPU_HOG), all thresholds 외부화",
+        "nexus_pr": "in-flight (chore/m3-m6-l0)"
       }
     },
     {
       "id": "M6_predict",
       "title": "v3.0 forecasting — 7d genome 추세 → 1h 예측",
       "priority": "P3",
-      "status": "active",
+      "status": "done",
       "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "modules/forecast.hexa",
         "MAE < 15% on held-out"
       ],
       "evidence": {
-        "airgenome_pr": "pending",
+        "airgenome_pr": 43,
         "self_test": "PASS — 합성 선형 시리즈 (slope=10, samples=9, held-out=90) MAE=0% (<15%)",
         "production_run": "synthetic ring (linear 10→80) → pred_cpu=91 (actual next=90, MAE≈1%)",
-        "algorithm": "Holt's 이중 지수평활 (alpha=0.5, beta=0.5, int 연산만)"
+        "algorithm": "Holt's 이중 지수평활 (alpha=0.5, beta=0.5, int 연산만)",
+        "nexus_pr": "in-flight (chore/m3-m6-l0)"
       }
     }
   ],
