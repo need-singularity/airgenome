@@ -33,7 +33,9 @@ let MAX_CONCURRENT_STR = load_config_val("max_concurrent")
 let MAX_CONCURRENT = if len(MAX_CONCURRENT_STR) == 0 { 2 } else { try { to_int(MAX_CONCURRENT_STR) } catch e { 2 } }
 // fallback: config 로드 실패 시 기본값 2
 fn safe_max_concurrent() -> int {
-    if MAX_CONCURRENT < 1 { return 2 }
+    // 2026-04-13 workaround: stage0 파서가 `Ident < 1 {` 를 generic type로 오인
+    // → `1 > Ident` 순서 뒤집기.
+    if 1 > MAX_CONCURRENT { return 2 }
     return MAX_CONCURRENT
 }
 
