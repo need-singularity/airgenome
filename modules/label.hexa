@@ -1,0 +1,229 @@
+// modules/label.hexa — anomaly genome → behavior 라벨링 (T15)
+//
+// 책임:
+//   1. forge/genomes.ring 의 최근 N 라인 스캔
+//   2. shared/config/label_rules.jsonl 의 rule 마다 vitals 평가
+//   3. match → forge/labeled_anomaly.jsonl 에 append
+//
+// 제약:
+//   - use "../core/core" 만
+//   - 하드코딩 금지 — 모든 임계치/라벨은 label_rules.jsonl SSOT
+//   - try/catch 미사용
+//
+// 라벨 (예시 rule, 확장 가능):
+//   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG
+
+use "/Users/ghost/Dev/airgenome/core/core"
+
+let HOME = env("HOME")
+let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
+let RULES = HOME + "/Dev/airgenome/shared/config/label_rules.jsonl"
+let OUT = HOME + "/Dev/airgenome/forge/labeled_anomaly.jsonl"
+let SCAN_LINES = 1000
+
+struct Rule {
+    label: str,
+    axis: int,
+    op: str,
+    threshold: int,
+    and_axis: int,
+    and_op: str,
+    and_threshold: int,
+    has_and: bool
+}
+
+fn jq_field(line: str, expr: str) -> str {
+    let cmd = "echo '" + line + "' | jq -r '" + expr + " // \"\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    if parts[0] == "" { return 0 }
+    return to_int(parts[0])
+}
+
+fn parse_rule(line: str) -> Rule {
+    let label = jq_field(line, ".label")
+    let axis = to_int_safe(jq_field(line, ".axis"))
+    let op = jq_field(line, ".op")
+    let threshold = to_int_safe(jq_field(line, ".threshold"))
+    let aaxis_s = jq_field(line, ".and_axis")
+    let has_and = aaxis_s != ""
+    let and_axis = to_int_safe(aaxis_s)
+    let and_op = jq_field(line, ".and_op")
+    let and_threshold = to_int_safe(jq_field(line, ".and_threshold"))
+    return Rule {
+        label: label,
+        axis: axis,
+        op: op,
+        threshold: threshold,
+        and_axis: and_axis,
+        and_op: and_op,
+        and_threshold: and_threshold,
+        has_and: has_and
+    }
+}
+
+fn load_rules() -> list {
+    let raw = exec("cat '" + RULES + "' 2>/dev/null")
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" {
+            let r = parse_rule(l)
+            if r.label != "" { result = result + [r] }
+        }
+        i = i + 1
+    }
+    return result
+}
+
+fn op_match(value: int, op: str, threshold: int) -> bool {
+    if op == "gt" { return value > threshold }
+    if op == "lt" { return value < threshold }
+    if op == "gte" { return value >= threshold }
+    if op == "lte" { return value <= threshold }
+    if op == "eq" { return value == threshold }
+    return false
+}
+
+// 게놈 라인의 vitals[idx] 추출
+fn vit_at(line: str, idx: int) -> int {
+    if line == "" { return 0 }
+    let val = jq_field(line, ".vitals[" + to_string(idx) + "]")
+    return to_int_safe(val)
+}
+
+fn rule_match(genome_line: str, r: Rule) -> bool {
+    let v = vit_at(genome_line, r.axis)
+    if !op_match(v, r.op, r.threshold) { return false }
+    if !r.has_and { return true }
+    let v2 = vit_at(genome_line, r.and_axis)
+    return op_match(v2, r.and_op, r.and_threshold)
+}
+
+fn extract_meta(genome_line: str) -> str {
+    let pid = jq_field(genome_line, ".pid")
+    let comm = jq_field(genome_line, ".comm")
+    let ts = jq_field(genome_line, ".ts")
+    return "\"ts\":\"" + ts + "\",\"pid\":" + pid + ",\"comm\":\"" + comm + "\""
+}
+
+fn json_escape(s: str) -> str {
+    let no_bs = s.replace("\\", "")
+    return no_bs.replace("\"", "")
+}
+
+fn make_labeled_line(genome_line: str, label: str) -> str {
+    let meta = extract_meta(genome_line)
+    let safe_label = json_escape(label)
+    return "{" + meta + ",\"label\":\"" + safe_label + "\"}"
+}
+
+fn append_out(line: str) -> void {
+    let _ = exec("printf '%s\\n' '" + line + "' >> '" + OUT + "'")
+}
+
+fn read_recent_genomes() -> list {
+    let cmd = "tail -" + to_string(SCAN_LINES) + " '" + RING + "' 2>/dev/null"
+    let raw = exec(cmd)
+    let lines = raw.split("\n")
+    let result = []
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i]
+        if l != "" { result = result + [l] }
+        i = i + 1
+    }
+    return result
+}
+
+fn run_label() -> int {
+    // 출력 디렉토리 보장
+    let _ = exec("mkdir -p '" + HOME + "/Dev/airgenome/forge'")
+
+    let rules = load_rules()
+    if len(rules) == 0 { return 0 }
+
+    let genomes = read_recent_genomes()
+    let mut labeled = 0
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let mut j = 0
+        while j < len(rules) {
+            let r = rules[j]
+            if rule_match(g, r) {
+                let out_line = make_labeled_line(g, r.label)
+                append_out(out_line)
+                labeled = labeled + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return labeled
+}
+
+fn self_test() -> void {
+    // 1. op_match
+    if !op_match(100, "gt", 50) { panic("self_test FAIL [gt true]") }
+    if op_match(50, "gt", 50) { panic("self_test FAIL [gt boundary]") }
+    if !op_match(50, "gte", 50) { panic("self_test FAIL [gte boundary]") }
+    if op_match(60, "lt", 50) { panic("self_test FAIL [lt false]") }
+    if !op_match(50, "eq", 50) { panic("self_test FAIL [eq]") }
+    if op_match(10, "unknown", 5) { panic("self_test FAIL [unknown op]") }
+
+    // 2. parse_rule
+    let r1 = parse_rule("{\"label\":\"CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80}")
+    if r1.label != "CPU_SPIKE" { panic("self_test FAIL [parse label]") }
+    if r1.axis != 0 { panic("self_test FAIL [parse axis]") }
+    if r1.threshold != 80 { panic("self_test FAIL [parse threshold]") }
+    if r1.has_and { panic("self_test FAIL [no and detected wrongly]") }
+
+    let r2 = parse_rule("{\"label\":\"FORK_BOMB\",\"axis\":0,\"op\":\"gt\",\"threshold\":50,\"and_axis\":1,\"and_op\":\"gt\",\"and_threshold\":20}")
+    if !r2.has_and { panic("self_test FAIL [and not detected]") }
+    if r2.and_threshold != 20 { panic("self_test FAIL [and_threshold]") }
+
+    // 3. rule_match — 합성 게놈
+    let g_spike = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if !rule_match(g_spike, r1) { panic("self_test FAIL [CPU_SPIKE should match]") }
+
+    let g_clean = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if rule_match(g_clean, r1) { panic("self_test FAIL [clean should not match]") }
+
+    let g_fork = "{\"ts\":\"x\",\"pid\":1,\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[60,30,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    if !rule_match(g_fork, r2) { panic("self_test FAIL [FORK_BOMB should match AND]") }
+    if rule_match(g_spike, r2) { panic("self_test FAIL [CPU_SPIKE should NOT match FORK_BOMB AND clause]") }
+
+    // 4. extract_meta + make_labeled_line
+    let lab = make_labeled_line(g_spike, "CPU_SPIKE")
+    if len(lab) < 30 { panic("self_test FAIL [labeled line len]") }
+
+    // 5. json_escape
+    let esc = json_escape("a\"b\\c")
+    if esc != "abc" { panic("self_test FAIL [json_escape]") }
+
+    println("  ✅ label self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let n = run_label()
+    println("label done — labeled=" + to_string(n))
+}
+
+main()

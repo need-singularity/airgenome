@@ -127,13 +127,20 @@
       "id": "M5_label",
       "title": "T15 semantic labeling — anomaly → behavior 라벨",
       "priority": "P2",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-13",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "modules/label.hexa — rule-based classifier",
         "label_rules.jsonl SSOT (하드코딩 금지)",
         "labeled_anomaly.jsonl 출력 (CPU_SPIKE/FORK_BOMB/MEM_LEAK/IO_STORM)"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": "pending",
+        "self_test": "PASS (op_match 5 cases, parse_rule with/without AND, rule_match boundary, json_escape)",
+        "production_run": "synthetic anomaly (CPU=95, RAM=60) → 3 labels (CPU_SPIKE, MEM_LEAK, FORK_BOMB) → forge/labeled_anomaly.jsonl",
+        "ssot_rules": "shared/config/label_rules.jsonl — 5 rules (CPU_SPIKE/MEM_LEAK/FORK_BOMB/IO_STORM/GPU_HOG), all thresholds 외부화"
+      }
     },
     {
       "id": "M6_predict",

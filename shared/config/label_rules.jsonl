@@ -1,0 +1,5 @@
+{"label":"CPU_SPIKE","axis":0,"op":"gt","threshold":80,"desc":"단일 프로세스 CPU 사용률 > 80%"}
+{"label":"MEM_LEAK","axis":1,"op":"gt","threshold":50,"desc":"단일 프로세스 RAM 사용률 > 50%"}
+{"label":"FORK_BOMB","axis":0,"op":"gt","threshold":50,"and_axis":1,"and_op":"gt","and_threshold":20,"desc":"CPU>50 AND RAM>20 — 동시 소비"}
+{"label":"IO_STORM","axis":5,"op":"gt","threshold":50,"desc":"IO 축 > 50 (per-process io 측정 시)"}
+{"label":"GPU_HOG","axis":2,"op":"gt","threshold":80,"desc":"GPU 사용률 > 80% (원격 호스트 게놈 시)"}
