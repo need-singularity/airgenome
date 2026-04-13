@@ -175,6 +175,92 @@
         "algorithm": "Holt's 이중 지수평활 (alpha=0.5, beta=0.5, int 연산만)",
         "nexus_pr": "in-flight (chore/m3-m6-l0)"
       }
+    },
+    {
+      "id": "M7_launchctl_load",
+      "title": "5 plist launchctl bootstrap — 자동화 실가동",
+      "priority": "P1",
+      "status": "todo",
+      "deps": ["M2_probe", "M3_dispatch", "M4_harvest", "M5_label", "M6_predict"],
+      "exit_criteria": [
+        "shared/launchagents/com.airgenome.{probe,dispatch,harvest,label,forecast}.plist 5개를 ~/Library/LaunchAgents/ 로 복사",
+        "launchctl bootstrap gui/$(id -u) 로 5개 모두 등록",
+        "launchctl list | grep com.airgenome — 5개 RunAt=0 확인",
+        "~/.airgenome/*.{stdout,stderr}.log 5개 모두 첫 출력 후 자동 갱신",
+        "60s 후 nexus/shared/{infra_state,dispatch_state}.json + forge/genomes.ring 갱신 확인"
+      ]
+    },
+    {
+      "id": "M8_e2e_chain",
+      "title": "end-to-end 체인 실데이터 검증",
+      "priority": "P1",
+      "status": "todo",
+      "deps": ["M7_launchctl_load"],
+      "exit_criteria": [
+        "probe → dispatch → harvest → label → forecast 5단 파이프 실가동 24h",
+        "각 단계 출력 산출물 (infra_state, dispatch_state, genomes.ring, labeled_anomaly, forecast) 동시 신선",
+        "anomaly_total > 0 (실 워크로드에서 sigdiff 발화 1회 이상)",
+        "모든 단계의 stderr.log 내 ERROR/panic 0건 (24h)",
+        "shared/config/e2e_acceptance.jsonl — 합격 조건 SSOT 작성"
+      ]
+    },
+    {
+      "id": "M9_perprocess_axes",
+      "title": "harvest gpu/npu/power/io 축 실측 (placeholder 0 제거)",
+      "priority": "P2",
+      "status": "todo",
+      "deps": ["M4_harvest"],
+      "exit_criteria": [
+        "Mac per-process gpu_util — Metal/IOReport API 또는 powermetrics CSV 파싱",
+        "Mac per-process io — proc_pid_rusage / iostat per-pid 대안",
+        "Mac per-process power — powermetrics --samplers cpu_power 매핑",
+        "Mac per-process npu — ANE (Apple Neural Engine) 측정 가능성 조사",
+        "ubu/htz 원격은 nvidia-smi pmon + ssh 한정 (이미 호스트 단위 GPU 있음)",
+        "harvest.hexa 6축 모두 실측치 (>=1축 이상은 nonzero) — self-test 추가"
+      ]
+    },
+    {
+      "id": "M10_forecast_real_eval",
+      "title": "forecast 실측 평가 — 7d 누적 후 held-out MAE",
+      "priority": "P2",
+      "status": "todo",
+      "deps": ["M7_launchctl_load", "M8_e2e_chain"],
+      "exit_criteria": [
+        "forge/genomes.ring 7d 누적 (>= 10000 lines)",
+        "modules/forecast_eval.hexa — train/holdout split (마지막 1h 보류)",
+        "PID 별 1-step ahead 예측 vs 실측 MAE 산출",
+        "전체 평균 MAE < 15% 충족 (M6 exit_criteria 검증)",
+        "MAE > 30% PID 가 5개 이상이면 alpha/beta 재튜닝 트리거"
+      ]
+    },
+    {
+      "id": "M11_cross_host_genome",
+      "title": "cross-host genome 합성 — 호스트별 ring → 통합 view",
+      "priority": "P2",
+      "status": "todo",
+      "deps": ["M4_harvest", "M7_launchctl_load"],
+      "exit_criteria": [
+        "ubu/htz 에 harvest 미러 — ssh-runnable 변형 또는 native 빌드",
+        "각 호스트의 forge/genomes.ring 을 mac 로 sync (rsync over ssh, AG6 준수)",
+        "modules/genome_merge.hexa — 3호스트 ring → 단일 통합 ring (host 태그 추가)",
+        "통합 ring 의 PID 충돌 회피 (host 네임스페이스 prefix)",
+        "label/forecast 가 통합 ring 도 처리 — 추가 호스트 차원 적용"
+      ]
+    },
+    {
+      "id": "M12_dashboard",
+      "title": "사람용 관찰 대시보드 (menubar + web)",
+      "priority": "P3",
+      "status": "todo",
+      "deps": ["M8_e2e_chain"],
+      "exit_criteria": [
+        "modules/dashboard.hexa — 단일 정적 HTML 생성 (JSONL → 표/차트)",
+        "최근 anomaly Top 10 (label + score + 시각)",
+        "host 별 vitals 시계열 (24h)",
+        "forecast vs actual 오차 그래프",
+        "menubar 진입점 (mac native 또는 hexa-native UI 가능 시)",
+        "출력은 forge/dashboard.html (정적 파일, 브라우저 직접 열기)"
+      ]
     }
   ],
   "items": [],
