@@ -139,12 +139,19 @@
       "id": "M6_predict",
       "title": "v3.0 forecasting — 7d genome 추세 → 1h 예측",
       "priority": "P3",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "modules/forecast.hexa",
         "MAE < 15% on held-out"
-      ]
+      ],
+      "evidence": {
+        "airgenome_pr": "pending",
+        "self_test": "PASS — 합성 선형 시리즈 (slope=10, samples=9, held-out=90) MAE=0% (<15%)",
+        "production_run": "synthetic ring (linear 10→80) → pred_cpu=91 (actual next=90, MAE≈1%)",
+        "algorithm": "Holt's 이중 지수평활 (alpha=0.5, beta=0.5, int 연산만)"
+      }
     }
   ],
   "items": [],
