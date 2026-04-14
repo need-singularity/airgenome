@@ -451,10 +451,11 @@ consciousness PerSourceGenome {
     // Ensure nexus/shared dir exists (R8 target)
     exec("mkdir -p nexus/shared")
 
-    // ONCE mode: env PER_SOURCE_ONCE=1 → single pass and exit.
-    let mut once_mode = false
-    let once_env = env("PER_SOURCE_ONCE")
-    if once_env == "1" { once_mode = true }
+    // v1 동결 (2026-04-13) 후 ghost 재발 방지 — ONCE 기본, CONTINUOUS 는 env 명시 필요.
+    // 2026-04-15: ubu aiden 에서 3일 poll_schedule_timeout hang 발생 → 기본값 반전.
+    let mut once_mode = true
+    let cont_env = env("PER_SOURCE_CONTINUOUS")
+    if cont_env == "1" { once_mode = false }
 
     if once_mode {
         println("  mode: ONCE (single pass)")

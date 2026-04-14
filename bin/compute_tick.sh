@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# bin/compute_tick.sh — 30s 주기 tick. dispatch.selection.compute 로 벤치 워크로드 송신.
+# bin/compute_tick.sh — 30s 주기 tick. lb.sh pick 으로 실시간 least-loaded 호스트에 벤치 송신.
 #
 # 목적: ubu2 같은 idle 호스트가 실제 자원 활용 대상이 되는지 live 검증.
 # 워크: openssl sha256 2s → 1 core * 2s = 6%*core 정도 부하 (관찰 가능한 수준, 과부하 아님).
 #
-# 로그: ~/.airgenome/compute_tick.log (stdout) · executor.jsonl (structured).
+# 로그: ~/.airgenome/compute_tick.log (stdout) · lb.jsonl (structured, bin/lb.sh).
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG="$HOME/.airgenome/compute_tick.log"
@@ -22,6 +22,6 @@ wait
 echo OK'
 
 rc=0
-"$ROOT/bin/executor.sh" compute "$work" >> "$LOG" 2>&1 || rc=$?
+"$ROOT/bin/lb.sh" run compute "$work" >> "$LOG" 2>&1 || rc=$?
 echo "[$ts] tick rc=$rc" >> "$LOG"
 exit $rc

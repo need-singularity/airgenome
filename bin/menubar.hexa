@@ -199,6 +199,7 @@ fn level_icon(lvl: str) -> str {
     if lvl == "CALM" { return "🟢" }
     if lvl == "WARM" { return "🟡" }
     if lvl == "STRESS" { return "🔴" }
+    if lvl == "THROTTLE" { return "🟠" }
     if lvl == "?" { return "⚫" }
     return "⚪"
 }
@@ -364,7 +365,7 @@ fn build_menu() -> *Void {
     menu_add_separator(menu)
 
     // Rings block
-    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
 
     // Recent throttle history
     let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()

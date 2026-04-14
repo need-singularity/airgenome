@@ -134,11 +134,15 @@ fn gentle_bootout_mac() -> int {
 }
 
 fn write_state(level: str, until: int, pred_cpu: int, pred_ram: int, action: str) -> void {
+    let mut pc = to_string(pred_cpu)
+    if pc == "void" { pc = "0" }
+    let mut pr = to_string(pred_ram)
+    if pr == "void" { pr = "0" }
     let line = "{\"ts\":\"" + ts_iso() + "\""
              + ",\"level\":\"" + level + "\""
              + ",\"until_epoch\":" + to_string(until)
-             + ",\"pred_cpu\":" + to_string(pred_cpu)
-             + ",\"pred_ram\":" + to_string(pred_ram)
+             + ",\"pred_cpu\":" + pc
+             + ",\"pred_ram\":" + pr
              + ",\"action\":\"" + action + "\"}"
     let _ = exec("printf '%s' '" + line + "' > '" + STATE + "'")
 }
@@ -162,8 +166,13 @@ fn run_throttle() -> int {
         println("predictive_throttle: warmup (" + to_string(len(s_cpu)) + " samples)")
         return 0
     }
-    let pred_cpu = predict_series(s_cpu, HORIZON_STEPS)
-    let pred_ram = predict_series(s_ram, HORIZON_STEPS)
+    let pred_cpu_raw = predict_series(s_cpu, HORIZON_STEPS)
+    let pred_ram_raw = predict_series(s_ram, HORIZON_STEPS)
+    // hexa-lang stage1: predict_series 가 void 를 반환할 수 있음 — to_string 으로 감지 후 0 fallback
+    let mut pred_cpu = 0
+    if to_string(pred_cpu_raw) != "void" { pred_cpu = pred_cpu_raw }
+    let mut pred_ram = 0
+    if to_string(pred_ram_raw) != "void" { pred_ram = pred_ram_raw }
 
     // 3. 임계 검사
     if pred_cpu <= CPU_PRED_CRIT {
