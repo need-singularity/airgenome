@@ -11,6 +11,7 @@
 //   airgenome throttle       — modules/predictive_throttle.hexa (Mac 보호)
 //   airgenome menubar        — Mac menubar 부활 (T4)
 //   airgenome watch [sec]    — terminal HUD (status 초단위 refresh, 기본 2초)
+//   airgenome doctor         — 통합 진단 (core/launchd/ring/throttle)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
 //   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
@@ -168,6 +169,66 @@ fn cmd_menubar() -> void {
     let _ = exec(hexa_bin() + " run '" + path + "' 2>&1")
 }
 
+// cmd_doctor — 통합 진단. 문제 있으면 ❌ 마크, 정상이면 ✅.
+// 체크: hexa bin / core self-test / launchd health / ring freshness / throttle sanity
+fn doctor_check(label: str, ok: bool, detail: str) -> int {
+    let mark = if ok { "✅" } else { "❌" }
+    println("  " + mark + " " + label + "  " + detail)
+    if ok { return 0 } else { return 1 }
+}
+
+fn cmd_doctor() -> void {
+    println("⬡ airgenome doctor")
+    println("")
+    let mut fails = 0
+
+    // 1. hexa binary
+    let hb = hexa_bin()
+    let hb_ok = exec("[ -x '" + hb + "' ] && echo y || echo n").trim() == "y"
+    fails = fails + doctor_check("hexa binary", hb_ok, hb)
+
+    // 2. core self-test
+    let core_out = exec(hb + " run '" + airgenome_root() + "/core/test/core_test.hexa' 2>&1 | tail -1").trim()
+    let core_ok = core_out == "" || exec("echo '" + core_out + "' | grep -c 'PASS'").trim() != "0"
+    fails = fails + doctor_check("core self-test", core_ok, core_out)
+
+    // 3. launchd
+    let agent_count = to_int(exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./' | wc -l | tr -d ' '").trim())
+    let ld_ok = agent_count > 0
+    let ld_detail = to_string(agent_count) + " com.airgenome.* agent(s) loaded"
+    fails = fails + doctor_check("launchd", ld_ok, ld_detail)
+
+    // 4. ring freshness — unified/ubu/htz 중 하나라도 5분 이내 수정이면 OK
+    let now = to_int(exec("date +%s").trim())
+    let mut freshest = 0
+    let rings = ["genomes.ring", "genomes.ubu.ring", "genomes.htz.ring", "genomes.unified.ring"]
+    let mut i = 0
+    while i < len(rings) {
+        let p = forge_dir() + "/" + rings[i]
+        let mt = to_int(exec("stat -f %m '" + p + "' 2>/dev/null || echo 0").trim())
+        if mt > freshest { freshest = mt }
+        i = i + 1
+    }
+    let age = now - freshest
+    let ring_ok = age < 300
+    let ring_detail = "freshest ring age = " + to_string(age) + "s"
+    fails = fails + doctor_check("ring freshness", ring_ok, ring_detail)
+
+    // 5. throttle sanity — state 존재 + level != STRESS
+    let st = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+    let lvl = exec("echo '" + st + "' | sed -E 's/.*\"level\":\"([^\"]+)\".*/\\1/'").trim()
+    let th_ok = lvl == "CALM" || lvl == "WARM"
+    let th_detail = if st == "" { "no state file" } else { "level=" + lvl }
+    fails = fails + doctor_check("throttle sanity", th_ok, th_detail)
+
+    println("")
+    if fails == 0 {
+        println("⬡ all checks passed.")
+    } else {
+        println("⬡ " + to_string(fails) + " check(s) failed — see ❌ above.")
+    }
+}
+
 // cmd_watch — terminal HUD. compact multi-block view refreshed every `sec` seconds.
 // menubar 의 90% 효과 (실시간 visibility) 를 hexa-only 로 제공.
 // 표시: load / throttle pred+level / launchd agents / ring counts with Δ / last 3 history
@@ -254,6 +315,7 @@ fn print_help() -> void {
     println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
     println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
+    println("  doctor              통합 진단 (core/launchd/ring/throttle)")
     println("  status              launchd + ring + state 한눈에")
     println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
     println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
@@ -284,6 +346,7 @@ fn main() -> void {
     if sub == "uninstall" { cmd_uninstall(); return }
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
+    if sub == "doctor" { cmd_doctor(); return }
     if sub == "watch" {
         let mut ival = 2
         if len(a) >= 4 { ival = to_int(a[3]) }
