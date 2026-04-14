@@ -39,6 +39,15 @@ fn ps_top_n(n: int) -> str {
     return exec(cmd)
 }
 
+// [Track F] n 을 [5, TOP_N] 범위로 clamp — hexa_v2 to_int/to_float 경로의
+// maxInt64 edge case 방어. run_harvest 에서 사용됨.
+fn clamp_batch_n(raw_n: int) -> int {
+    let mut n = raw_n
+    if n < 5 { n = 5 }
+    if n > TOP_N { n = TOP_N }
+    return n
+}
+
 struct Proc {
     pid: int,
     cpu: int,
@@ -204,9 +213,8 @@ fn run_harvest() -> int {
 
     // batch_scale 로 N 축소 — hexa_v2 to_int(float) 경로에서 maxInt64 나올 때가 있어 clamp
     let scale = throttle_batch_scale(t)
-    let mut n = to_int(to_float(TOP_N) * scale)
-    if n < 5 { n = 5 }
-    if n > TOP_N { n = TOP_N }  // sanity: scale<=1 이므로 절대 TOP_N 초과 불가
+    let raw_n = to_int(to_float(TOP_N) * scale)
+    let n = clamp_batch_n(raw_n)
 
     // 2. ring 디렉토리 보장
     ensure_dir(forge_dir())
@@ -280,6 +288,14 @@ fn self_test() -> void {
     // 6. sigdiff_score — empty prev → 0
     let s0 = sigdiff_score([10, 20, 0, 0, 0, 0], "")
     if s0 != 0 { panic("self_test FAIL [sigdiff empty prev]") }
+
+    // 7. [Track F] clamp_batch_n — to_int(float) maxInt64 회귀 방어
+    if clamp_batch_n(0) != 5 { panic("self_test FAIL [clamp lower]") }
+    if clamp_batch_n(3) != 5 { panic("self_test FAIL [clamp below 5]") }
+    if clamp_batch_n(0 - 100) != 5 { panic("self_test FAIL [clamp negative]") }
+    if clamp_batch_n(TOP_N) != TOP_N { panic("self_test FAIL [clamp at max]") }
+    if clamp_batch_n(TOP_N + 10) != TOP_N { panic("self_test FAIL [clamp over max]") }
+    if clamp_batch_n(9223372036854775807) != TOP_N { panic("self_test FAIL [clamp maxInt regression]") }
 
     println("  ✅ harvest self_test PASS")
 }

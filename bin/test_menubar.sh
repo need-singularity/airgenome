@@ -117,6 +117,27 @@ rm -f "$REPEAT_LOG"
 grep -q "TEST REPEAT n=5 ok" "$REPEAT_LOG" || fail "REPEAT n=5 build_menu 반복 실패 (크래시 또는 timeout)"
 pass "REPEAT n=5 stability"
 
+# [Track E] 런타임 스택 검증 — /Applications 에 이미 배포된 실행 인스턴스가 있으면
+# sample 로 2초 스택 캡처 후 NSApp 이벤트 펌프 경로(HIToolbox / nextEventMatchingMask)
+# 포함 여부 검사. V3 같은 event pump 회귀 즉시 포착. 인스턴스 없으면 skip (soft).
+RUNTIME_PID=$(pgrep -f '/Applications/Airgenome.app/Contents/MacOS/Airgenome' 2>/dev/null | head -1 || true)
+if [ -n "$RUNTIME_PID" ]; then
+    note "Track E: runtime sample on PID $RUNTIME_PID (2s)"
+    SAMPLE_LOG="/tmp/airgenome_menubar_sample.log"
+    sample "$RUNTIME_PID" 2 > "$SAMPLE_LOG" 2>&1 || true
+    if grep -q 'HIToolbox\|nextEventMatchingMask' "$SAMPLE_LOG"; then
+        pass "runtime stack has HIToolbox / nextEventMatchingMask (event pump active)"
+    else
+        fail "runtime stack MISSING HIToolbox — event pump 미작동. V3 style 회귀 의심. log: $SAMPLE_LOG"
+    fi
+    if grep -q 'runUntilDate' "$SAMPLE_LOG"; then
+        fail "runtime stack contains runUntilDate — click path 깨짐. V3 → V4 회귀"
+    fi
+    pass "no runUntilDate in stack"
+else
+    note "Track E skip — no running /Applications instance"
+fi
+
 # ── 4. item count + required items ───────────────────────────────
 ITEM_COUNT=$(grep -c "^ITEM " "$LOG" || true)
 note "menu items emitted: $ITEM_COUNT (min $MIN_ITEMS)"
