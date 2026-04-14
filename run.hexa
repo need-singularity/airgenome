@@ -168,20 +168,75 @@ fn cmd_menubar() -> void {
     let _ = exec(hexa_bin() + " run '" + path + "' 2>&1")
 }
 
-// cmd_watch — terminal HUD. cmd_status() 를 interval 초마다 clear 후 재출력.
-// menubar 의 90% 효과 (실시간 visibility) 를 hexa-only 로 즉시 제공.
+// cmd_watch — terminal HUD. compact multi-block view refreshed every `sec` seconds.
+// menubar 의 90% 효과 (실시간 visibility) 를 hexa-only 로 제공.
+// 표시: load / throttle pred+level / launchd agents / ring counts with Δ / last 3 history
+fn ring_count(path: str) -> int {
+    let out = exec("wc -l '" + path + "' 2>/dev/null | awk '{print $1}'").trim()
+    if out == "" { return 0 }
+    return to_int(out)
+}
+
 fn cmd_watch(interval_s: int) -> void {
     let sec = if interval_s < 1 { 2 } else { interval_s }
     let sleep_cmd = "sleep " + to_string(sec)
-    // ANSI CSI 2J(clear)+H(home). hexa-lang 문자열은 \x1b 를 해석하지 않아 printf 로 생성.
     let clear_seq = exec("printf '\\033[2J\\033[H'")
+    let fd = forge_dir()
+    let r_mac = fd + "/genomes.ring"
+    let r_ubu = fd + "/genomes.ubu.ring"
+    let r_htz = fd + "/genomes.htz.ring"
+    let r_uni = fd + "/genomes.unified.ring"
+    let mut prev_mac = ring_count(r_mac)
+    let mut prev_ubu = ring_count(r_ubu)
+    let mut prev_htz = ring_count(r_htz)
+    let mut prev_uni = ring_count(r_uni)
+    let mut tick = 0
     while true {
         print(clear_seq)
         let ts = exec("date '+%Y-%m-%d %H:%M:%S %Z'").trim()
         let load = exec("uptime | sed 's/.*load average[s]*: //'").trim()
-        println("⬡ airgenome watch — " + ts + "  (refresh " + to_string(sec) + "s, ctrl-C to exit)")
-        println("  load: " + load)
-        cmd_status()
+        println("⬡ airgenome watch  " + ts + "  tick=" + to_string(tick) + "  refresh=" + to_string(sec) + "s  (ctrl-C exit)")
+        println("────────────────────────────────────────────────────────────────")
+        println("Load:        " + load)
+
+        // Throttle state + last level
+        let st_raw = exec("cat '" + ring_path("predictive_throttle_state.json") + "' 2>/dev/null").trim()
+        if st_raw == "" {
+            println("Throttle:    (no state — not yet run)")
+        } else {
+            let lvl = exec("echo '" + st_raw + "' | sed -E 's/.*\"level\":\"([^\"]+)\".*/\\1/'").trim()
+            let pcpu = exec("echo '" + st_raw + "' | sed -E 's/.*\"pred_cpu\":([0-9]+).*/\\1/'").trim()
+            let pram = exec("echo '" + st_raw + "' | sed -E 's/.*\"pred_ram\":([0-9]+).*/\\1/'").trim()
+            let act = exec("echo '" + st_raw + "' | sed -E 's/.*\"action\":\"([^\"]+)\".*/\\1/'").trim()
+            println("Throttle:    level=" + lvl + "  pred cpu=" + pcpu + "%  ram=" + pram + "%  action=" + act)
+        }
+
+        println("")
+        println("Agents (launchd):")
+        let agents = exec("launchctl list 2>/dev/null | awk '$3 ~ /^com\\.airgenome\\./{printf \"  %-36s pid=%-8s rc=%s\\n\", $3, $1, $2}'")
+        if agents.trim() == "" { println("  (none)") } else { print(agents) }
+
+        println("")
+        let c_mac = ring_count(r_mac)
+        let c_ubu = ring_count(r_ubu)
+        let c_htz = ring_count(r_htz)
+        let c_uni = ring_count(r_uni)
+        println("Rings (entries, Δ since last tick):")
+        println("  mac      " + to_string(c_mac) + "\t(Δ " + to_string(c_mac - prev_mac) + ")")
+        println("  ubu      " + to_string(c_ubu) + "\t(Δ " + to_string(c_ubu - prev_ubu) + ")")
+        println("  htz      " + to_string(c_htz) + "\t(Δ " + to_string(c_htz - prev_htz) + ")")
+        println("  unified  " + to_string(c_uni) + "\t(Δ " + to_string(c_uni - prev_uni) + ")")
+
+        println("")
+        println("Throttle history (last 3):")
+        let hist = exec("tail -3 '" + ring_path("throttle_history.jsonl") + "' 2>/dev/null | sed 's/^/  /'")
+        if hist.trim() == "" { println("  (no history)") } else { print(hist) }
+
+        prev_mac = c_mac
+        prev_ubu = c_ubu
+        prev_htz = c_htz
+        prev_uni = c_uni
+        tick = tick + 1
         let _ = exec(sleep_cmd)
     }
 }
