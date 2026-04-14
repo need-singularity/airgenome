@@ -12,6 +12,7 @@
 //   airgenome menubar        — Mac menubar 부활 (T4)
 //   airgenome watch [sec]    — terminal HUD (status 초단위 refresh, 기본 2초)
 //   airgenome doctor         — 통합 진단 (core/launchd/ring/throttle)
+//   airgenome cli            — 인터랙티브 TUI (숫자 선택)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
 //   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
@@ -229,6 +230,52 @@ fn cmd_doctor() -> void {
     }
 }
 
+// cmd_cli — 인터랙티브 터미널 TUI. 숫자 입력 → subcommand dispatch. q 로 종료.
+fn cli_menu() -> void {
+    let clear = exec("printf '\\033[2J\\033[H'")
+    print(clear)
+    println("⬡ airgenome CLI (interactive)")
+    println("")
+    println("  1) watch         실시간 HUD")
+    println("  2) doctor        통합 진단")
+    println("  3) status        한눈에 상태")
+    println("  4) self-test     모든 module self-test")
+    println("  5) harvest       harvest 1회 (Mac)")
+    println("  6) throttle      throttle 1회 실행")
+    println("  7) merge         genome_merge 1회")
+    println("  8) install       install mac-safe (ring-sync+throttle)")
+    println("  9) install-all   install all 7 agents (AG6 주의)")
+    println(" 10) uninstall     모든 agent bootout + plist 제거")
+    println("  h) help          subcommand 도움말")
+    println("  q) quit")
+    println("")
+}
+
+fn cmd_cli() -> void {
+    while true {
+        cli_menu()
+        let raw = input("choice: ").trim()
+        if raw == "q" || raw == "quit" || raw == "exit" { println("bye."); return }
+        if raw == "" { continue }
+
+        if raw == "1" { cmd_watch(2); return }  // watch 는 자체 loop — 복귀 X
+        if raw == "2" { cmd_doctor() }
+        else if raw == "3" { cmd_status() }
+        else if raw == "4" { cmd_self_test_all() }
+        else if raw == "5" { let _ = run_module("harvest") }
+        else if raw == "6" { let _ = run_module("predictive_throttle") }
+        else if raw == "7" { let _ = run_module("genome_merge") }
+        else if raw == "8" { cmd_install("mac-safe") }
+        else if raw == "9" { cmd_install("all") }
+        else if raw == "10" { cmd_uninstall() }
+        else if raw == "h" || raw == "help" { print_help() }
+        else { println("❔ unknown: '" + raw + "' — q 로 종료") }
+
+        println("")
+        let _ = input("(press Enter to return to menu) ")
+    }
+}
+
 // cmd_watch — terminal HUD. compact multi-block view refreshed every `sec` seconds.
 // menubar 의 90% 효과 (실시간 visibility) 를 hexa-only 로 제공.
 // 표시: load / throttle pred+level / launchd agents / ring counts with Δ / last 3 history
@@ -316,6 +363,7 @@ fn print_help() -> void {
     println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
+    println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
     println("  status              launchd + ring + state 한눈에")
     println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
     println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
@@ -347,6 +395,7 @@ fn main() -> void {
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
     if sub == "doctor" { cmd_doctor(); return }
+    if sub == "cli" { cmd_cli(); return }
     if sub == "watch" {
         let mut ival = 2
         if len(a) >= 4 { ival = to_int(a[3]) }
