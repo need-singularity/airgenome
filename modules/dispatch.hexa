@@ -40,8 +40,9 @@ fn to_int_safe(s: str) -> int {
 
 // AG7 score — 100 = perfect, 0 = dead. int 연산만 (float quirk 우회)
 fn score_compute(cpu_free: int, ram_free: int, load_int: int) -> int {
-    // cpu_free(0~100) * 4 + ram_free(0~100) * 4 - load*20. 상한 100 클램프
-    let raw = cpu_free * 4 + ram_free * 4 - load_int * 20
+    // cpu_free(0~100) + ram_free(0~100) - load*20. 0~200 → clamp 0~100
+    // (과거 *4 스케일은 load penalty 를 클램프가 삼켜 blowup 감지 실패 — 2026-04-14 수정)
+    let raw = cpu_free + ram_free - load_int * 20
     if raw < 0 { return 0 }
     if raw > 100 { return 100 }
     return raw
@@ -130,7 +131,7 @@ fn view_htz(path: str) -> HostView {
     }
     return HostView {
         name: "htz", status: "active",
-        compute: score_compute(cpu_free, ram_free, 0),
+        compute: score_compute(cpu_free, ram_free, load_i),
         gpu: 0,
         heavy: score_heavy(cpu_free, ram_free, threads)
     }
@@ -216,7 +217,10 @@ fn self_test() -> void {
     let s1 = score_compute(100, 100, 0)
     if s1 != 100 { panic("self_test FAIL [score_compute full]") }
     let s2 = score_compute(50, 50, 1)
-    if s2 != 100 { panic("self_test FAIL [score_compute mid]") }  // 50*4+50*4-20 = 380 → clamp 100
+    if s2 != 80 { panic("self_test FAIL [score_compute mid]") }  // 50+50-20 = 80
+    // blowup 검출 케이스 — htz load=10 시나리오
+    let s3 = score_compute(69, 95, 10)
+    if s3 != 0 { panic("self_test FAIL [score_compute blowup — load=10 should zero out]") }  // 164-200=-36 → 0
 
     // 2. score_gpu 경계
     let g0 = score_gpu("offline", 0, 100)

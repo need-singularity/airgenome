@@ -35,11 +35,17 @@ let AGENT_LABELS = [
     "com.airgenome.predictive-throttle"
 ]
 
-// Mac-safe subset — AG6 Mac Compute ZERO 준수. ring-sync (remote pull) + predictive-throttle (자가보호) 만.
-// 나머지 (harvest/label/forecast/dispatch/probe) 는 ubu/htz 에서 실행해야 함.
+// Mac-safe subset — AG6 Mac Compute ZERO 준수.
+// - ring-sync: rsync 수신
+// - predictive-throttle: Mac 자가보호
+// - probe: ssh outbound + infra_state.json 갱신 (blowup 감지 전제)
+// - dispatch: jq 파싱 + dispatch_state.json 갱신 (best_host 선택)
+// 나머지 (harvest/label/forecast) 는 ubu/htz 에서 실행.
 let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
-    "com.airgenome.predictive-throttle"
+    "com.airgenome.predictive-throttle",
+    "com.airgenome.probe",
+    "com.airgenome.dispatch"
 ]
 
 fn hexa_bin() -> str {
@@ -125,7 +131,7 @@ fn install_set(labels: [str], label: str) -> void {
 
 fn cmd_install(mode: str) -> void {
     if mode == "mac-safe" {
-        println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + predictive-throttle only)")
+        println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + throttle + probe + dispatch)")
         install_set(MAC_SAFE_AGENTS, "mac-safe")
     } else {
         println("⬡ airgenome install all (전 7개 LaunchAgent — AG6 주의: Mac heavy compute 유발 가능)")
