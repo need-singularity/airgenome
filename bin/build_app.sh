@@ -10,12 +10,19 @@ BIN_SRC="$ROOT/build/artifacts/airgenome-menubar"
 
 # 1. menubar native binary 빌드 (하위 스크립트 재사용)
 if [ ! -x "$BIN_SRC" ] || [ "$ROOT/bin/menubar.hexa" -nt "$BIN_SRC" ]; then
-    echo "[1/3] build_menubar — native binary"
+    echo "[1/4] build_menubar — native binary"
     "$ROOT/bin/build_menubar.sh"
 fi
 
+# 1.5. 강제 harness gate — 테스트 실패시 bundle 생성 중단
+echo "[2/4] test_menubar — 강제 gate (AIRGENOME_MENUBAR_TEST=1)"
+if ! "$ROOT/bin/test_menubar.sh" "$BIN_SRC"; then
+    echo "❌ harness FAIL — bundle/deploy 중단" >&2
+    exit 1
+fi
+
 # 2. .app bundle 구조 생성
-echo "[2/3] bundle → $APP"
+echo "[3/4] bundle → $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -43,7 +50,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # 3. ad-hoc codesign (macOS Gatekeeper 허용)
-echo "[3/3] codesign --force --deep -s -"
+echo "[4/4] codesign --force --deep -s -"
 codesign --force --deep --sign - "$APP" 2>&1 | tail -3 || true
 xattr -cr "$APP" 2>/dev/null || true
 
