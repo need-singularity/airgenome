@@ -1,0 +1,87 @@
+// bin/menubar.hexa — airgenome macOS menubar (T4, hexa-only, ObjC FFI via hexa_v2)
+//
+// V0: static title + initial throttle state readout.
+// 빌드: hexa_v2 bin/menubar.hexa build/artifacts/menubar.c
+//       clang -o build/artifacts/airgenome-menubar build/artifacts/menubar.c
+// 실행: build/artifacts/airgenome-menubar  (daemon, ctrl-C or kill)
+//
+// 전제:
+//   - hexa_v2 (self/native/hexa_v2) 가 @link("objc") @symbol("...") extern 을 codegen
+//   - runtime.c 가 hexa_ffi_dlopen/dlsym 로 /System/Library/Frameworks/objc.framework 해결
+//   - macOS Cocoa 전용 (linux 빌드 차단 필요 — 현재 build 에서는 guard 생략)
+
+@link("objc")
+extern fn objc_getClass(name: *Byte) -> *Void
+
+@link("objc")
+extern fn sel_registerName(name: *Byte) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg0(obj: *Void, sel: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg1(obj: *Void, sel: *Void, a1: *Void) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_int(obj: *Void, sel: *Void, a1: Int) -> *Void
+
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_float(obj: *Void, sel: *Void, a1: Float) -> *Void
+
+@link("CoreFoundation")
+extern fn CFRunLoopRun()
+
+fn cls(name: str) -> *Void { return objc_getClass(name) }
+fn sel(name: str) -> *Void { return sel_registerName(name) }
+
+fn nsstr(s: str) -> *Void {
+    return msg1(cls("NSString"), sel("stringWithUTF8String:"), s)
+}
+
+fn read_throttle_level() -> str {
+    let home = env_var("HOME")
+    let path = home + "/Dev/airgenome/forge/predictive_throttle_state.json"
+    let raw = exec("cat '" + path + "' 2>/dev/null").trim()
+    if raw == "" { return "?" }
+    let lvl = exec("echo '" + raw + "' | sed -E 's/.*\"level\":\"([^\"]+)\".*/\\1/'").trim()
+    if lvl == "" { return "?" }
+    return lvl
+}
+
+fn read_dispatch_compute() -> str {
+    let home = env_var("HOME")
+    let path = home + "/Dev/nexus/shared/dispatch_state.json"
+    let raw = exec("cat '" + path + "' 2>/dev/null").trim()
+    if raw == "" { return "?" }
+    let h = exec("echo '" + raw + "' | sed -E 's/.*\"compute\":\"([^\"]+)\".*/\\1/'").trim()
+    if h == "" { return "?" }
+    return h
+}
+
+fn main() -> void {
+    // 1. NSApp + accessory policy (no dock icon)
+    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
+    msg_int(app, sel("setActivationPolicy:"), 1)
+
+    // 2. status bar + variable-length status item
+    let bar = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
+    let item = msg_float(bar, sel("statusItemWithLength:"), -1.0)
+
+    // 3. initial title — throttle level + dispatch best compute host
+    let lvl = read_throttle_level()
+    let host = read_dispatch_compute()
+    let title = "⬡ " + lvl + " ▸ " + host
+    msg1(item, sel("setTitle:"), nsstr(title))
+
+    println("airgenome menubar running: " + title)
+    println("(quit via launchctl bootout or SIGTERM)")
+
+    // 4. enter Cocoa run loop — keeps the app + status item alive
+    CFRunLoopRun()
+}
+
+main()

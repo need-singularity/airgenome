@@ -32,7 +32,8 @@ let AGENT_LABELS = [
     "com.airgenome.label",
     "com.airgenome.forecast",
     "com.airgenome.ring-sync",
-    "com.airgenome.predictive-throttle"
+    "com.airgenome.predictive-throttle",
+    "com.airgenome.menubar"
 ]
 
 // Mac-safe subset — AG6 Mac Compute ZERO 준수.
@@ -40,12 +41,14 @@ let AGENT_LABELS = [
 // - predictive-throttle: Mac 자가보호
 // - probe: ssh outbound + infra_state.json 갱신 (blowup 감지 전제)
 // - dispatch: jq 파싱 + dispatch_state.json 갱신 (best_host 선택)
+// - menubar: T4 Cocoa status item (build 된 경우만 등록, 없으면 skip)
 // 나머지 (harvest/label/forecast) 는 ubu/htz 에서 실행.
 let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle",
     "com.airgenome.probe",
-    "com.airgenome.dispatch"
+    "com.airgenome.dispatch",
+    "com.airgenome.menubar"
 ]
 
 fn hexa_bin() -> str {
@@ -131,7 +134,7 @@ fn install_set(labels: [str], label: str) -> void {
 
 fn cmd_install(mode: str) -> void {
     if mode == "mac-safe" {
-        println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + throttle + probe + dispatch)")
+        println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + throttle + probe + dispatch + menubar)")
         install_set(MAC_SAFE_AGENTS, "mac-safe")
     } else {
         println("⬡ airgenome install all (전 7개 LaunchAgent — AG6 주의: Mac heavy compute 유발 가능)")
@@ -167,13 +170,27 @@ fn cmd_self_test_all() -> void {
 }
 
 fn cmd_menubar() -> void {
-    let path = airgenome_root() + "/bin/menubar.hexa"
-    let chk = exec("[ -f '" + path + "' ] && echo y || echo n").trim()
+    // T4: hexa_v2 transpile 된 native binary. hexa 인터프리터는 @link FFI 미지원이라 build 필요.
+    let bin = airgenome_root() + "/build/artifacts/airgenome-menubar"
+    let chk = exec("[ -x '" + bin + "' ] && echo y || echo n").trim()
     if chk != "y" {
-        println("airgenome: menubar not yet ported (T4) — see archive/v1/menubar.hexa")
+        println("airgenome menubar binary 미빌드 — `airgenome build-menubar` 먼저 실행")
+        println("  소스: " + airgenome_root() + "/bin/menubar.hexa")
         return
     }
-    let _ = exec(hexa_bin() + " run '" + path + "' 2>&1")
+    println("⬡ launching menubar (foreground, ctrl-C to exit)")
+    let _ = exec("'" + bin + "'")
+}
+
+fn cmd_build_menubar() -> void {
+    let script = airgenome_root() + "/bin/build_menubar.sh"
+    let chk = exec("[ -x '" + script + "' ] && echo y || echo n").trim()
+    if chk != "y" {
+        println("❌ build script 없음: " + script)
+        return
+    }
+    let out = exec("'" + script + "' 2>&1")
+    print(out)
 }
 
 // cmd_doctor — 통합 진단. 문제 있으면 ❌ 마크, 정상이면 ✅.
@@ -366,7 +383,8 @@ fn print_help() -> void {
     println("  probe               modules/probe.hexa")
     println("  merge               modules/genome_merge.hexa")
     println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
-    println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
+    println("  menubar             Mac menubar 실행 (built binary 필요)")
+    println("  build-menubar       bin/menubar.hexa → native binary (hexa_v2 + clang)")
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
     println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
@@ -400,6 +418,7 @@ fn main() -> void {
     if sub == "uninstall" { cmd_uninstall(); return }
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
+    if sub == "build-menubar" { cmd_build_menubar(); return }
     if sub == "doctor" { cmd_doctor(); return }
     if sub == "cli" { cmd_cli(); return }
     if sub == "watch" {
