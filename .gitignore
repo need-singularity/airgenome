@@ -45,5 +45,5 @@ nexus/shared/bin/hexa.real
 # Claude Code memory (account-shared, local only)
 .claude-memory/
 
-# hexa-lang transpiler 산출물 (self-host / c-deep 실험물)
-build/artifacts/
+# hexa-lang transpiler 산출물 + app bundle (harness build 산출)
+build/
