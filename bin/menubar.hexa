@@ -309,7 +309,9 @@ fn menu_add_separator(menu: *Void) -> void {
 }
 
 fn menu_add_action(menu: *Void, text: str, selector_name: str) -> void {
+    // [Track B gap 1] action 아이템 target/selector dump 로 grep 가능하게
     if test_mode == 1 { println("ITEM action " + text + " → " + selector_name) }
+    if test_mode == 1 { println("TEST ACTION " + text + " selector=" + selector_name + " target=NSApp") }
     let item = msg3(menu, sel("addItemWithTitle:action:keyEquivalent:"),
                     nsstr(text), sel(selector_name), nsstr(""))
     let app = msg0(cls("NSApplication"), sel("sharedApplication"))
@@ -398,6 +400,8 @@ fn main() -> void {
     if test_env == "1" {
         test_mode = 1
         println("TEST START")
+        // [Track B gap 2] config 정합성 — 전 필드 덤프
+        println("TEST CONFIG tick=" + to_string(to_int(cfg_tick_sec)) + "s color=" + to_string(cfg_color_low) + "/" + to_string(cfg_color_high) + " stale=" + to_string(cfg_stale_sec) + "s cap=" + to_string(cfg_spark_cap) + " notify=" + to_string(cfg_notify_enabled))
         println("TEST config loaded tick=" + to_string(to_int(cfg_tick_sec)) + "s stale=" + to_string(cfg_stale_sec) + "s")
     } else {
         if first_run {
@@ -432,13 +436,11 @@ fn main() -> void {
 
     // TEST 모드 — status item 검증 + 반환하는 NSMenu 가 set 됐는지 확인
     if test_mode == 1 {
-        // item 이 nil 이 아닌지
         if item == 0 {
             println("TEST FAIL: statusItem NULL")
             return
         }
         println("TEST statusItem ok ptr=non-null")
-        // item.menu 역조회 — 우리가 set 한 menu 와 일치해야 함
         let got_menu = msg0(item, sel("menu"))
         if got_menu == 0 {
             println("TEST FAIL: item.menu NULL after setMenu:")
@@ -449,8 +451,28 @@ fn main() -> void {
         } else {
             println("TEST setMenu roundtrip ok")
         }
-        // menu item count — numberOfItems 는 NSInteger 반환이라 msg0 pointer 로 받고 형변환은 신뢰 불가
-        // 대신 우리가 println 한 ITEM 로그 개수를 하네스가 카운트
+
+        // [Track B gap 3] REPEAT 모드 — env var AIRGENOME_MENUBAR_TEST_REPEAT=N → build_menu N회 재실행
+        // 반복 안정성 (FFI 누수/크래시) 검출
+        let rep_env = env_var("AIRGENOME_MENUBAR_TEST_REPEAT")
+        if rep_env != "" {
+            let n = to_int(rep_env)
+            if n > 0 {
+                println("TEST REPEAT begin n=" + to_string(n))
+                let mut k = 0
+                while k < n {
+                    refresh_snapshot()
+                    let _m = build_menu()
+                    let _t = compose_title_attr()
+                    k = k + 1
+                }
+                println("TEST REPEAT n=" + to_string(n) + " ok")
+            }
+        }
+
+        // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
+        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
+
         println("TEST DONE PASS")
         return
     }

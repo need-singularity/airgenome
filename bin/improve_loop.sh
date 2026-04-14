@@ -83,10 +83,15 @@ cmd_fill() {
 }
 
 cmd_run() {
-    # 첫 pending 라인 찾기
+    # 첫 pending 라인 찾기 — 없으면 auto-refill 후 재시도
     local line line_num
     line_num=$(grep -n '"status":"pending"' "$Q" 2>/dev/null | head -1 | cut -d: -f1 || true)
-    [ -z "$line_num" ] && { echo "(no pending task)"; return 0; }
+    if [ -z "$line_num" ]; then
+        log "⚙ queue empty — auto-refill"
+        cmd_fill >/dev/null
+        line_num=$(grep -n '"status":"pending"' "$Q" 2>/dev/null | head -1 | cut -d: -f1 || true)
+        [ -z "$line_num" ] && { echo "(refill failed, still empty)"; return 0; }
+    fi
 
     line=$(sed -n "${line_num}p" "$Q")
     local id task

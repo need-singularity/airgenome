@@ -19,6 +19,14 @@ rules: $NEXUS/shared/rules/common.json (R0~R32) + $NEXUS/shared/rules/airgenome.
 L0 Guard: `hexa $NEXUS/shared/harness/l0_guard.hexa <verify|sync|merge|status>`
 loop: 글로벌 `~/.claude/skills/loop` + 엔진 `$NEXUS/shared/harness/loop` — roadmap `$NEXUS/shared/roadmaps/airgenome.json` 3-track×phase×gate 자동
 
+harness (훅 시스템 대체, 2026-04-14~) — H-NOHOOK 강제:
+  dispatcher: $NEXUS/shared/harness/entry.hexa <prompt|pre_tool|post_bash|post_edit|guard|self_check>
+  sub-modules: prompt_scan.hexa / pre_tool_guard.hexa / post_bash.hexa / post_edit.hexa / cmd_gate.hexa
+  enforcement_registry: $NEXUS/shared/harness/enforcement_registry.json (H-NOHOOK 등 17+ 규칙 SSOT)
+  settings.json 정책: 전 프로젝트 hooks={} — Claude Code 훅 시스템 사용 절대 금지. settings.json 에 hook event 추가 시도 = H-NOHOOK 위반.
+  관례 (Claude 자율 호출): 사용자 입력 직후 `entry.hexa prompt "<text>"`, Write/Edit 후 `entry.hexa post_edit <path>`, Bash 후 `entry.hexa post_bash <exit>`, Agent 호출 전 `entry.hexa guard <area> <hash>`.
+  우회 금지 token: NEXUS_HOOK_OK=1 (사용자 명시 승인 시만)
+
 ref:
   roadmap   shared/config/roadmap/airgenome.json        rebuild v2 SSOT
   rules     $NEXUS/shared/rules/common.json        R0~R32

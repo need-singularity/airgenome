@@ -202,10 +202,11 @@ fn run_harvest() -> int {
     t = check_and_adapt(t)
     throttle_maybe_sleep(t)
 
-    // batch_scale 로 N 축소
+    // batch_scale 로 N 축소 — hexa_v2 to_int(float) 경로에서 maxInt64 나올 때가 있어 clamp
     let scale = throttle_batch_scale(t)
-    let n = to_int(to_float(TOP_N) * scale)
+    let mut n = to_int(to_float(TOP_N) * scale)
     if n < 5 { n = 5 }
+    if n > TOP_N { n = TOP_N }  // sanity: scale<=1 이므로 절대 TOP_N 초과 불가
 
     // 2. ring 디렉토리 보장
     ensure_dir(forge_dir())

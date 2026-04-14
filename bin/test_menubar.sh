@@ -86,10 +86,36 @@ pass "statusItem FFI"
 grep -q "^TEST setMenu roundtrip ok" "$LOG" || fail "setMenu roundtrip failed — item.menu did not match after setMenu:"
 pass "setMenu roundtrip"
 
+# [Track B gap 1] Quit action 의 selector/target 바인딩 검증
+grep -q "^TEST ACTION Quit selector=terminate: target=NSApp" "$LOG" || fail "Quit action selector binding missing — menu 클릭 이벤트 라우팅 깨짐"
+pass "Quit action binding"
+
+# [Track B gap 2] config 정합성 — 전 필드 덤프 존재 + 임계값 sanity
+grep -q "^TEST CONFIG tick=" "$LOG" || fail "TEST CONFIG dump missing"
+grep -Eq "^TEST CONFIG .*color=[0-9]+/[0-9]+ stale=[0-9]+s cap=[0-9]+" "$LOG" || fail "TEST CONFIG field shape invalid"
+pass "config dump + shape"
+
+# [Track B gap 2] snapshot 덤프 — refresh_snapshot 이 실제 값을 생산
+grep -q "^TEST SNAP level=" "$LOG" || fail "TEST SNAP missing — refresh_snapshot not run or output empty"
+pass "snapshot dump"
+
 grep -q "TEST TIMEOUT" "$LOG" && fail "binary timed out (> ${TIMEOUT_SEC}s)"
 
 grep -q "^TEST DONE PASS" "$LOG" || fail "TEST DONE PASS marker missing — binary crashed or exited early"
 pass "TEST DONE PASS marker"
+
+# [Track B gap 3] REPEAT 모드 — 5회 build_menu 반복에서 크래시/누수 없는지
+# (이 검증은 별도 런. 주 run 다음에 REPEAT 환경 변수로 재실행)
+note "Track B gap 3: REPEAT stability check"
+REPEAT_LOG="/tmp/airgenome_menubar_repeat.log"
+rm -f "$REPEAT_LOG"
+(AIRGENOME_MENUBAR_TEST=1 AIRGENOME_MENUBAR_TEST_REPEAT=5 "$BIN" &
+    RPID=$!
+    (sleep "$TIMEOUT_SEC" && kill -9 "$RPID" 2>/dev/null && echo "REPEAT TIMEOUT") &
+    wait "$RPID" 2>/dev/null || true
+) > "$REPEAT_LOG" 2>&1
+grep -q "TEST REPEAT n=5 ok" "$REPEAT_LOG" || fail "REPEAT n=5 build_menu 반복 실패 (크래시 또는 timeout)"
+pass "REPEAT n=5 stability"
 
 # ── 4. item count + required items ───────────────────────────────
 ITEM_COUNT=$(grep -c "^ITEM " "$LOG" || true)
