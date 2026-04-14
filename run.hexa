@@ -193,6 +193,89 @@ fn cmd_build_menubar() -> void {
     print(out)
 }
 
+// cmd_logs — ~/.airgenome/<agent>.{stdout,stderr}.log 최근 tail.
+// 사용: airgenome logs [agent_short_name] [N=20]
+//   airgenome logs             → 전 agent summary (각 5줄)
+//   airgenome logs menubar     → menubar stdout+stderr tail 20
+//   airgenome logs throttle 50 → predictive_throttle 50줄
+fn cmd_logs(agent: str, lines: int) -> void {
+    let log_dir = env_var("HOME") + "/.airgenome"
+    let n = if lines < 1 { 20 } else { lines }
+    if agent == "" || agent == "all" {
+        println("⬡ airgenome logs — all agents (each last 5)")
+        let list = exec("ls -1 '" + log_dir + "'/*.log 2>/dev/null | head -20").trim()
+        if list == "" { println("  (no logs under " + log_dir + ")"); return }
+        let bulk = exec("for f in '" + log_dir + "'/*.log; do echo \"=== $(basename $f) ===\"; tail -5 \"$f\" 2>/dev/null; echo; done")
+        print(bulk)
+        return
+    }
+    // agent short name → underscore 허용 (ring-sync → ring_sync)
+    let short = agent
+    let patterns = [short + ".stdout.log", short + ".stderr.log", short + "_stdout.log"]
+    let mut i = 0
+    let mut any = 0
+    while i < len(patterns) {
+        let p = log_dir + "/" + patterns[i]
+        let exists = exec("[ -f '" + p + "' ] && echo y || echo n").trim()
+        if exists == "y" {
+            println("=== " + patterns[i] + " (last " + to_string(n) + ") ===")
+            let out = exec("tail -" + to_string(n) + " '" + p + "' 2>/dev/null")
+            print(out)
+            println("")
+            any = any + 1
+        }
+        i = i + 1
+    }
+    if any == 0 {
+        println("❌ no logs for agent '" + agent + "' under " + log_dir)
+        println("   try: airgenome logs all")
+    }
+}
+
+// cmd_remote — ssh ubu/htz 에 airgenome 모듈 원격 실행.
+// 사용: airgenome remote <host> <module> [args...]
+//   airgenome remote ubu harvest
+//   airgenome remote htz probe
+//   airgenome remote ubu ring-count   — 간편 명령 (forge/genomes.ring wc -l)
+fn cmd_remote(host: str, rest: str) -> void {
+    if host != "ubu" && host != "htz" && host != "hetzner" {
+        println("❌ unknown host: " + host + " (ubu | htz | hetzner)")
+        return
+    }
+    let ssh_host = if host == "htz" { "hetzner" } else { host }
+    // ring 경로: forge/genomes.ring — ubu = ~/Dev/airgenome, htz = /root/Dev/airgenome
+    let ring_root = if host == "ubu" { "~/Dev/airgenome" } else { "/root/Dev/airgenome" }
+    // modules 경로: 원격 deploy 구조가 다름 — ubu = ~/airgenome-v2, htz = /root/Dev/airgenome
+    let module_root = if host == "ubu" { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
+
+    // 간편 명령 ring-count — 모듈 실행 없이 ring 개수만
+    if rest == "ring-count" {
+        println("⬡ remote " + ssh_host + " ring-count")
+        let out = exec("ssh -o ConnectTimeout=5 " + ssh_host + " 'wc -l " + ring_root + "/forge/genomes.ring 2>/dev/null' 2>&1")
+        print(out)
+        return
+    }
+
+    // 모듈 직접 실행 — modules/<rest>.hexa
+    let parts = rest.split(" ")
+    let module_name = parts[0]
+    let mut mod_args = ""
+    let mut i = 1
+    while i < len(parts) {
+        mod_args = mod_args + " " + parts[i]
+        i = i + 1
+    }
+    let module_path = module_root + "/modules/" + module_name + ".hexa"
+
+    // 원격 hexa resolver (non-interactive ssh shell PATH 없음)
+    let hexa_resolver = "HEXA=\"\"; for c in \\$HOME/Dev/nexus/shared/bin/hexa /tmp/hexa-build/hexa-lang/target/release/hexa /root/Dev/nexus/shared/bin/hexa; do [ -x \\\"\\$c\\\" ] && HEXA=\\\"\\$c\\\" && break; done; [ -n \\\"\\$HEXA\\\" ] || { echo 'remote: hexa not found' >&2; exit 1; }; "
+    let remote_cmd = "cd " + module_root + " && " + hexa_resolver + " \\$HEXA run " + module_path + mod_args
+    println("⬡ remote " + ssh_host + " " + module_name + mod_args)
+    println("---")
+    let out = exec("ssh -o ConnectTimeout=10 " + ssh_host + " \"" + remote_cmd + "\" 2>&1")
+    print(out)
+}
+
 // cmd_doctor — 통합 진단. 문제 있으면 ❌ 마크, 정상이면 ✅.
 // 체크: hexa bin / core self-test / launchd health / ring freshness / throttle sanity
 fn doctor_check(label: str, ok: bool, detail: str) -> int {
@@ -388,6 +471,8 @@ fn print_help() -> void {
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  doctor              통합 진단 (core/launchd/ring/throttle)")
     println("  cli                 인터랙티브 TUI — 숫자 선택 dispatch")
+    println("  logs [agent] [N]    ~/.airgenome/*.log 최근 tail (기본 all, N=20)")
+    println("  remote <host> <sub> ubu/htz 원격 airgenome subcommand 실행")
     println("  status              launchd + ring + state 한눈에")
     println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
     println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
@@ -420,6 +505,30 @@ fn main() -> void {
     if sub == "menubar" { cmd_menubar(); return }
     if sub == "build-menubar" { cmd_build_menubar(); return }
     if sub == "doctor" { cmd_doctor(); return }
+    if sub == "logs" {
+        let mut ag = ""
+        let mut n = 20
+        if len(a) >= 4 { ag = a[3] }
+        if len(a) >= 5 { n = to_int(a[4]) }
+        cmd_logs(ag, n)
+        return
+    }
+    if sub == "remote" {
+        if len(a) < 5 {
+            println("usage: airgenome remote <ubu|htz> <sub> [args...]")
+            return
+        }
+        let host = a[3]
+        // 나머지 args 를 공백 join
+        let mut rest = a[4]
+        let mut i = 5
+        while i < len(a) {
+            rest = rest + " " + a[i]
+            i = i + 1
+        }
+        cmd_remote(host, rest)
+        return
+    }
     if sub == "cli" { cmd_cli(); return }
     if sub == "watch" {
         let mut ival = 2
