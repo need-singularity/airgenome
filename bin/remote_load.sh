@@ -14,7 +14,16 @@ set -eu
 LOG="${REMOTE_LOAD_LOG:-$HOME/.airgenome/remote_load.jsonl}"
 mkdir -p "$(dirname "$LOG")"
 
-HOSTS=("ubu" "hetzner")
+# Host 목록 — SSOT: shared/config/hosts.json (kind != self, enabled == true).
+# jq 실패/레지스트리 누락 시 과거 하드코드 fallback 유지 (R17 자가 복구).
+REG="${HOSTS_REGISTRY:-$(cd "$(dirname "$0")/.." && pwd)/shared/config/hosts.json}"
+if [ -r "$REG" ] && command -v jq >/dev/null 2>&1; then
+    # shellcheck disable=SC2207
+    HOSTS=($(jq -r '.hosts | to_entries[] | select(.value.enabled == true and .value.kind != "self") | .value.ssh_alias' "$REG" 2>/dev/null))
+fi
+if [ "${#HOSTS[@]}" -eq 0 ]; then
+    HOSTS=("ubu" "ubu2" "hetzner")
+fi
 
 # 원격에서 실행되는 한 줄 JSON 생성기. single-quoted 로 로컬 확장 방지.
 # NOTE: `pgrep -c` 는 no-match 시 stdout 에 "0" 출력 + exit 1.
@@ -79,12 +88,13 @@ self_test() {
     cmd_probe
     after=$(wc -l < "$LOG" 2>/dev/null || echo 0)
     local delta=$((after - before))
-    if [ "$delta" -ne 2 ]; then
-        echo "  FAIL: expected 2 new lines (ubu+hetzner), got $delta"; exit 1
+    local expected=${#HOSTS[@]}
+    if [ "$delta" -ne "$expected" ]; then
+        echo "  FAIL: expected $expected new lines (${HOSTS[*]}), got $delta"; exit 1
     fi
-    # 마지막 2줄 유효성 검사
+    # 마지막 $expected 줄 유효성 검사
     local any_ok=0
-    tail -n 2 "$LOG" | while IFS= read -r l; do
+    tail -n "$expected" "$LOG" | while IFS= read -r l; do
         case "$l" in
             *'"ok":true'*'"load1"'*) echo "  PASS ok: $(echo "$l" | cut -c1-100)..." ;;
             *'"ok":false'*) echo "  WARN unreachable: $l" ;;
@@ -92,7 +102,7 @@ self_test() {
         esac
     done
     # 최소 1 host 는 reachable 해야 통과
-    if ! tail -n 2 "$LOG" | grep -q '"ok":true'; then
+    if ! tail -n "$expected" "$LOG" | grep -q '"ok":true'; then
         echo "  FAIL: 모든 host unreachable"; exit 1
     fi
     echo "  ✅ remote_load self_test PASS"

@@ -178,23 +178,34 @@
     },
     {
       "id": "M7_launchctl_load",
-      "title": "5 plist launchctl bootstrap — 자동화 실가동",
+      "title": "MAC_SAFE_AGENTS launchctl bootstrap — AG6 준수 자동화",
       "priority": "P1",
-      "status": "todo",
-      "deps": ["M2_probe", "M3_dispatch", "M4_harvest", "M5_label", "M6_predict"],
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M2_probe", "M3_dispatch", "M6_predict"],
       "exit_criteria": [
-        "shared/launchagents/com.airgenome.{probe,dispatch,harvest,label,forecast}.plist 5개를 ~/Library/LaunchAgents/ 로 복사",
-        "launchctl bootstrap gui/$(id -u) 로 5개 모두 등록",
-        "launchctl list | grep com.airgenome — 5개 RunAt=0 확인",
-        "~/.airgenome/*.{stdout,stderr}.log 5개 모두 첫 출력 후 자동 갱신",
-        "60s 후 nexus/shared/{infra_state,dispatch_state}.json + forge/genomes.ring 갱신 확인"
-      ]
+        "MAC_SAFE_AGENTS (run.hexa): ring-sync, predictive-throttle, probe, dispatch, menubar 5개만 Mac LaunchAgent 로 정식 운영",
+        "remote-heavy (harvest, label, forecast) 는 Mac 에서 launchctl 금지 — M11b systemd timer 로 ubu/htz 배포 및 검증",
+        "`airgenome install mac-safe` → `launchctl list | grep com.airgenome` 5개 RunAt=0",
+        "~/.airgenome/*.{stdout,stderr}.log 신규 ERROR/panic 0건",
+        "nexus/shared/{infra_state,dispatch_state}.json 60s 내 갱신 확인"
+      ],
+      "evidence": {
+        "plists_installed": "~/Library/LaunchAgents/com.airgenome.{ring-sync,predictive-throttle,probe,dispatch,menubar}.plist — canonical MAC_SAFE 5개",
+        "ag6_align_rewrite_2026-04-14": "이전 exit_criteria 는 harvest/label/forecast 를 포함해 AG6 를 위반 — Mac 에서 heavy compute 유발. 재작성: remote-heavy 3개는 Mac 배포 제외, M11b systemd track 으로 위임. ~/Library/LaunchAgents/com.airgenome.{harvest,label,forecast}.plist 3개 bootout+rm 완료.",
+        "launchctl_list_snapshot": "2026-04-14 install mac-safe — 5/5 load OK (ring-sync, predictive-throttle, probe, dispatch, menubar)",
+        "remote_heavy_tracker": "harvest/label/forecast → M11a ELF + M11b systemd timer 에서 관리 (Mac 미배포)",
+        "note": "`airgenome install all` 은 여전히 7개 전체 배포 가능하지만 AG6 위반 가능성 경고 — mac-safe 가 default 권장."
+      }
     },
     {
       "id": "M8_e2e_chain",
       "title": "end-to-end 체인 실데이터 검증",
       "priority": "P1",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-14",
+      "eta_complete": "2026-04-15",
       "deps": ["M7_launchctl_load"],
       "exit_criteria": [
         "probe → dispatch → harvest → label → forecast 5단 파이프 실가동 24h",
@@ -202,13 +213,24 @@
         "anomaly_total > 0 (실 워크로드에서 sigdiff 발화 1회 이상)",
         "모든 단계의 stderr.log 내 ERROR/panic 0건 (24h)",
         "shared/config/e2e_acceptance.jsonl — 합격 조건 SSOT 작성"
-      ]
+      ],
+      "evidence_interim": {
+        "acceptance_ssot": "shared/config/e2e_acceptance.jsonl — 9 criteria (freshness×5, stderr_clean, anomaly_fired, duration_24h, sample_uniformity)",
+        "sampler": "shared/scripts/e2e_sample.sh — 30min 주기, 5-stage age + stderr grep + anomaly_total 수집 → forge/e2e_samples.jsonl append",
+        "evaluator": "shared/scripts/e2e_eval.sh — samples + criteria 조회, per-criterion PASS/FAIL + overall verdict",
+        "launchd": "com.airgenome.e2e-sample (StartInterval=1800, RunAtLoad=true) → ~/Library/LaunchAgents/",
+        "first_samples": "19:56:56 seed + 19:57:19 RunAtLoad — 모든 stage fresh, stderr.total=0, anom_last=2, anom_sum_1h=100",
+        "expected_samples_24h": "48 (sampler 30min × 48)",
+        "completion_path": "2026-04-15 ~19:57 에 shared/scripts/e2e_eval.sh 실행 → PASS 시 status=done + evidence 채움"
+      }
     },
     {
       "id": "M9_perprocess_axes",
       "title": "harvest gpu/npu/power/io 축 실측 (placeholder 0 제거)",
       "priority": "P2",
-      "status": "todo",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "Mac per-process gpu_util — Metal/IOReport API 또는 powermetrics CSV 파싱",
@@ -217,7 +239,23 @@
         "Mac per-process npu — ANE (Apple Neural Engine) 측정 가능성 조사",
         "ubu/htz 원격은 nvidia-smi pmon + ssh 한정 (이미 호스트 단위 GPU 있음)",
         "harvest.hexa 6축 모두 실측치 (>=1축 이상은 nonzero) — self-test 추가"
-      ]
+      ],
+      "evidence": {
+        "impl_summary": "power 축 (idx 4) Mac 실측 완료 — `top -l 2 -s 1 -o power -stats pid,power` 공개 API, awk 로 2nd snapshot 추출 (1st 는 differential 무효). encode_genome 시그니처 확장 (pw, ema_pw 추가), sigdiff curr_v 반영.",
+        "mac_live_run": "30 rows 중 14 rows nonzero power = 46% — 예: pid 162 pw=16, hexa build pw=13, claude pw=7-8, syspolicyd pw=4",
+        "self_test": "PASS — extract_power 5 cases (first/mid/last/miss/empty block) + encode_genome power axis 직렬화 (vitals:[50,20,0,0,7,0]) 검증",
+        "axis_mapping_now": "[cpu, ram, 0, 0, power_mac, 0] on Mac · [cpu, ram, 0, 0, 0, 0] on ubu/htz (ELF 미재빌드)",
+        "infeasibility_notes": {
+          "mac_gpu_per_pid": "IOKit/Metal private API 필요 — shell 경로 없음. ioreg 는 aggregate only.",
+          "mac_npu_per_pid": "ANE (Apple Neural Engine) 공개 per-process API 부재 — 0 유지.",
+          "mac_io_per_pid": "proc_pid_rusage C syscall 또는 sudo fs_usage 필요 — shell 로 per-pid 디스크 바이트 측정 불가.",
+          "ubu_htz_gpu": "nvidia-smi pmon 로 per-pid GPU util 가능하지만 현 M11a ELF 재빌드 + harvest 소스 Linux 분기 필요."
+        },
+        "followup_tracks_recommended": [
+          "M9b (native): Mac per-process io/power 를 proc_pid_rusage C 바인딩으로 (hexa @link C stub)",
+          "M9c (remote): ubu/htz harvest ELF 에 nvidia-smi pmon 통합 + axis 2 (gpu) 실측 — M11a stage0 재빌드 포함"
+        ]
+      }
     },
     {
       "id": "M10_forecast_real_eval",

@@ -121,6 +121,9 @@ fn install_set(labels: [str], label: str) -> void {
             let dst = dst_dir + "/" + name + ".plist"
             let _ = exec("cp '" + src + "' '" + dst + "'")
             let _ = exec("launchctl bootout gui/$(id -u)/" + name + " 2>/dev/null || true")
+            // bootout 은 async — 즉시 bootstrap 하면 KeepAlive 지속형(menubar/probe)이
+            // xpc 충돌로 unload 상태로 떨어지는 현상 (2026-04-14). 1s 유예 필요.
+            let _ = exec("sleep 1")
             let _ = exec("launchctl bootstrap gui/$(id -u) '" + dst + "' 2>/dev/null || true")
             println("[install] " + name)
             installed = installed + 1

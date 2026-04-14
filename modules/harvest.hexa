@@ -39,6 +39,43 @@ fn ps_top_n(n: int) -> str {
     return exec(cmd)
 }
 
+// [M9] top -l 2 -s 1 -o power — 2nd iteration 만 POWER 값 유효 (differential).
+// 반환: "pid power\npid power\n..." 형식 (awk 로 2nd PID 헤더 이후만 추림).
+fn sample_power_block(n: int) -> str {
+    let cmd = "top -l 2 -s 1 -o power -n " + to_string(n) + " -stats pid,power 2>/dev/null | awk 'BEGIN{ph=0} /^PID/{ph++; next} ph==2 && $1 ~ /^[0-9]+$/'"
+    return exec(cmd)
+}
+
+// block 에서 특정 pid 의 power 정수부만 추출 (없으면 0).
+fn extract_power(block: str, pid: int) -> int {
+    if block == "" { return 0 }
+    let pid_str = to_string(pid)
+    let lines = block.split("\n")
+    let mut i = 0
+    while i < len(lines) {
+        let line = lines[i].trim()
+        if line != "" {
+            let parts = line.split(" ")
+            let cleaned = []
+            let mut k = 0
+            while k < len(parts) {
+                if parts[k] != "" { cleaned = cleaned + [parts[k]] }
+                k = k + 1
+            }
+            if len(cleaned) >= 2 {
+                if cleaned[0] == pid_str {
+                    let pparts = cleaned[1].split(".")
+                    if len(pparts) > 0 {
+                        if pparts[0] != "" { return to_int(pparts[0]) }
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 // [Track F] n 을 [5, TOP_N] 범위로 clamp — hexa_v2 to_int/to_float 경로의
 // maxInt64 edge case 방어. run_harvest 에서 사용됨.
 fn clamp_batch_n(raw_n: int) -> int {
@@ -110,16 +147,19 @@ fn parse_ps(out: str) -> list {
 
 // 60-byte 게놈을 JSONL 한 줄로 직렬화 (axis 6개 vitals + ema)
 // 실측: 헤더(pid/ts/comm) + vitals[6] + ema[6] — JSON 이라 60 bytes 초과지만 의미 대칭.
-fn encode_genome(ts: str, p: Proc, ema_cpu: int, ema_ram: int) -> str {
+// axis 매핑: [cpu, ram, gpu, npu, power, io]
+// M9: power (idx 4) 실측 (top -l 2 -o power). gpu/npu/io 는 Mac 실측 경로 조사 중 (0 유지).
+fn encode_genome(ts: str, p: Proc, ema_cpu: int, ema_ram: int, pw: int, ema_pw: int) -> str {
     let pid_s = to_string(p.pid)
     let v_cpu = to_string(p.cpu)
     let v_ram = to_string(p.ram)
     let v_rss = to_string(p.rss_kb)
+    let v_pw = to_string(pw)
     let e_cpu = to_string(ema_cpu)
     let e_ram = to_string(ema_ram)
-    // gpu/npu/power/io 축은 per-process 측정 불가 → 0
-    let vitals = "[" + v_cpu + "," + v_ram + ",0,0,0,0]"
-    let ema = "[" + e_cpu + "," + e_ram + ",0,0,0,0]"
+    let e_pw = to_string(ema_pw)
+    let vitals = "[" + v_cpu + "," + v_ram + ",0,0," + v_pw + ",0]"
+    let ema = "[" + e_cpu + "," + e_ram + ",0,0," + e_pw + ",0]"
     return "{\"ts\":\"" + ts + "\",\"pid\":" + pid_s + ",\"comm\":\"" + comm_safe(p.comm) + "\",\"rss_kb\":" + v_rss + ",\"vitals\":" + vitals + ",\"ema\":" + ema + "}"
 }
 
@@ -219,10 +259,11 @@ fn run_harvest() -> int {
     // 2. ring 디렉토리 보장
     ensure_dir(forge_dir())
 
-    // 3. ps 샘플
+    // 3. ps 샘플 + [M9] top power 블록 (1회 2iter 샘플)
     let ts = ts_iso()
     let raw = ps_top_n(n)
     let procs = parse_ps(raw)
+    let power_block = sample_power_block(n)
 
     // 4. 각 프로세스 인코딩 + ring 적재 + sigdiff
     let mut anomaly_total = 0
@@ -234,11 +275,14 @@ fn run_harvest() -> int {
         // ema: prev vitals 가 있으면 그걸로 smoothing
         let prev_cpu = vit_at(prev, 0)
         let prev_ram = vit_at(prev, 1)
+        let prev_pw = vit_at(prev, 4)
+        let pw = extract_power(power_block, p.pid)
         let e_cpu = ema(p.cpu, prev_cpu)
         let e_ram = ema(p.ram, prev_ram)
-        let line = encode_genome(ts, p, e_cpu, e_ram)
-        // sigdiff 전 curr_vitals 만들어 비교
-        let curr_v = [p.cpu, p.ram, 0, 0, 0, 0]
+        let e_pw = ema(pw, prev_pw)
+        let line = encode_genome(ts, p, e_cpu, e_ram, pw, e_pw)
+        // sigdiff 전 curr_vitals — [cpu, ram, gpu=0, npu=0, power, io=0]
+        let curr_v = [p.cpu, p.ram, 0, 0, pw, 0]
         let score = sigdiff_score(curr_v, prev)
         anomaly_total = anomaly_total + score
         append_ring(line)
@@ -282,12 +326,22 @@ fn self_test() -> void {
 
     // 5. encode_genome JSON 직렬화 검증
     let test_proc = Proc { pid: 9, cpu: 50, ram: 20, rss_kb: 100000, comm: "bash" }
-    let g = encode_genome("2026-04-13T00:00:00Z", test_proc, 50, 20)
+    let g = encode_genome("2026-04-13T00:00:00Z", test_proc, 50, 20, 7, 7)
     if len(g) < 80 { panic("self_test FAIL [encode_genome len]") }
+    // power axis (idx 4) 실측치 직렬화 확인 — vitals: [50,20,0,0,7,0]
+    if g.contains("\"vitals\":[50,20,0,0,7,0]") == false { panic("self_test FAIL [encode_genome power axis]") }
 
     // 6. sigdiff_score — empty prev → 0
     let s0 = sigdiff_score([10, 20, 0, 0, 0, 0], "")
     if s0 != 0 { panic("self_test FAIL [sigdiff empty prev]") }
+
+    // [M9] 8. extract_power — top block 파싱
+    let pb = "162    21.5 \n91732  12.9 \n55445  11.5 "
+    if extract_power(pb, 162) != 21 { panic("self_test FAIL [extract_power first row]") }
+    if extract_power(pb, 91732) != 12 { panic("self_test FAIL [extract_power mid row]") }
+    if extract_power(pb, 55445) != 11 { panic("self_test FAIL [extract_power last row]") }
+    if extract_power(pb, 9999) != 0 { panic("self_test FAIL [extract_power miss]") }
+    if extract_power("", 162) != 0 { panic("self_test FAIL [extract_power empty block]") }
 
     // 7. [Track F] clamp_batch_n — to_int(float) maxInt64 회귀 방어
     if clamp_batch_n(0) != 5 { panic("self_test FAIL [clamp lower]") }

@@ -134,6 +134,8 @@ let mut snap_mac_ram = ""
 let mut snap_mac_pct = 0
 let mut snap_ubu_load = ""
 let mut snap_ubu_pct = 0
+let mut snap_ubu2_load = ""
+let mut snap_ubu2_pct = 0
 let mut snap_htz_load = ""
 let mut snap_htz_pct = 0
 let mut snap_infra_age = 0
@@ -163,7 +165,7 @@ fn refresh_snapshot() -> void {
     snap_compute = field(dp, 0)
     snap_gpu = field(dp, 1)
 
-    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu.load, .hosts.htz.load, ((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor)] | @tsv"
+    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu.load, .hosts.htz.load, ((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor), .hosts.ubu2.load, ((.hosts.ubu2.load // \"0\") | tonumber / 12 * 100 | floor)] | @tsv"
     let i = jq_tsv(INFRA_STATE, i_expr)
     let ip = i.split("\t")
     snap_mac_cpu = field(ip, 0)
@@ -176,6 +178,9 @@ fn refresh_snapshot() -> void {
     if ubu_pct_s == "" { snap_ubu_pct = 0 } else { snap_ubu_pct = to_int(ubu_pct_s) }
     let htz_pct_s = field(ip, 5)
     if htz_pct_s == "" { snap_htz_pct = 0 } else { snap_htz_pct = to_int(htz_pct_s) }
+    snap_ubu2_load = field(ip, 6)
+    let ubu2_pct_s = field(ip, 7)
+    if ubu2_pct_s == "" { snap_ubu2_pct = 0 } else { snap_ubu2_pct = to_int(ubu2_pct_s) }
 
     snap_infra_age = file_age_sec(INFRA_STATE)
     snap_throttle_age = file_age_sec(THROTTLE_STATE)
@@ -236,7 +241,7 @@ fn attr_str(s: str, color: *Void) -> *Void {
     return msg2(alloc, sel("initWithString:attributes:"), nsstr(s), dict)
 }
 
-// title: [level icon] [mac bar] [ubu bar][htz bar]
+// title: [level icon] [mac bar] [ubu bar][ubu2 bar][htz bar]
 // stale 이어도 title 에 ⚠ 안 붙임 — 혼동 유발. 정보는 dropdown 에만.
 // dispatch target 도 title 에 안 붙임 — dropdown 에서 확인.
 fn compose_title_attr() -> *Void {
@@ -247,6 +252,7 @@ fn compose_title_attr() -> *Void {
     msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_mac_pct), pct_color(snap_mac_pct)))
     msg1(base, sel("appendAttributedString:"), attr_str(" ", 0))
     msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu_pct), pct_color(snap_ubu_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu2_pct), pct_color(snap_ubu2_pct)))
     msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_htz_pct), pct_color(snap_htz_pct)))
     return base
 }
@@ -254,6 +260,7 @@ fn compose_title_attr() -> *Void {
 // ───── sparkline ring buffer ────────────────────────────────────
 let mut spark_mac = []
 let mut spark_ubu = []
+let mut spark_ubu2 = []
 let mut spark_htz = []
 
 fn spark_push(buf: any, v: int) -> any {
@@ -287,7 +294,7 @@ fn state_signature() -> str {
     if is_stale() { stale_tag = "T" }
     return snap_level + "|" + snap_pred_cpu + "|" + snap_pred_ram
         + "|" + snap_compute + "|" + snap_gpu
-        + "|" + to_string(snap_mac_pct) + "|" + to_string(snap_ubu_pct) + "|" + to_string(snap_htz_pct)
+        + "|" + to_string(snap_mac_pct) + "|" + to_string(snap_ubu_pct) + "|" + to_string(snap_ubu2_pct) + "|" + to_string(snap_htz_pct)
         + "|" + stale_tag
         + "|" + to_string(cfg_color_low) + "|" + to_string(cfg_color_high)
         + "|" + to_string(cfg_stale_sec) + "|" + to_string(cfg_spark_cap)
@@ -342,6 +349,7 @@ fn build_menu() -> *Void {
     // Hosts block + 갱신 age — stale 판별 투명화
     menu_add_info(menu, "mac:  " + bar(snap_mac_pct) + "  cpu=" + snap_mac_cpu + "%  ram=" + snap_mac_ram + "%")
     menu_add_info(menu, "ubu:  " + bar(snap_ubu_pct) + "  load=" + snap_ubu_load + "  (≈" + to_string(snap_ubu_pct) + "%)")
+    menu_add_info(menu, "ubu2: " + bar(snap_ubu2_pct) + "  load=" + snap_ubu2_load + "  (≈" + to_string(snap_ubu2_pct) + "%)")
     menu_add_info(menu, "htz:  " + bar(snap_htz_pct) + "  load=" + snap_htz_load + "  (≈" + to_string(snap_htz_pct) + "%)")
     menu_add_info(menu, "  updated: infra=" + to_string(snap_infra_age) + "s  throttle=" + to_string(snap_throttle_age) + "s  dispatch=" + to_string(snap_dispatch_age) + "s")
 
@@ -350,6 +358,7 @@ fn build_menu() -> *Void {
     // sparkline trend
     menu_add_info(menu, "trend mac: " + spark_render(spark_mac))
     menu_add_info(menu, "trend ubu: " + spark_render(spark_ubu))
+    menu_add_info(menu, "trend ubu2:" + spark_render(spark_ubu2))
     menu_add_info(menu, "trend htz: " + spark_render(spark_htz))
 
     menu_add_separator(menu)
@@ -422,6 +431,7 @@ fn main() -> void {
     refresh_snapshot()
     spark_mac = spark_push(spark_mac, snap_mac_pct)
     spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
+    spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
     spark_htz = spark_push(spark_htz, snap_htz_pct)
 
     let button = msg0(item, sel("button"))
@@ -471,7 +481,7 @@ fn main() -> void {
         }
 
         // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
-        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
+        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
 
         println("TEST DONE PASS")
         return
@@ -526,6 +536,7 @@ fn main() -> void {
         refresh_snapshot()
         spark_mac = spark_push(spark_mac, snap_mac_pct)
         spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
+        spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
         spark_htz = spark_push(spark_htz, snap_htz_pct)
 
         if snap_level != prev_level {

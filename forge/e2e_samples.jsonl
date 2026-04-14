@@ -1,0 +1,4 @@
+{"ts":"2026-04-14T10:56:56Z","probe_age_s":6,"dispatch_age_s":16,"harvest_age_s":26,"label_age_s":339,"forecast_age_s":3,"stderr":{"probe":0,"dispatch":0,"harvest":0,"label":0,"forecast":0,"total":0},"anom_last":2,"anom_sum_1h":100}
+{"ts":"2026-04-14T10:57:19Z","probe_age_s":29,"dispatch_age_s":39,"harvest_age_s":49,"label_age_s":2,"forecast_age_s":26,"stderr":{"probe":0,"dispatch":0,"harvest":0,"label":0,"forecast":0,"total":0},"anom_last":2,"anom_sum_1h":100}
+{"ts":"2026-04-14T11:27:19Z","probe_age_s":46,"dispatch_age_s":10,"harvest_age_s":47,"label_age_s":277,"forecast_age_s":717,"stderr":{"probe":0,"dispatch":0,"harvest":0,"label":0,"forecast":0,"total":0},"anom_last":1,"anom_sum_1h":96}
+{"ts":"2026-04-14T12:22:43Z","probe_age_s":1588,"dispatch_age_s":18,"harvest_age_s":1630,"label_age_s":1776,"forecast_age_s":4041,"stderr":{"probe":0,"dispatch":0,"harvest":0,"label":0,"forecast":0,"total":0},"anom_last":3,"anom_sum_1h":64}

@@ -2,27 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- 부팅 시 1회 실행 → nohup daemon 으로 compute-tick / remote-load 기동.
+         daemon 의 실제 수명은 nohup 자식이 담당. launchd 는 trigger 로만 관여. -->
     <key>Label</key>
-    <string>com.airgenome.menubar</string>
+    <string>com.airgenome.daemons</string>
 
-    <!-- 2026-04-14: launchd 가 binary 직접 호출 시 2초 내 unload 되는 현상 (원인 미파악).
-         `open -a` 로 Aqua 에 위임하면 안정적. KeepAlive 제거 — open 은 1회 exec 후 exit,
-         Airgenome 은 Aqua 세션이 유지. 재시작은 RunAtLoad(로그인) 또는 수동. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/open</string>
-        <string>-a</string>
-        <string>/Applications/Airgenome.app</string>
+        <string>/bin/bash</string>
+        <string>/Users/ghost/Dev/airgenome/bin/daemons_start.sh</string>
     </array>
 
     <key>RunAtLoad</key>
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/menubar.stdout.log</string>
-
+    <string>/Users/ghost/.airgenome/daemons.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/menubar.stderr.log</string>
+    <string>/Users/ghost/.airgenome/daemons.stderr.log</string>
 
     <key>WorkingDirectory</key>
     <string>/Users/ghost/Dev/airgenome</string>
@@ -33,8 +30,6 @@
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
         <key>HOME</key>
         <string>/Users/ghost</string>
-        <key>LANG</key>
-        <string>en_US.UTF-8</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
