@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ghost/Dev/airgenome/build/artifacts/airgenome-menubar</string>
+        <string>/Applications/Airgenome.app/Contents/MacOS/Airgenome</string>
     </array>
 
     <key>RunAtLoad</key>
