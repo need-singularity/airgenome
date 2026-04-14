@@ -63,21 +63,33 @@ fn read_dispatch_compute() -> str {
 }
 
 fn main() -> void {
-    // 1. NSApp + accessory policy (no dock icon)
+    // 1. NSApp + accessory policy (no dock icon) + explicit activation + finishLaunching
+    //    macOS 11+ NSStatusItem 은 finishLaunching 후에야 등록됨.
     let app = msg0(cls("NSApplication"), sel("sharedApplication"))
     msg_int(app, sel("setActivationPolicy:"), 1)
+    msg_int(app, sel("activateIgnoringOtherApps:"), 1)
+    msg0(app, sel("finishLaunching"))
 
     // 2. status bar + variable-length status item
     let bar = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
     let item = msg_float(bar, sel("statusItemWithLength:"), -1.0)
 
     // 3. initial title — throttle level + dispatch best compute host
+    //    modern macOS: NSStatusItem.button.title (button property API)
+    //    legacy fallback: NSStatusItem.title (여전히 지원하나 button 경로 우선)
     let lvl = read_throttle_level()
     let host = read_dispatch_compute()
-    let title = "⬡ " + lvl + " ▸ " + host
-    msg1(item, sel("setTitle:"), nsstr(title))
+    let title_str = "⬡ " + lvl + " ▸ " + host
+    let ns_title = nsstr(title_str)
 
-    println("airgenome menubar running: " + title)
+    let button = msg0(item, sel("button"))
+    if button != 0 {
+        msg1(button, sel("setTitle:"), ns_title)
+    }
+    // 방어적: 과거 API 도 동시 호출
+    msg1(item, sel("setTitle:"), ns_title)
+
+    println("airgenome menubar running: " + title_str)
     println("(quit via launchctl bootout or SIGTERM)")
 
     // 4. enter Cocoa run loop — keeps the app + status item alive
