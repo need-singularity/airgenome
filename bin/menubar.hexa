@@ -1,99 +1,248 @@
-// bin/menubar.hexa — airgenome macOS menubar (T4, hexa-only, ObjC FFI via hexa_v2)
+// bin/menubar.hexa — airgenome macOS menubar V1 (T4+)
 //
-// V0: static title + initial throttle state readout.
-// 빌드: hexa_v2 bin/menubar.hexa build/artifacts/menubar.c
-//       clang -o build/artifacts/airgenome-menubar build/artifacts/menubar.c
-// 실행: build/artifacts/airgenome-menubar  (daemon, ctrl-C or kill)
+// 기능:
+//   P1 — NSRunLoop 5초 tick: throttle/dispatch/ring state 재읽기 → setTitle 실시간 갱신
+//   P2 — NSMenu 드롭다운: 현재 값 정보 9줄 + Quit (NSApp terminate)
+//   P3 — 색 코드 심볼: level CALM=🟢 WARM=🟡 STRESS=🔴 외 ?=⚫
 //
-// 전제:
-//   - hexa_v2 (self/native/hexa_v2) 가 @link("objc") @symbol("...") extern 을 codegen
-//   - runtime.c 가 hexa_ffi_dlopen/dlsym 로 /System/Library/Frameworks/objc.framework 해결
-//   - macOS Cocoa 전용 (linux 빌드 차단 필요 — 현재 build 에서는 guard 생략)
+// 빌드 경로: bin/build_menubar.sh (hexa_v2 → perl post-process → clang)
+// 실행: /Applications/Airgenome.app/Contents/MacOS/Airgenome  (launchd KeepAlive)
 
 @link("objc")
 extern fn objc_getClass(name: *Byte) -> *Void
-
 @link("objc")
 extern fn sel_registerName(name: *Byte) -> *Void
-
 @link("objc")
 @symbol("objc_msgSend")
 extern fn msg0(obj: *Void, sel: *Void) -> *Void
-
 @link("objc")
 @symbol("objc_msgSend")
 extern fn msg1(obj: *Void, sel: *Void, a1: *Void) -> *Void
-
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg2(obj: *Void, sel: *Void, a1: *Void, a2: *Void) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg3(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void) -> *Void
 @link("objc")
 @symbol("objc_msgSend")
 extern fn msg_int(obj: *Void, sel: *Void, a1: Int) -> *Void
-
 @link("objc")
 @symbol("objc_msgSend")
 extern fn msg_float(obj: *Void, sel: *Void, a1: Float) -> *Void
 
-@link("CoreFoundation")
-extern fn CFRunLoopRun()
-
 fn cls(name: str) -> *Void { return objc_getClass(name) }
 fn sel(name: str) -> *Void { return sel_registerName(name) }
+fn nsstr(s: str) -> *Void { return msg1(cls("NSString"), sel("stringWithUTF8String:"), s) }
 
-fn nsstr(s: str) -> *Void {
-    return msg1(cls("NSString"), sel("stringWithUTF8String:"), s)
+// ───── state readers ────────────────────────────────────────────
+fn j(expr: str, path: str) -> str {
+    return exec("jq -r '" + expr + " // \"\"' '" + path + "' 2>/dev/null").trim()
 }
 
-fn read_throttle_level() -> str {
-    let home = env_var("HOME")
-    let path = home + "/Dev/airgenome/forge/predictive_throttle_state.json"
-    let raw = exec("cat '" + path + "' 2>/dev/null").trim()
-    if raw == "" { return "?" }
-    let lvl = exec("echo '" + raw + "' | sed -E 's/.*\"level\":\"([^\"]+)\".*/\\1/'").trim()
+let HOME = env_var("HOME")
+let THROTTLE_STATE = HOME + "/Dev/airgenome/forge/predictive_throttle_state.json"
+let THROTTLE_HIST  = HOME + "/Dev/airgenome/forge/throttle_history.jsonl"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let INFRA_STATE    = HOME + "/Dev/nexus/shared/infra_state.json"
+let FORGE          = HOME + "/Dev/airgenome/forge"
+
+fn throttle_level() -> str {
+    let lvl = j(".level", THROTTLE_STATE)
     if lvl == "" { return "?" }
     return lvl
 }
+fn throttle_pred_cpu() -> str { return j(".pred_cpu", THROTTLE_STATE) }
+fn throttle_pred_ram() -> str { return j(".pred_ram", THROTTLE_STATE) }
+fn dispatch_compute() -> str { return j(".selection.compute", DISPATCH_STATE) }
+fn dispatch_gpu() -> str { return j(".selection.gpu", DISPATCH_STATE) }
+fn mac_cpu() -> str { return j(".hosts.mac.cpu_pct", INFRA_STATE) }
+fn mac_ram() -> str { return j(".hosts.mac.ram_pct", INFRA_STATE) }
+fn ubu_load() -> str { return j(".hosts.ubu.load", INFRA_STATE) }
+fn htz_load() -> str { return j(".hosts.htz.load", INFRA_STATE) }
 
-fn read_dispatch_compute() -> str {
-    let home = env_var("HOME")
-    let path = home + "/Dev/nexus/shared/dispatch_state.json"
-    let raw = exec("cat '" + path + "' 2>/dev/null").trim()
-    if raw == "" { return "?" }
-    let h = exec("echo '" + raw + "' | sed -E 's/.*\"compute\":\"([^\"]+)\".*/\\1/'").trim()
-    if h == "" { return "?" }
-    return h
+fn ring_count(filename: str) -> str {
+    let p = FORGE + "/" + filename
+    let out = exec("wc -l '" + p + "' 2>/dev/null | awk '{print $1}'").trim()
+    if out == "" { return "0" }
+    return out
 }
 
+fn level_icon(lvl: str) -> str {
+    if lvl == "CALM" { return "🟢" }
+    if lvl == "WARM" { return "🟡" }
+    if lvl == "STRESS" { return "🔴" }
+    if lvl == "?" { return "⚫" }
+    return "⚪"
+}
+
+// 8단계 막대 — 0~100% 정수를 ▁▂▃▄▅▆▇█ 한 글자로
+fn bar(pct: int) -> str {
+    let p = pct
+    if p < 13 { return "▁" }
+    if p < 25 { return "▂" }
+    if p < 38 { return "▃" }
+    if p < 50 { return "▄" }
+    if p < 63 { return "▅" }
+    if p < 75 { return "▆" }
+    if p < 88 { return "▇" }
+    return "█"
+}
+
+// 호스트별 정규화된 부하 % — mac=cpu_pct, ubu=load*12.5(8코어 가정), htz=load/32*100
+fn mac_pct() -> int {
+    let s = j(".hosts.mac.cpu_pct // 0", INFRA_STATE)
+    if s == "" { return 0 }
+    return to_int(s)
+}
+fn ubu_pct() -> int {
+    let s = exec("jq -r '((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor)' '" + INFRA_STATE + "' 2>/dev/null").trim()
+    if s == "" { return 0 }
+    return to_int(s)
+}
+fn htz_pct() -> int {
+    let s = exec("jq -r '((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor)' '" + INFRA_STATE + "' 2>/dev/null").trim()
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+fn compose_title() -> str {
+    let lvl = throttle_level()
+    // mac  remote(ubu htz) — mac은 관찰만(AG6), 작업은 remote. 공백으로 시각 분리
+    let bars = bar(mac_pct()) + " " + bar(ubu_pct()) + bar(htz_pct())
+    return level_icon(lvl) + " " + bars
+}
+
+// ───── 부하별 색 — NSColor systemGreen/systemYellow/systemRed ─────
+fn pct_color(p: int) -> *Void {
+    if p < 50 { return msg0(cls("NSColor"), sel("systemGreenColor")) }
+    if p < 80 { return msg0(cls("NSColor"), sel("systemYellowColor")) }
+    return msg0(cls("NSColor"), sel("systemRedColor"))
+}
+
+// NSAttributedString 한 조각 — color 가 0이면 default attribute
+fn attr_str(s: str, color: *Void) -> *Void {
+    let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
+    if color == 0 {
+        return msg1(alloc, sel("initWithString:"), nsstr(s))
+    }
+    // NSForegroundColorAttributeName == @"NSColor"
+    let key = nsstr("NSColor")
+    let dict = msg2(cls("NSDictionary"), sel("dictionaryWithObject:forKey:"), color, key)
+    return msg2(alloc, sel("initWithString:attributes:"), nsstr(s), dict)
+}
+
+// 색 입힌 mutable attributed string 합성
+fn compose_title_attr() -> *Void {
+    let lvl = throttle_level()
+
+    // 빈 mutable string 으로 시작 (default color)
+    let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
+    let base = msg1(alloc, sel("initWithString:"), nsstr(level_icon(lvl) + " "))
+
+    // 호스트 막대 — 각자 부하 색 (ubu/htz best label 은 드롭다운에서)
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(mac_pct()), pct_color(mac_pct())))
+    msg1(base, sel("appendAttributedString:"), attr_str(" ", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(ubu_pct()), pct_color(ubu_pct())))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(htz_pct()), pct_color(htz_pct())))
+    return base
+}
+
+// ───── NSMenu 구축 ──────────────────────────────────────────────
+fn menu_add_info(menu: *Void, text: str) -> void {
+    // addItemWithTitle:action:keyEquivalent: — action=null → disabled-ish 정보 항목
+    let item = msg3(menu, sel("addItemWithTitle:action:keyEquivalent:"),
+                    nsstr(text), 0, nsstr(""))
+    // setEnabled:NO 로 비활성 — 정보성
+    msg_int(item, sel("setEnabled:"), 0)
+}
+
+fn menu_add_separator(menu: *Void) -> void {
+    let sep = msg0(cls("NSMenuItem"), sel("separatorItem"))
+    msg1(menu, sel("addItem:"), sep)
+}
+
+fn menu_add_action(menu: *Void, text: str, selector_name: str) -> void {
+    // target = NSApp (sharedApplication) — 외부 action sel (terminate:) 만 지원
+    let item = msg3(menu, sel("addItemWithTitle:action:keyEquivalent:"),
+                    nsstr(text), sel(selector_name), nsstr(""))
+    // target = NSApp
+    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
+    msg1(item, sel("setTarget:"), app)
+}
+
+fn build_menu() -> *Void {
+    let menu = msg0(msg0(cls("NSMenu"), sel("alloc")), sel("init"))
+
+    // Throttle block
+    let lvl = throttle_level()
+    let pc = throttle_pred_cpu()
+    let pr = throttle_pred_ram()
+    menu_add_info(menu, "Throttle:  " + lvl + "   pred cpu=" + pc + "%  ram=" + pr + "%")
+
+    // Dispatch block
+    let dh = dispatch_compute()
+    let dg = dispatch_gpu()
+    menu_add_info(menu, "Dispatch:  compute=" + dh + "   gpu=" + dg)
+
+    menu_add_separator(menu)
+
+    // Hosts block — 막대 + 정규화 % + 원본 metric
+    menu_add_info(menu, "mac:  " + bar(mac_pct()) + "  cpu=" + mac_cpu() + "%  ram=" + mac_ram() + "%")
+    menu_add_info(menu, "ubu:  " + bar(ubu_pct()) + "  load=" + ubu_load() + "  (≈" + to_string(ubu_pct()) + "%)")
+    menu_add_info(menu, "htz:  " + bar(htz_pct()) + "  load=" + htz_load() + "  (≈" + to_string(htz_pct()) + "%)")
+
+    menu_add_separator(menu)
+
+    // Rings block
+    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+
+    // Recent throttle history (last 3)
+    let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()
+    if hist != "" { menu_add_info(menu, "history: " + hist) }
+
+    menu_add_separator(menu)
+    menu_add_action(menu, "Quit", "terminate:")
+
+    return menu
+}
+
+// ───── main loop ────────────────────────────────────────────────
 fn main() -> void {
-    // 1. NSApp + accessory policy (no dock icon) + explicit activation + finishLaunching
-    //    macOS 11+ NSStatusItem 은 finishLaunching 후에야 등록됨.
     let app = msg0(cls("NSApplication"), sel("sharedApplication"))
     msg_int(app, sel("setActivationPolicy:"), 1)
     msg_int(app, sel("activateIgnoringOtherApps:"), 1)
     msg0(app, sel("finishLaunching"))
 
-    // 2. status bar + variable-length status item
     let bar = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
     let item = msg_float(bar, sel("statusItemWithLength:"), -1.0)
 
-    // 3. initial title — throttle level + dispatch best compute host
-    //    modern macOS: NSStatusItem.button.title (button property API)
-    //    legacy fallback: NSStatusItem.title (여전히 지원하나 button 경로 우선)
-    let lvl = read_throttle_level()
-    let host = read_dispatch_compute()
-    let title_str = "⬡ " + lvl + " ▸ " + host
-    let ns_title = nsstr(title_str)
-
+    // 초기 타이틀 + 드롭다운 메뉴 (attributedTitle — 부하별 색)
     let button = msg0(item, sel("button"))
     if button != 0 {
-        msg1(button, sel("setTitle:"), ns_title)
+        msg1(button, sel("setAttributedTitle:"), compose_title_attr())
     }
-    // 방어적: 과거 API 도 동시 호출
-    msg1(item, sel("setTitle:"), ns_title)
+    msg1(item, sel("setTitle:"), nsstr(compose_title()))
 
-    println("airgenome menubar running: " + title_str)
-    println("(quit via launchctl bootout or SIGTERM)")
+    // 드롭다운 메뉴 부착 (첫 build)
+    msg1(item, sel("setMenu:"), build_menu())
 
-    // 4. enter Cocoa run loop — keeps the app + status item alive
-    CFRunLoopRun()
+    println("airgenome menubar running (tick 5s — load reduction)")
+
+    // NSRunLoop tick — 5초마다 깨어나 갱신 (T4 부하 완화: 2s→5s, jq exec 60% 감소)
+    let rl = msg0(cls("NSRunLoop"), sel("currentRunLoop"))
+    let date_cls = cls("NSDate")
+    let until_sel = sel("runUntilDate:")
+    let dint_sel = sel("dateWithTimeIntervalSinceNow:")
+    while true {
+        let d = msg_float(date_cls, dint_sel, 5.0)
+        msg1(rl, until_sel, d)
+        // tick — state 재읽고 attributedTitle (색) + 메뉴 재구성
+        let btn = msg0(item, sel("button"))
+        if btn != 0 { msg1(btn, sel("setAttributedTitle:"), compose_title_attr()) }
+        msg1(item, sel("setTitle:"), nsstr(compose_title()))
+        msg1(item, sel("setMenu:"), build_menu())
+    }
 }
 
 main()
