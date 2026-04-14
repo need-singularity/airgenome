@@ -12,7 +12,7 @@
 //   airgenome menubar        — Mac menubar 부활 (T4)
 //   airgenome watch [sec]    — terminal HUD (status 초단위 refresh, 기본 2초)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
-//   airgenome install        — 5 launchagent + ring-sync + throttle bootstrap
+//   airgenome install [mode] — mode=all|mac-safe. mac-safe=ring-sync+throttle (AG6)
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
 //   airgenome self-test      — 모든 module self-test 일괄
 //   airgenome help           — 사용법
@@ -29,6 +29,13 @@ let AGENT_LABELS = [
     "com.airgenome.harvest",
     "com.airgenome.label",
     "com.airgenome.forecast",
+    "com.airgenome.ring-sync",
+    "com.airgenome.predictive-throttle"
+]
+
+// Mac-safe subset — AG6 Mac Compute ZERO 준수. ring-sync (remote pull) + predictive-throttle (자가보호) 만.
+// 나머지 (harvest/label/forecast/dispatch/probe) 는 ubu/htz 에서 실행해야 함.
+let MAC_SAFE_AGENTS = [
     "com.airgenome.ring-sync",
     "com.airgenome.predictive-throttle"
 ]
@@ -87,7 +94,7 @@ fn cmd_status() -> void {
     if st == "" { println("  (no state)") } else { println("  " + st) }
 }
 
-fn cmd_install() -> void {
+fn install_set(labels: [str], label: str) -> void {
     let src_dir = airgenome_root() + "/shared/launchagents"
     let dst_dir = env("HOME") + "/Library/LaunchAgents"
     let log_dir = env("HOME") + "/.airgenome"
@@ -95,23 +102,33 @@ fn cmd_install() -> void {
 
     let mut i = 0
     let mut installed = 0
-    while i < len(AGENT_LABELS) {
-        let label = AGENT_LABELS[i]
-        let src = src_dir + "/" + label + ".plist"
+    while i < len(labels) {
+        let name = labels[i]
+        let src = src_dir + "/" + name + ".plist"
         let chk = exec("[ -f '" + src + "' ] && echo y || echo n").trim()
         if chk == "y" {
-            let dst = dst_dir + "/" + label + ".plist"
+            let dst = dst_dir + "/" + name + ".plist"
             let _ = exec("cp '" + src + "' '" + dst + "'")
-            let _ = exec("launchctl bootout gui/$(id -u)/" + label + " 2>/dev/null || true")
+            let _ = exec("launchctl bootout gui/$(id -u)/" + name + " 2>/dev/null || true")
             let _ = exec("launchctl bootstrap gui/$(id -u) '" + dst + "' 2>/dev/null || true")
-            println("[install] " + label)
+            println("[install] " + name)
             installed = installed + 1
         } else {
-            println("[skip]    " + label + " — plist missing")
+            println("[skip]    " + name + " — plist missing")
         }
         i = i + 1
     }
-    println("⬡ installed " + to_string(installed) + " / " + to_string(len(AGENT_LABELS)) + " agents")
+    println("⬡ " + label + " — installed " + to_string(installed) + " / " + to_string(len(labels)) + " agents")
+}
+
+fn cmd_install(mode: str) -> void {
+    if mode == "mac-safe" {
+        println("⬡ airgenome install mac-safe (AG6 준수: ring-sync + predictive-throttle only)")
+        install_set(MAC_SAFE_AGENTS, "mac-safe")
+    } else {
+        println("⬡ airgenome install all (전 7개 LaunchAgent — AG6 주의: Mac heavy compute 유발 가능)")
+        install_set(AGENT_LABELS, "all")
+    }
 }
 
 fn cmd_uninstall() -> void {
@@ -183,7 +200,8 @@ fn print_help() -> void {
     println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
     println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  status              launchd + ring + state 한눈에")
-    println("  install             7 LaunchAgent bootstrap")
+    println("  install [mode]      LaunchAgent bootstrap — mode=all|mac-safe (기본 all)")
+    println("                      mac-safe: ring-sync + predictive-throttle만 (AG6 준수)")
     println("  uninstall           7 LaunchAgent bootout + plist 제거")
     println("  self-test           모든 module self-test 일괄")
     println("  help                이 도움말")
@@ -202,7 +220,12 @@ fn main() -> void {
     let sub = a[2]
     if sub == "help" { print_help(); return }
     if sub == "status" { cmd_status(); return }
-    if sub == "install" { cmd_install(); return }
+    if sub == "install" {
+        let mut mode = "all"
+        if len(a) >= 4 { mode = a[3] }
+        cmd_install(mode)
+        return
+    }
     if sub == "uninstall" { cmd_uninstall(); return }
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
