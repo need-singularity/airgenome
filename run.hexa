@@ -10,6 +10,7 @@
 //   airgenome merge          — modules/genome_merge.hexa
 //   airgenome throttle       — modules/predictive_throttle.hexa (Mac 보호)
 //   airgenome menubar        — Mac menubar 부활 (T4)
+//   airgenome watch [sec]    — terminal HUD (status 초단위 refresh, 기본 2초)
 //   airgenome status         — launchd + ring 파일 + state 한눈에
 //   airgenome install        — 5 launchagent + ring-sync + throttle bootstrap
 //   airgenome uninstall      — 모든 com.airgenome.* bootout
@@ -150,6 +151,24 @@ fn cmd_menubar() -> void {
     let _ = exec(hexa_bin() + " run '" + path + "' 2>&1")
 }
 
+// cmd_watch — terminal HUD. cmd_status() 를 interval 초마다 clear 후 재출력.
+// menubar 의 90% 효과 (실시간 visibility) 를 hexa-only 로 즉시 제공.
+fn cmd_watch(interval_s: int) -> void {
+    let sec = if interval_s < 1 { 2 } else { interval_s }
+    let sleep_cmd = "sleep " + to_string(sec)
+    // ANSI CSI 2J(clear)+H(home). hexa-lang 문자열은 \x1b 를 해석하지 않아 printf 로 생성.
+    let clear_seq = exec("printf '\\033[2J\\033[H'")
+    while true {
+        print(clear_seq)
+        let ts = exec("date '+%Y-%m-%d %H:%M:%S %Z'").trim()
+        let load = exec("uptime | sed 's/.*load average[s]*: //'").trim()
+        println("⬡ airgenome watch — " + ts + "  (refresh " + to_string(sec) + "s, ctrl-C to exit)")
+        println("  load: " + load)
+        cmd_status()
+        let _ = exec(sleep_cmd)
+    }
+}
+
 fn print_help() -> void {
     println("airgenome — OS hexagon genome scanner")
     println("")
@@ -162,6 +181,7 @@ fn print_help() -> void {
     println("  merge               modules/genome_merge.hexa")
     println("  throttle            modules/predictive_throttle.hexa (Mac 보호)")
     println("  menubar             Mac menubar (T4 — archive/v1/menubar.hexa 부활 중)")
+    println("  watch [sec]         terminal HUD — status 초단위 refresh (기본 2초)")
     println("  status              launchd + ring + state 한눈에")
     println("  install             7 LaunchAgent bootstrap")
     println("  uninstall           7 LaunchAgent bootout + plist 제거")
@@ -186,6 +206,12 @@ fn main() -> void {
     if sub == "uninstall" { cmd_uninstall(); return }
     if sub == "self-test" { cmd_self_test_all(); return }
     if sub == "menubar" { cmd_menubar(); return }
+    if sub == "watch" {
+        let mut ival = 2
+        if len(a) >= 4 { ival = to_int(a[3]) }
+        cmd_watch(ival)
+        return
+    }
     if sub == "harvest" { let _ = run_module("harvest"); return }
     if sub == "label" { let _ = run_module("label"); return }
     if sub == "forecast" { let _ = run_module("forecast"); return }
