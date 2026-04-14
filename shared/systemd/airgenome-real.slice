@@ -1,0 +1,12 @@
+[Unit]
+Description=airgenome real workload (high priority)
+Documentation=https://github.com/anthropics/airgenome docs R4 slice 격리
+Before=airgenome-stress.slice airgenome-bkgnd.slice
+
+[Slice]
+# 기본 CPUWeight=100. 1000 → 경쟁 시 stress(10) 대비 100× 우선
+CPUWeight=1000
+IOWeight=200
+# 기본 compacting 활성. hexa run 메모리 과다 시 소프트 압박
+MemoryHigh=80%
+TasksMax=2048
