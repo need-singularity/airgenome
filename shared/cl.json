@@ -92,7 +92,7 @@
       "location": "환경 의존 — ~/.zshrc state / TTY lock / alias shadowing 가능성",
       "fix": {
         "status": "WORKAROUND",
-        "approach": "`env -i HOME=$HOME PATH=$PATH ~/Dev/airgenome/cl` — 클린 env 로 정상 동작. 새 `cl` 은 bash 소스링 제거 → 재현 확인 필요."
+        "approach": "`env -i HOME=$HOME PATH=$PATH $AIRGENOME/cl` — 클린 env 로 정상 동작. 새 `cl` 은 bash 소스링 제거 → 재현 확인 필요."
       }
     },
     {

@@ -27,7 +27,7 @@ cl                     # claude wrapper
 hexa run core/test/core_test.hexa
 
 # L0 verify (전 섹션 — 파일 존재 + CODEOWNERS + 브랜치 보호 + parse)
-hexa run ~/Dev/nexus/shared/harness/l0_guard.hexa verify
+hexa run $NEXUS/shared/harness/l0_guard.hexa verify
 
 # probe — Mac+ubu+htz vitals → nexus/shared/infra_state.json (M2)
 hexa run modules/probe.hexa self-test

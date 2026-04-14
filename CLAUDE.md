@@ -15,16 +15,16 @@ invariants (shared/config/roadmap/airgenome.json#invariants):
 - roadmap.json 의 milestones 에 없는 코드는 작성 금지
 
 commands: shared/config/commands.json — autonomous 블록으로 Claude Code가 작업 중 smash/free/todo/go/keep 자율 판단·실행
-rules: ~/Dev/nexus/shared/rules/common.json (R0~R32) + ~/Dev/nexus/shared/rules/airgenome.json (AG1~AG9)
-L0 Guard: `hexa ~/Dev/nexus/shared/harness/l0_guard.hexa <verify|sync|merge|status>`
-loop: 글로벌 `~/.claude/skills/loop` + 엔진 `~/Dev/nexus/shared/harness/loop` — roadmap `~/Dev/nexus/shared/roadmaps/airgenome.json` 3-track×phase×gate 자동
+rules: $NEXUS/shared/rules/common.json (R0~R32) + $NEXUS/shared/rules/airgenome.json (AG1~AG9)
+L0 Guard: `hexa $NEXUS/shared/harness/l0_guard.hexa <verify|sync|merge|status>`
+loop: 글로벌 `~/.claude/skills/loop` + 엔진 `$NEXUS/shared/harness/loop` — roadmap `$NEXUS/shared/roadmaps/airgenome.json` 3-track×phase×gate 자동
 
 ref:
   roadmap   shared/config/roadmap/airgenome.json        rebuild v2 SSOT
-  rules     ~/Dev/nexus/shared/rules/common.json        R0~R32
-  project   ~/Dev/nexus/shared/rules/airgenome.json     AG1~AG9
-  lock      ~/Dev/nexus/shared/lockdown/lockdown.json   L0/L1/L2
-  cdo       ~/Dev/nexus/shared/rules/convergence_ops.json  CDO 수렴
+  rules     $NEXUS/shared/rules/common.json        R0~R32
+  project   $NEXUS/shared/rules/airgenome.json     AG1~AG9
+  lock      $NEXUS/shared/lockdown/lockdown.json   L0/L1/L2
+  cdo       $NEXUS/shared/rules/convergence_ops.json  CDO 수렴
   conv      nexus/shared/airgenome_convergence_*.jsonl
   gates     nexus/shared/gate_config.jsonl              HEXA-GATE 동적
-  api       ~/Dev/nexus/shared/CLAUDE.md
+  api       $NEXUS/shared/CLAUDE.md

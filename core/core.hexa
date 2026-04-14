@@ -271,7 +271,7 @@ fn init_default_guard() -> AdaptiveThrottle {
 //  RUNTIME PATHS — env("AIRGENOME_ROOT") override 지원
 //
 //  목적: harvest/label/forecast/genome_merge 의 hardcoded
-//        "$HOME/Dev/airgenome/forge/..." 경로를 함수로 통일.
+//        "$AIRGENOME/forge/..." 경로를 함수로 통일.
 //        AIRGENOME_ROOT 미설정 시 기존 동작 보존 (회귀 0).
 // ═══════════════════════════════════════════════════════════════════════
 

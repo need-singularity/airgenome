@@ -336,7 +336,7 @@
       "deps": ["M11c_genome_merge"],
       "exit_criteria": [
         "core/core.hexa — airgenome_root() / forge_dir() / ring_path() helper 추가",
-        "AIRGENOME_ROOT 환경변수로 root override 지원 (미설정 시 $HOME/Dev/airgenome 폴백)",
+        "AIRGENOME_ROOT 환경변수로 root override 지원 (미설정 시 $AIRGENOME 폴백)",
         "harvest/label/forecast/genome_merge — hardcoded 경로 제거, helper 호출로 교체",
         "Mac + ubu + htz 모두 self-test PASS (회귀 0)",
         "ubu/htz 재배포 후 60s 이상 harvest 무중단 확인"

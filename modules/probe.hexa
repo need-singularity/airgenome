@@ -3,7 +3,7 @@
 // 책임:
 //   1. Mac: core.sample() 로 self vitals 수집
 //   2. ubu/htz: ssh 5s timeout CSV 수집
-//   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신
+//   3. $NEXUS/shared/infra_state.json 원자적 갱신
 //   4. self_test() — L0 parse-check + runtime smoke
 //
 // 제약:

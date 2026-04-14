@@ -3,7 +3,7 @@
 # 산출: build/Airgenome.app (menubar 단일 바이너리 담은 Cocoa accessory app)
 set -euo pipefail
 
-ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
+ROOT="${AIRGENOME_ROOT:-${AIRGENOME:-$HOME/Dev/airgenome}}"
 BUILD="$ROOT/build"
 APP="$BUILD/Airgenome.app"
 BIN_SRC="$ROOT/build/artifacts/airgenome-menubar"

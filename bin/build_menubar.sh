@@ -3,9 +3,9 @@
 # 산출: build/artifacts/airgenome-menubar (static, dlopen objc framework)
 set -euo pipefail
 
-ROOT="${AIRGENOME_ROOT:-$HOME/Dev/airgenome}"
-HXV2="$HOME/Dev/hexa-lang/self/native/hexa_v2"
-RUNTIME="$HOME/Dev/hexa-lang/self/runtime.c"
+ROOT="${AIRGENOME_ROOT:-${AIRGENOME:-$HOME/Dev/airgenome}}"
+HXV2="${HEXA_LANG:-$HOME/Dev/hexa-lang}/self/native/hexa_v2"
+RUNTIME="${HEXA_LANG:-$HOME/Dev/hexa-lang}/self/runtime.c"
 SRC="$ROOT/bin/menubar.hexa"
 ART="$ROOT/build/artifacts"
 OUT_C="$ART/menubar.c"

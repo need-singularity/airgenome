@@ -20,7 +20,7 @@
 //   airgenome help           — 사용법
 //
 // 환경 변수:
-//   AIRGENOME_ROOT       — 기본 ~/Dev/airgenome (개발 중 fork 시 override)
+//   AIRGENOME_ROOT       — 기본 $AIRGENOME (개발 중 fork 시 override)
 //   AIRGENOME_RING_NAME  — 기본 genomes.ring (unified 시 genomes.unified.ring)
 
 use "core/core"
@@ -243,8 +243,8 @@ fn cmd_remote(host: str, rest: str) -> void {
         return
     }
     let ssh_host = if host == "htz" { "hetzner" } else { host }
-    // ring 경로: forge/genomes.ring — ubu = ~/Dev/airgenome, htz = /root/Dev/airgenome
-    let ring_root = if host == "ubu" { "~/Dev/airgenome" } else { "/root/Dev/airgenome" }
+    // ring 경로: forge/genomes.ring — ubu = $AIRGENOME, htz = /root/Dev/airgenome
+    let ring_root = if host == "ubu" { "$AIRGENOME" } else { "/root/Dev/airgenome" }
     // modules 경로: 원격 deploy 구조가 다름 — ubu = ~/airgenome-v2, htz = /root/Dev/airgenome
     let module_root = if host == "ubu" { "~/airgenome-v2" } else { "/root/Dev/airgenome" }
 
@@ -268,7 +268,7 @@ fn cmd_remote(host: str, rest: str) -> void {
     let module_path = module_root + "/modules/" + module_name + ".hexa"
 
     // 원격 hexa resolver (non-interactive ssh shell PATH 없음)
-    let hexa_resolver = "HEXA=\"\"; for c in \\$HOME/Dev/nexus/shared/bin/hexa /tmp/hexa-build/hexa-lang/target/release/hexa /root/Dev/nexus/shared/bin/hexa; do [ -x \\\"\\$c\\\" ] && HEXA=\\\"\\$c\\\" && break; done; [ -n \\\"\\$HEXA\\\" ] || { echo 'remote: hexa not found' >&2; exit 1; }; "
+    let hexa_resolver = "HEXA=\"\"; for c in \\$NEXUS/shared/bin/hexa /tmp/hexa-build/hexa-lang/target/release/hexa /root/Dev/nexus/shared/bin/hexa; do [ -x \\\"\\$c\\\" ] && HEXA=\\\"\\$c\\\" && break; done; [ -n \\\"\\$HEXA\\\" ] || { echo 'remote: hexa not found' >&2; exit 1; }; "
     let remote_cmd = "cd " + module_root + " && " + hexa_resolver + " \\$HEXA run " + module_path + mod_args
     println("⬡ remote " + ssh_host + " " + module_name + mod_args)
     println("---")
@@ -481,7 +481,7 @@ fn print_help() -> void {
     println("  help                이 도움말")
     println("")
     println("env:")
-    println("  AIRGENOME_ROOT       (기본 ~/Dev/airgenome)")
+    println("  AIRGENOME_ROOT       (기본 $AIRGENOME)")
     println("  AIRGENOME_RING_NAME  (기본 genomes.ring; unified 시 genomes.unified.ring)")
 }
 
