@@ -1,0 +1,6 @@
+# airgenome predictive_throttle 보호 LaunchAgent 화이트리스트
+# 한 줄에 launchctl label 하나. 여기 적힌 agent 는 throttle 시 bootout 안 됨.
+# 표준 protection: ring-sync (cross-host harvest 수신) + dispatch (AG7 본체)
+com.airgenome.ring-sync
+com.airgenome.dispatch
+com.airgenome.predictive-throttle

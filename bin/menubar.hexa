@@ -1,0 +1,566 @@
+// bin/menubar.hexa — airgenome macOS menubar V3 (Phase 0 + Phase A)
+//
+// V2 (T4+): P0 bugfix + P1 stale/suffix/notify/sparkline
+// V3 추가:
+//   [Phase 0]  config SSOT — ~/.airgenome/menubar_config.json 이 모든 튜닝값의 단일 진실
+//   [Phase A]  tick 당 config mtime 감시 → 변경시 auto-reload (재시작 없이)
+//              최초 실행 시 defaults 생성 + TextEdit 자동 오픈
+//              dropdown 에 config 경로 힌트 라인
+//
+// 빌드 경로: bin/build_menubar.sh (hexa_v2 → perl post-process → clang)
+// 실행: /Applications/Airgenome.app/Contents/MacOS/Airgenome  (launchd KeepAlive)
+
+@link("objc")
+extern fn objc_getClass(name: *Byte) -> *Void
+@link("objc")
+extern fn sel_registerName(name: *Byte) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg0(obj: *Void, sel: *Void) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg1(obj: *Void, sel: *Void, a1: *Void) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg2(obj: *Void, sel: *Void, a1: *Void, a2: *Void) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg3(obj: *Void, sel: *Void, a1: *Void, a2: *Void, a3: *Void) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_int(obj: *Void, sel: *Void, a1: Int) -> *Void
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_float(obj: *Void, sel: *Void, a1: Float) -> *Void
+// 4-arg variant for nextEventMatchingMask:untilDate:inMode:dequeue:
+// NSEventMask 와 BOOL 은 int64 로 통일 — ARM64 ABI 에서 모두 x-register
+@link("objc")
+@symbol("objc_msgSend")
+extern fn msg_pump(obj: *Void, sel: *Void, mask: Int, date: *Void, mode: *Void, deq: Int) -> *Void
+
+fn cls(name: str) -> *Void { return objc_getClass(name) }
+fn sel(name: str) -> *Void { return sel_registerName(name) }
+fn nsstr(s: str) -> *Void { return msg1(cls("NSString"), sel("stringWithUTF8String:"), s) }
+
+let HOME = env_var("HOME")
+let THROTTLE_STATE = HOME + "/Dev/airgenome/forge/predictive_throttle_state.json"
+let THROTTLE_HIST  = HOME + "/Dev/airgenome/forge/throttle_history.jsonl"
+let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let INFRA_STATE    = HOME + "/Dev/nexus/shared/infra_state.json"
+let FORGE          = HOME + "/Dev/airgenome/forge"
+let CONFIG_DIR     = HOME + "/.airgenome"
+let CONFIG_PATH    = HOME + "/.airgenome/menubar_config.json"
+
+// ───── Phase 0: config globals (defaults) ────────────────────────
+// stale_sec 기본값 120 — probe cadence 60s 의 2배 + 버퍼, false positive 방지
+let mut cfg_tick_sec = 5.0
+let mut cfg_color_low = 50
+let mut cfg_color_high = 80
+let mut cfg_stale_sec = 120
+let mut cfg_spark_cap = 12
+let mut cfg_notify_enabled = 1   // 1 = on, 0 = off
+let mut cfg_mtime_cached = 0     // 변경 감지용
+let mut test_mode = 0            // AIRGENOME_MENUBAR_TEST=1 시 1 — menu_add_* 가 stdout 에 로그
+
+// 기본 config JSON 문자열 — 처음 실행시 파일로 write
+fn default_config_json() -> str {
+    return "{\n"
+        + "  \"tick_sec\": 5,\n"
+        + "  \"color_low\": 50,\n"
+        + "  \"color_high\": 80,\n"
+        + "  \"stale_sec\": 120,\n"
+        + "  \"spark_cap\": 12,\n"
+        + "  \"notify_enabled\": true\n"
+        + "}\n"
+}
+
+// ~/.airgenome 디렉토리 + 파일 보장. 새로 만들었으면 true 반환 (최초 실행).
+fn ensure_config_exists() -> bool {
+    let _mk = exec("mkdir -p '" + CONFIG_DIR + "'")
+    if file_exists(CONFIG_PATH) { return false }
+    write_file(CONFIG_PATH, default_config_json())
+    return true
+}
+
+// 한 번의 jq 호출로 6개 필드 TSV 추출
+fn load_config() -> void {
+    let expr = "[.tick_sec // 5, .color_low // 50, .color_high // 80, .stale_sec // 120, .spark_cap // 12, (.notify_enabled // true)] | @tsv"
+    let raw = exec("jq -r '" + expr + "' '" + CONFIG_PATH + "' 2>/dev/null").trim()
+    if raw == "" { return }
+    let p = raw.split("\t")
+    if len(p) < 6 { return }
+
+    let ts_str = p[0]
+    if ts_str != "" {
+        let f = to_float(ts_str)
+        if f >= 1.0 { cfg_tick_sec = f }
+    }
+    let cl_str = p[1]
+    if cl_str != "" { cfg_color_low = to_int(cl_str) }
+    let ch_str = p[2]
+    if ch_str != "" { cfg_color_high = to_int(ch_str) }
+    let ss_str = p[3]
+    if ss_str != "" { cfg_stale_sec = to_int(ss_str) }
+    let sc_str = p[4]
+    if sc_str != "" { cfg_spark_cap = to_int(sc_str) }
+    let ne_str = p[5]
+    if ne_str == "true" { cfg_notify_enabled = 1 }
+    if ne_str == "false" { cfg_notify_enabled = 0 }
+}
+
+// config 파일 mtime — 변경 감지용
+fn config_mtime() -> int {
+    let s = exec("stat -f %m '" + CONFIG_PATH + "' 2>/dev/null || echo 0").trim()
+    if s == "" { return 0 }
+    return to_int(s)
+}
+
+// ───── stale 감지 ────────────────────────────────────────────────
+fn file_age_sec(path: str) -> int {
+    let now = to_int(exec("date +%s").trim())
+    let mt = to_int(exec("stat -f %m '" + path + "' 2>/dev/null || echo 0").trim())
+    if mt == 0 { return 999999 }
+    return now - mt
+}
+
+// ───── jq 배치 스냅샷 ────────────────────────────────────────────
+let mut snap_level = "?"
+let mut snap_pred_cpu = ""
+let mut snap_pred_ram = ""
+let mut snap_compute = ""
+let mut snap_gpu = ""
+let mut snap_mac_cpu = ""
+let mut snap_mac_ram = ""
+let mut snap_mac_pct = 0
+let mut snap_ubu_load = ""
+let mut snap_ubu_pct = 0
+let mut snap_ubu2_load = ""
+let mut snap_ubu2_pct = 0
+let mut snap_htz_load = ""
+let mut snap_htz_pct = 0
+let mut snap_infra_age = 0
+let mut snap_throttle_age = 0
+let mut snap_dispatch_age = 0
+
+fn jq_tsv(path: str, expr: str) -> str {
+    let cmd = "jq -r '" + expr + "' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn field(parts: any, idx: int) -> str {
+    if idx >= len(parts) { return "" }
+    return parts[idx]
+}
+
+fn refresh_snapshot() -> void {
+    let t = jq_tsv(THROTTLE_STATE, "[.level, .pred_cpu, .pred_ram] | @tsv")
+    let tp = t.split("\t")
+    let lvl_raw = field(tp, 0)
+    if lvl_raw == "" { snap_level = "?" } else { snap_level = lvl_raw }
+    snap_pred_cpu = field(tp, 1)
+    snap_pred_ram = field(tp, 2)
+
+    let d = jq_tsv(DISPATCH_STATE, "[.selection.compute, .selection.gpu] | @tsv")
+    let dp = d.split("\t")
+    snap_compute = field(dp, 0)
+    snap_gpu = field(dp, 1)
+
+    let i_expr = "[.hosts.mac.cpu_pct, .hosts.mac.ram_pct, .hosts.ubu.load, .hosts.htz.load, ((.hosts.ubu.load // \"0\") | tonumber * 12.5 | floor), ((.hosts.htz.load // \"0\") | tonumber / 32 * 100 | floor), .hosts.ubu2.load, ((.hosts.ubu2.load // \"0\") | tonumber / 12 * 100 | floor)] | @tsv"
+    let i = jq_tsv(INFRA_STATE, i_expr)
+    let ip = i.split("\t")
+    snap_mac_cpu = field(ip, 0)
+    snap_mac_ram = field(ip, 1)
+    snap_ubu_load = field(ip, 2)
+    snap_htz_load = field(ip, 3)
+    let mac_cpu_s = snap_mac_cpu
+    if mac_cpu_s == "" { snap_mac_pct = 0 } else { snap_mac_pct = to_int(mac_cpu_s) }
+    let ubu_pct_s = field(ip, 4)
+    if ubu_pct_s == "" { snap_ubu_pct = 0 } else { snap_ubu_pct = to_int(ubu_pct_s) }
+    let htz_pct_s = field(ip, 5)
+    if htz_pct_s == "" { snap_htz_pct = 0 } else { snap_htz_pct = to_int(htz_pct_s) }
+    snap_ubu2_load = field(ip, 6)
+    let ubu2_pct_s = field(ip, 7)
+    if ubu2_pct_s == "" { snap_ubu2_pct = 0 } else { snap_ubu2_pct = to_int(ubu2_pct_s) }
+
+    snap_infra_age = file_age_sec(INFRA_STATE)
+    snap_throttle_age = file_age_sec(THROTTLE_STATE)
+    snap_dispatch_age = file_age_sec(DISPATCH_STATE)
+}
+
+fn ring_count(filename: str) -> str {
+    let p = FORGE + "/" + filename
+    let out = exec("wc -l '" + p + "' 2>/dev/null | awk '{print $1}'").trim()
+    if out == "" { return "0" }
+    return out
+}
+
+// ───── 시각 표현 ────────────────────────────────────────────────
+fn level_icon(lvl: str) -> str {
+    if lvl == "CALM" { return "🟢" }
+    if lvl == "WARM" { return "🟡" }
+    if lvl == "STRESS" { return "🔴" }
+    if lvl == "THROTTLE" { return "🟠" }
+    if lvl == "?" { return "⚫" }
+    return "⚪"
+}
+
+fn bar(pct: int) -> str {
+    let p = pct
+    if p < 13 { return "▁" }
+    if p < 25 { return "▂" }
+    if p < 38 { return "▃" }
+    if p < 50 { return "▄" }
+    if p < 63 { return "▅" }
+    if p < 75 { return "▆" }
+    if p < 88 { return "▇" }
+    return "█"
+}
+
+fn is_stale() -> bool {
+    let thresh = cfg_stale_sec
+    if snap_infra_age > thresh { return true }
+    if snap_throttle_age > thresh { return true }
+    return false
+}
+
+// ───── NSColor by 부하 — cfg_color_low/high 임계값 ────
+fn pct_color(p: int) -> *Void {
+    let lo = cfg_color_low
+    let hi = cfg_color_high
+    if p < lo { return msg0(cls("NSColor"), sel("systemGreenColor")) }
+    if p < hi { return msg0(cls("NSColor"), sel("systemYellowColor")) }
+    return msg0(cls("NSColor"), sel("systemRedColor"))
+}
+
+fn attr_str(s: str, color: *Void) -> *Void {
+    let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
+    if color == 0 {
+        return msg1(alloc, sel("initWithString:"), nsstr(s))
+    }
+    let key = nsstr("NSColor")
+    let dict = msg2(cls("NSDictionary"), sel("dictionaryWithObject:forKey:"), color, key)
+    return msg2(alloc, sel("initWithString:attributes:"), nsstr(s), dict)
+}
+
+// title: [level icon] [mac bar] [ubu bar][ubu2 bar][htz bar]
+// stale 이어도 title 에 ⚠ 안 붙임 — 혼동 유발. 정보는 dropdown 에만.
+// dispatch target 도 title 에 안 붙임 — dropdown 에서 확인.
+fn compose_title_attr() -> *Void {
+    let alloc = msg0(cls("NSMutableAttributedString"), sel("alloc"))
+    let prefix_icon = level_icon(snap_level)
+    let base = msg1(alloc, sel("initWithString:"), nsstr(""))
+    msg1(base, sel("appendAttributedString:"), attr_str(prefix_icon + " ", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_mac_pct), pct_color(snap_mac_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(" ", 0))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu_pct), pct_color(snap_ubu_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_ubu2_pct), pct_color(snap_ubu2_pct)))
+    msg1(base, sel("appendAttributedString:"), attr_str(bar(snap_htz_pct), pct_color(snap_htz_pct)))
+    return base
+}
+
+// ───── sparkline ring buffer ────────────────────────────────────
+let mut spark_mac = []
+let mut spark_ubu = []
+let mut spark_ubu2 = []
+let mut spark_htz = []
+
+fn spark_push(buf: any, v: int) -> any {
+    let nb = buf + [v]
+    let cap = cfg_spark_cap
+    if len(nb) <= cap { return nb }
+    let out = []
+    let mut i = len(nb) - cap
+    let mut acc = out
+    while i < len(nb) {
+        acc = acc + [nb[i]]
+        i = i + 1
+    }
+    return acc
+}
+
+fn spark_render(buf: any) -> str {
+    if len(buf) == 0 { return "(no data)" }
+    let mut i = 0
+    let mut s = ""
+    while i < len(buf) {
+        s = s + bar(buf[i])
+        i = i + 1
+    }
+    return s
+}
+
+// ───── state signature — rebuild skip ────────────────────────
+fn state_signature() -> str {
+    let stale_tag = "F"
+    if is_stale() { stale_tag = "T" }
+    return snap_level + "|" + snap_pred_cpu + "|" + snap_pred_ram
+        + "|" + snap_compute + "|" + snap_gpu
+        + "|" + to_string(snap_mac_pct) + "|" + to_string(snap_ubu_pct) + "|" + to_string(snap_ubu2_pct) + "|" + to_string(snap_htz_pct)
+        + "|" + stale_tag
+        + "|" + to_string(cfg_color_low) + "|" + to_string(cfg_color_high)
+        + "|" + to_string(cfg_stale_sec) + "|" + to_string(cfg_spark_cap)
+        + "|" + to_string(cfg_notify_enabled)
+}
+
+// ───── NSMenu 구축 ──────────────────────────────────────────────
+fn menu_add_info(menu: *Void, text: str) -> void {
+    if test_mode == 1 { println("ITEM info " + text) }
+    let item = msg3(menu, sel("addItemWithTitle:action:keyEquivalent:"),
+                    nsstr(text), 0, nsstr(""))
+    msg_int(item, sel("setEnabled:"), 0)
+}
+
+fn menu_add_separator(menu: *Void) -> void {
+    if test_mode == 1 { println("ITEM sep") }
+    let sep = msg0(cls("NSMenuItem"), sel("separatorItem"))
+    msg1(menu, sel("addItem:"), sep)
+}
+
+fn menu_add_action(menu: *Void, text: str, selector_name: str) -> void {
+    // [Track B gap 1] action 아이템 target/selector dump 로 grep 가능하게
+    if test_mode == 1 { println("ITEM action " + text + " → " + selector_name) }
+    if test_mode == 1 { println("TEST ACTION " + text + " selector=" + selector_name + " target=NSApp") }
+    let item = msg3(menu, sel("addItemWithTitle:action:keyEquivalent:"),
+                    nsstr(text), sel(selector_name), nsstr(""))
+    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
+    msg1(item, sel("setTarget:"), app)
+}
+
+fn stale_label() -> str {
+    if is_stale() == false { return "" }
+    return "  ⚠ stale infra=" + to_string(snap_infra_age) + "s throttle=" + to_string(snap_throttle_age) + "s"
+}
+
+fn build_menu() -> *Void {
+    let menu = msg0(msg0(cls("NSMenu"), sel("alloc")), sel("init"))
+
+    // Legend — 아이콘 의미 명시 (기호 자체로 모호할 때 참고)
+    menu_add_info(menu, "Legend:  🟢 CALM   🟡 WARM   🔴 STRESS   ⚫ unknown   ⚠ stale")
+
+    menu_add_separator(menu)
+
+    // Throttle block
+    menu_add_info(menu, "Throttle:  " + snap_level + "   pred cpu=" + snap_pred_cpu + "%  ram=" + snap_pred_ram + "%" + stale_label())
+
+    // Dispatch block
+    menu_add_info(menu, "Dispatch:  compute=" + snap_compute + "   gpu=" + snap_gpu)
+
+    menu_add_separator(menu)
+
+    // Hosts block + 갱신 age — stale 판별 투명화
+    menu_add_info(menu, "mac:  " + bar(snap_mac_pct) + "  cpu=" + snap_mac_cpu + "%  ram=" + snap_mac_ram + "%")
+    menu_add_info(menu, "ubu:  " + bar(snap_ubu_pct) + "  load=" + snap_ubu_load + "  (≈" + to_string(snap_ubu_pct) + "%)")
+    menu_add_info(menu, "ubu2: " + bar(snap_ubu2_pct) + "  load=" + snap_ubu2_load + "  (≈" + to_string(snap_ubu2_pct) + "%)")
+    menu_add_info(menu, "htz:  " + bar(snap_htz_pct) + "  load=" + snap_htz_load + "  (≈" + to_string(snap_htz_pct) + "%)")
+    menu_add_info(menu, "  updated: infra=" + to_string(snap_infra_age) + "s  throttle=" + to_string(snap_throttle_age) + "s  dispatch=" + to_string(snap_dispatch_age) + "s")
+
+    menu_add_separator(menu)
+
+    // sparkline trend
+    menu_add_info(menu, "trend mac: " + spark_render(spark_mac))
+    menu_add_info(menu, "trend ubu: " + spark_render(spark_ubu))
+    menu_add_info(menu, "trend ubu2:" + spark_render(spark_ubu2))
+    menu_add_info(menu, "trend htz: " + spark_render(spark_htz))
+
+    menu_add_separator(menu)
+
+    // Rings block
+    menu_add_info(menu, "rings  mac=" + ring_count("genomes.ring") + "  ubu=" + ring_count("genomes.ubu.ring") + "  ubu2=" + ring_count("genomes.ubu2.ring") + "  htz=" + ring_count("genomes.htz.ring") + "  unified=" + ring_count("genomes.unified.ring"))
+
+    // Recent throttle history
+    let hist = exec("tail -3 '" + THROTTLE_HIST + "' 2>/dev/null | awk -F'[,:{}\"]' '{for(i=1;i<=NF;i++)if($i==\"cpu\"){c=$(i+2)}; for(i=1;i<=NF;i++)if($i==\"ram\"){r=$(i+2)}; print \"    cpu=\" c \" ram=\" r}' | tr '\\n' '|'").trim()
+    if hist != "" { menu_add_info(menu, "history: " + hist) }
+
+    menu_add_separator(menu)
+
+    // [Phase A] config 경로 힌트 — 사용자가 편집 위치를 알 수 있게
+    menu_add_info(menu, "cfg: ~/.airgenome/menubar_config.json  (auto-reload on save)")
+    let ne = cfg_notify_enabled
+    let ne_s = "off"
+    if ne == 1 { ne_s = "on" }
+    menu_add_info(menu, "  tick=" + to_string(to_int(cfg_tick_sec)) + "s  color=" + to_string(cfg_color_low) + "/" + to_string(cfg_color_high) + "  stale=" + to_string(cfg_stale_sec) + "s  cap=" + to_string(cfg_spark_cap) + "  notify=" + ne_s)
+
+    menu_add_separator(menu)
+    menu_add_action(menu, "Quit", "terminate:")
+
+    return menu
+}
+
+// ───── NSUserNotification 전이 알림 ─────────────────────
+fn post_notification(title: str, subtitle: str, info: str) -> void {
+    let ne = cfg_notify_enabled
+    if ne == 0 { return }  // cfg off 면 skip
+    let note = msg0(msg0(cls("NSUserNotification"), sel("alloc")), sel("init"))
+    msg1(note, sel("setTitle:"), nsstr(title))
+    msg1(note, sel("setSubtitle:"), nsstr(subtitle))
+    msg1(note, sel("setInformativeText:"), nsstr(info))
+    let center = msg0(cls("NSUserNotificationCenter"), sel("defaultUserNotificationCenter"))
+    msg1(center, sel("deliverNotification:"), note)
+}
+
+// ───── main loop ────────────────────────────────────────────────
+fn main() -> void {
+    // [Phase 0] config 부트
+    let first_run = ensure_config_exists()
+    load_config()
+    cfg_mtime_cached = config_mtime()
+
+    // TEST MODE 감지 — 최초 실행 TextEdit 오픈도 skip
+    let test_env = env_var("AIRGENOME_MENUBAR_TEST")
+    if test_env == "1" {
+        test_mode = 1
+        println("TEST START")
+        // [Track B gap 2] config 정합성 — 전 필드 덤프
+        println("TEST CONFIG tick=" + to_string(to_int(cfg_tick_sec)) + "s color=" + to_string(cfg_color_low) + "/" + to_string(cfg_color_high) + " stale=" + to_string(cfg_stale_sec) + "s cap=" + to_string(cfg_spark_cap) + " notify=" + to_string(cfg_notify_enabled))
+        println("TEST config loaded tick=" + to_string(to_int(cfg_tick_sec)) + "s stale=" + to_string(cfg_stale_sec) + "s")
+    } else {
+        if first_run {
+            let _ = exec("open -a TextEdit '" + CONFIG_PATH + "' 2>/dev/null &")
+        }
+    }
+
+    let app = msg0(cls("NSApplication"), sel("sharedApplication"))
+    msg_int(app, sel("setActivationPolicy:"), 1)
+    msg_int(app, sel("activateIgnoringOtherApps:"), 1)
+    msg0(app, sel("finishLaunching"))
+
+    let bar_obj = msg0(cls("NSStatusBar"), sel("systemStatusBar"))
+    let item = msg_float(bar_obj, sel("statusItemWithLength:"), -1.0)
+    // [FIX-1] NSStatusItem 명시 retain — 일부 macOS 버전에서 autorelease pool drain 시 release 되는 문제 차단
+    msg0(item, sel("retain"))
+
+    refresh_snapshot()
+    spark_mac = spark_push(spark_mac, snap_mac_pct)
+    spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
+    spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
+    spark_htz = spark_push(spark_htz, snap_htz_pct)
+
+    let button = msg0(item, sel("button"))
+    if button != 0 {
+        msg1(button, sel("setAttributedTitle:"), compose_title_attr())
+        if test_mode == 1 { println("TEST button ok") }
+    } else {
+        if test_mode == 1 { println("TEST button NULL") }
+    }
+    let initial_menu = build_menu()
+    msg1(item, sel("setMenu:"), initial_menu)
+
+    // TEST 모드 — status item 검증 + 반환하는 NSMenu 가 set 됐는지 확인
+    if test_mode == 1 {
+        if item == 0 {
+            println("TEST FAIL: statusItem NULL")
+            return
+        }
+        println("TEST statusItem ok ptr=non-null")
+        let got_menu = msg0(item, sel("menu"))
+        if got_menu == 0 {
+            println("TEST FAIL: item.menu NULL after setMenu:")
+            return
+        }
+        if got_menu != initial_menu {
+            println("TEST WARN: item.menu differs from set (maybe copied)")
+        } else {
+            println("TEST setMenu roundtrip ok")
+        }
+
+        // [Track B gap 3] REPEAT 모드 — env var AIRGENOME_MENUBAR_TEST_REPEAT=N → build_menu N회 재실행
+        // 반복 안정성 (FFI 누수/크래시) 검출
+        let rep_env = env_var("AIRGENOME_MENUBAR_TEST_REPEAT")
+        if rep_env != "" {
+            let n = to_int(rep_env)
+            if n > 0 {
+                println("TEST REPEAT begin n=" + to_string(n))
+                let mut k = 0
+                while k < n {
+                    refresh_snapshot()
+                    let _m = build_menu()
+                    let _t = compose_title_attr()
+                    k = k + 1
+                }
+                println("TEST REPEAT n=" + to_string(n) + " ok")
+            }
+        }
+
+        // [Track B gap 2] snapshot 상태 덤프 — 런타임 값 추적
+        println("TEST SNAP level=" + snap_level + " mac=" + to_string(snap_mac_pct) + " ubu=" + to_string(snap_ubu_pct) + " ubu2=" + to_string(snap_ubu2_pct) + " htz=" + to_string(snap_htz_pct) + " infra_age=" + to_string(snap_infra_age) + "s throttle_age=" + to_string(snap_throttle_age) + "s")
+
+        println("TEST DONE PASS")
+        return
+    }
+
+    let mut prev_sig = state_signature()
+    let mut prev_level = snap_level
+    let mut prev_compute = snap_compute
+
+    println("airgenome menubar V4 running (NSApp event pump — click fix)")
+
+    // [V4 FIX] NSRunLoop runUntilDate: 는 NSApp 이벤트 큐를 dequeue 안 함 →
+    // status item 클릭 이벤트가 dispatch 안 됨. 직접 nextEventMatchingMask: 루프로 pump.
+    let date_cls = cls("NSDate")
+    let dint_sel = sel("dateWithTimeIntervalSinceNow:")
+    let next_sel = sel("nextEventMatchingMask:untilDate:inMode:dequeue:")
+    let send_sel = sel("sendEvent:")
+    let update_sel = sel("updateWindows")
+    // NSDefaultRunLoopMode == "kCFRunLoopDefaultMode" (문자열 값 동일)
+    let mode = nsstr("kCFRunLoopDefaultMode")
+    // NSEventMaskAny = NSUIntegerMax = 0xFFFFFFFFFFFFFFFF → -1 as Int (2's complement)
+    let mask_any = -1
+
+    while true {
+        // 다음 틱까지의 기한
+        let deadline = msg_float(date_cls, dint_sel, cfg_tick_sec)
+
+        // 첫 이벤트가 올 때까지 (또는 deadline 까지) 블록
+        let ev1 = msg_pump(app, next_sel, mask_any, deadline, mode, 1)
+        if ev1 != 0 {
+            msg1(app, send_sel, ev1)
+            // 남은 이벤트 모두 drain — past date 로 비차단 dequeue
+            let past = msg_float(date_cls, dint_sel, 0.0)
+            let mut drain_done = 0
+            while drain_done == 0 {
+                let ev2 = msg_pump(app, next_sel, mask_any, past, mode, 1)
+                if ev2 == 0 { drain_done = 1 } else { msg1(app, send_sel, ev2) }
+            }
+        }
+
+        // 윈도우 업데이트 (status item redraw 포함)
+        msg0(app, update_sel)
+
+        // [Phase A] config mtime 감시 → reload
+        let mt = config_mtime()
+        if mt != cfg_mtime_cached {
+            load_config()
+            cfg_mtime_cached = mt
+            println("airgenome menubar: config reloaded")
+        }
+
+        refresh_snapshot()
+        spark_mac = spark_push(spark_mac, snap_mac_pct)
+        spark_ubu = spark_push(spark_ubu, snap_ubu_pct)
+        spark_ubu2 = spark_push(spark_ubu2, snap_ubu2_pct)
+        spark_htz = spark_push(spark_htz, snap_htz_pct)
+
+        if snap_level != prev_level {
+            post_notification("airgenome",
+                "throttle " + prev_level + " → " + snap_level,
+                "pred cpu=" + snap_pred_cpu + "% ram=" + snap_pred_ram + "%")
+            prev_level = snap_level
+        }
+        if snap_compute != prev_compute && snap_compute != "" {
+            post_notification("airgenome",
+                "dispatch target " + prev_compute + " → " + snap_compute, "")
+            prev_compute = snap_compute
+        }
+
+        let btn = msg0(item, sel("button"))
+        if btn != 0 { msg1(btn, sel("setAttributedTitle:"), compose_title_attr()) }
+
+        let sig = state_signature()
+        if sig != prev_sig {
+            msg1(item, sel("setMenu:"), build_menu())
+            prev_sig = sig
+        }
+    }
+}
+
+main()

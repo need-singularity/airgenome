@@ -7,7 +7,7 @@
 // NOTE: hexa-lang stage1 의 float 산술/비교 (`*`, `>`, `<`, `==`) 가 잘못된 결과 반환.
 //       float 의존 assertion 은 to_int 변환 후 수행. core 자체는 이미 to_int 우회 적용됨.
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core"
 
 fn chk(label: str, cond: bool) -> void {
     if cond == false {
@@ -66,6 +66,15 @@ fn main() -> void {
     // 8. combined guard
     let g = init_default_guard()
     chk("guard.checks == 0", g.checks == 0)
+
+    // 9. runtime paths — fallback (AIRGENOME_ROOT 미설정 가정)
+    let home = env("HOME")
+    let want_root = home + "/Dev/airgenome"
+    chk("airgenome_root fallback", airgenome_root() == want_root)
+    chk("forge_dir fallback", forge_dir() == want_root + "/forge")
+    chk("ring_path joins", ring_path("genomes.ring") == want_root + "/forge/genomes.ring")
+    chk("ring_path .ubu", ring_path("genomes.ubu.ring") == want_root + "/forge/genomes.ubu.ring")
+    chk("default_ring_path fallback", default_ring_path() == want_root + "/forge/genomes.ring")
 
     println("  ✅ core_test PASS")
 }

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.airgenome.remote-load</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ghost/Dev/airgenome/bin/remote_load.sh</string>
+        <string>probe</string>
+    </array>
+
+    <!-- 30초 주기 폴링 — ubu+hetzner ssh (ControlMaster 재사용으로 각 10ms/480ms) -->
+    <key>StartInterval</key>
+    <integer>30</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <!-- 관측 전용. Mac 자원 방해 최소화 -->
+    <key>Nice</key>
+    <integer>19</integer>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ghost/.airgenome/remote-load.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ghost/.airgenome/remote-load.stderr.log</string>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ghost/Dev/airgenome</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+        <key>HOME</key>
+        <string>/Users/ghost</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+</dict>
+</plist>

@@ -1,9 +1,12 @@
-// modules/forecast.hexa — 7d genome 추세 → 1h 예측 (M6, v3.0 forecasting)
+// modules/forecast.hexa — 7d genome 추세 → 1h 예측 (M6 + M11d)
 //
 // 책임:
-//   1. forge/genomes.ring 의 최근 N 게놈 (7d 등가) 스캔
-//   2. 각 PID×axis 별 Holt's 이중 지수평활 (level + trend) 적합
-//   3. 1-step ahead 예측 = level + h*trend → forge/forecast.jsonl 한 줄/PID
+//   1. forge/<ring>.ring 의 최근 N 게놈 (7d 등가) 스캔
+//      - 단일호스트: genomes.ring (기본)
+//      - 멀티호스트: AIRGENOME_RING_NAME=genomes.unified.ring (host 필드 + pid="host.pid")
+//   2. 각 KEY (=pid string) ×axis 별 Holt's 이중 지수평활 (level + trend) 적합
+//      - unified ring 의 pid 는 "host.pid" string → host×pid 2차원이 자동으로 분리됨
+//   3. 1-step ahead 예측 = level + h*trend → forge/forecast.jsonl 한 줄/KEY (host 보존)
 //
 // 평가 (self-test):
 //   - 합성 선형 시리즈 (slope=k, noise≈0) 로 fit
@@ -20,11 +23,10 @@
 //   - try/catch 미사용
 //   - int 연산만 (float quirk 우회)
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
-let HOME = env("HOME")
-let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
-let OUT  = HOME + "/Dev/airgenome/forge/forecast.jsonl"
+let RING = default_ring_path()
+let OUT  = ring_path("forecast.jsonl")
 let SCAN_LINES = 5000
 let TOP_N_PIDS = 20
 
@@ -111,23 +113,20 @@ fn read_recent_genomes() -> list {
     return result
 }
 
-// distinct PIDs (ring 안에서 최근 등장한 N 개)
-fn distinct_pids(genomes: list, cap: int) -> list {
+// distinct KEYs (pid string — unified ring 일 때 "host.pid", 단일호스트 일 때 그냥 "pid")
+fn distinct_keys(genomes: list, cap: int) -> list {
     let seen = []
     let mut i = 0
     while i < len(genomes) {
-        let pid_s = jq_field(genomes[i], ".pid")
-        if pid_s != "" {
-            let pid = to_int_safe(pid_s)
-            if pid > 0 {
-                let mut found = false
-                let mut j = 0
-                while j < len(seen) {
-                    if seen[j] == pid { found = true }
-                    j = j + 1
-                }
-                if !found { seen = seen + [pid] }
+        let key = jq_field(genomes[i], ".pid")
+        if key != "" {
+            let mut found = false
+            let mut j = 0
+            while j < len(seen) {
+                if seen[j] == key { found = true }
+                j = j + 1
             }
+            if !found { seen = seen + [key] }
         }
         if len(seen) >= cap { return seen }
         i = i + 1
@@ -135,19 +134,35 @@ fn distinct_pids(genomes: list, cap: int) -> list {
     return seen
 }
 
-// 특정 PID 의 시계열 (cpu) 추출
-fn series_for_pid(genomes: list, pid: int, axis: int) -> list {
+// 특정 KEY (pid string) 의 시계열 (axis) 추출
+fn series_for_key(genomes: list, key: str, axis: int) -> list {
     let result = []
     let mut i = 0
     while i < len(genomes) {
         let g = genomes[i]
-        let p = to_int_safe(jq_field(g, ".pid"))
-        if p == pid {
+        let p = jq_field(g, ".pid")
+        if p == key {
             result = result + [vit_at(g, axis)]
         }
         i = i + 1
     }
     return result
+}
+
+// KEY 의 host 추출 — unified ring 의 .host 우선, 없으면 "local"
+fn host_for_key(genomes: list, key: str) -> str {
+    let mut i = 0
+    while i < len(genomes) {
+        let g = genomes[i]
+        let p = jq_field(g, ".pid")
+        if p == key {
+            let h = jq_field(g, ".host")
+            if h != "" { return h }
+            return "local"
+        }
+        i = i + 1
+    }
+    return "local"
 }
 
 // 시리즈 fit + 1-step ahead 예측
@@ -170,22 +185,24 @@ fn ts_iso() -> str {
 }
 
 fn run_forecast() -> int {
-    let _ = exec("mkdir -p '" + HOME + "/Dev/airgenome/forge'")
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
     let genomes = read_recent_genomes()
     if len(genomes) == 0 { return 0 }
 
-    let pids = distinct_pids(genomes, TOP_N_PIDS)
+    let keys = distinct_keys(genomes, TOP_N_PIDS)
     let ts = ts_iso()
     let mut written = 0
     let mut i = 0
-    while i < len(pids) {
-        let pid = pids[i]
-        let s_cpu = series_for_pid(genomes, pid, 0)
-        let s_ram = series_for_pid(genomes, pid, 1)
+    while i < len(keys) {
+        let key = keys[i]
+        let s_cpu = series_for_key(genomes, key, 0)
+        let s_ram = series_for_key(genomes, key, 1)
         if len(s_cpu) >= 2 {
             let pred_cpu = predict_one_ahead(s_cpu)
             let pred_ram = predict_one_ahead(s_ram)
-            let line = "{\"ts\":\"" + ts + "\",\"pid\":" + to_string(pid)
+            let host = host_for_key(genomes, key)
+            let line = "{\"ts\":\"" + ts + "\",\"pid\":\"" + key + "\""
+                     + ",\"host\":\"" + host + "\""
                      + ",\"horizon\":\"1step\",\"pred_cpu\":" + to_string(pred_cpu)
                      + ",\"pred_ram\":" + to_string(pred_ram)
                      + ",\"samples\":" + to_string(len(s_cpu)) + "}"
@@ -244,8 +261,40 @@ fn self_test() -> void {
     let pred_f = forecast_h(sF, 1)
     if mae_pct(pred_f, 30) >= 15 { panic("self_test FAIL [flat MAE]") }
 
-    // 7. distinct_pids — JSONL 파싱 우회 (직접 list 로 검증은 jq 필요해 production-only)
-    //    여기는 list dedup 의도만 self-evident 로 수동 검증 위임.
+    // 7. distinct_keys + series_for_key + host_for_key (M11d unified ring 지원)
+    //    합성 unified-스타일 게놈 5건 (host=mac/ubu 섞임, pid="host.N" string)
+    let g_a = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[10,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g_b = "{\"ts\":\"x\",\"pid\":\"mac.1\",\"comm\":\"a\",\"vitals\":[20,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+    let g_c = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[80,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_d = "{\"ts\":\"x\",\"pid\":\"ubu.1\",\"comm\":\"b\",\"vitals\":[90,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_e = "{\"ts\":\"x\",\"pid\":\"htz.7\",\"comm\":\"c\",\"vitals\":[50,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"htz\"}"
+    let synth = [g_a, g_b, g_c, g_d, g_e]
+
+    let keys = distinct_keys(synth, 10)
+    if len(keys) != 3 { panic("self_test FAIL [distinct_keys count, got " + to_string(len(keys)) + "]") }
+    if keys[0] != "mac.1" { panic("self_test FAIL [distinct_keys[0]]") }
+    if keys[1] != "ubu.1" { panic("self_test FAIL [distinct_keys[1] — host.pid 분리 실패]") }
+    if keys[2] != "htz.7" { panic("self_test FAIL [distinct_keys[2]]") }
+
+    let s_mac = series_for_key(synth, "mac.1", 0)
+    if len(s_mac) != 2 { panic("self_test FAIL [series_for_key mac.1 count]") }
+    if s_mac[0] != 10 { panic("self_test FAIL [series_for_key mac.1[0]]") }
+    if s_mac[1] != 20 { panic("self_test FAIL [series_for_key mac.1[1]]") }
+
+    let s_ubu = series_for_key(synth, "ubu.1", 0)
+    if len(s_ubu) != 2 { panic("self_test FAIL [series_for_key ubu.1 count]") }
+    if s_ubu[0] != 80 { panic("self_test FAIL [series_for_key ubu.1[0] — pid 충돌!]") }
+
+    if host_for_key(synth, "ubu.1") != "ubu" { panic("self_test FAIL [host_for_key ubu]") }
+    if host_for_key(synth, "htz.7") != "htz" { panic("self_test FAIL [host_for_key htz]") }
+    if host_for_key(synth, "missing") != "local" { panic("self_test FAIL [host_for_key missing fallback]") }
+
+    // 8. 단일호스트 (host 필드 없는) record 도 동작
+    let g_legacy = "{\"ts\":\"x\",\"pid\":\"123\",\"comm\":\"d\",\"vitals\":[40,5,0,0,0,0],\"ema\":[0,0,0,0,0,0]}"
+    let leg_keys = distinct_keys([g_legacy], 5)
+    if len(leg_keys) != 1 { panic("self_test FAIL [legacy distinct_keys count]") }
+    if leg_keys[0] != "123" { panic("self_test FAIL [legacy distinct_keys value]") }
+    if host_for_key([g_legacy], "123") != "local" { panic("self_test FAIL [legacy host_for_key]") }
 
     println("  ✅ forecast self_test PASS — linear MAE=" + to_string(err) + "% (<15%)")
 }

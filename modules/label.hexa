@@ -1,9 +1,12 @@
-// modules/label.hexa — anomaly genome → behavior 라벨링 (T15)
+// modules/label.hexa — anomaly genome → behavior 라벨링 (T15 + M11d)
 //
 // 책임:
-//   1. forge/genomes.ring 의 최근 N 라인 스캔
+//   1. forge/<ring>.ring 의 최근 N 라인 스캔
+//      - 단일호스트: genomes.ring (기본)
+//      - 멀티호스트: AIRGENOME_RING_NAME=genomes.unified.ring (host 필드 포함)
 //   2. shared/config/label_rules.jsonl 의 rule 마다 vitals 평가
-//   3. match → forge/labeled_anomaly.jsonl 에 append
+//      - rule 의 host 필드가 있으면 해당 host 일 때만 매치 (M11d)
+//   3. match → forge/labeled_anomaly.jsonl 에 append (host 보존)
 //
 // 제약:
 //   - use "../core/core" 만
@@ -11,14 +14,13 @@
 //   - try/catch 미사용
 //
 // 라벨 (예시 rule, 확장 가능):
-//   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG
+//   CPU_SPIKE / MEM_LEAK / FORK_BOMB / IO_STORM / GPU_HOG / REMOTE_CPU_SPIKE
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
-let HOME = env("HOME")
-let RING = HOME + "/Dev/airgenome/forge/genomes.ring"
-let RULES = HOME + "/Dev/airgenome/shared/config/label_rules.jsonl"
-let OUT = HOME + "/Dev/airgenome/forge/labeled_anomaly.jsonl"
+let RING = default_ring_path()
+let RULES = airgenome_root() + "/shared/config/label_rules.jsonl"
+let OUT = ring_path("labeled_anomaly.jsonl")
 let SCAN_LINES = 1000
 
 struct Rule {
@@ -29,7 +31,8 @@ struct Rule {
     and_axis: int,
     and_op: str,
     and_threshold: int,
-    has_and: bool
+    has_and: bool,
+    host_filter: str
 }
 
 fn jq_field(line: str, expr: str) -> str {
@@ -55,6 +58,7 @@ fn parse_rule(line: str) -> Rule {
     let and_axis = to_int_safe(aaxis_s)
     let and_op = jq_field(line, ".and_op")
     let and_threshold = to_int_safe(jq_field(line, ".and_threshold"))
+    let host_filter = jq_field(line, ".host")
     return Rule {
         label: label,
         axis: axis,
@@ -63,7 +67,8 @@ fn parse_rule(line: str) -> Rule {
         and_axis: and_axis,
         and_op: and_op,
         and_threshold: and_threshold,
-        has_and: has_and
+        has_and: has_and,
+        host_filter: host_filter
     }
 }
 
@@ -100,6 +105,10 @@ fn vit_at(line: str, idx: int) -> int {
 }
 
 fn rule_match(genome_line: str, r: Rule) -> bool {
+    if r.host_filter != "" {
+        let h = jq_field(genome_line, ".host")
+        if h != r.host_filter { return false }
+    }
     let v = vit_at(genome_line, r.axis)
     if !op_match(v, r.op, r.threshold) { return false }
     if !r.has_and { return true }
@@ -107,11 +116,15 @@ fn rule_match(genome_line: str, r: Rule) -> bool {
     return op_match(v2, r.and_op, r.and_threshold)
 }
 
+// pid 가 unified 일 때 string ("mac.123"), 단일호스트 일 때 int — 항상 quote 해서 안전.
 fn extract_meta(genome_line: str) -> str {
     let pid = jq_field(genome_line, ".pid")
     let comm = jq_field(genome_line, ".comm")
     let ts = jq_field(genome_line, ".ts")
-    return "\"ts\":\"" + ts + "\",\"pid\":" + pid + ",\"comm\":\"" + comm + "\""
+    let host = jq_field(genome_line, ".host")
+    let base = "\"ts\":\"" + ts + "\",\"pid\":\"" + pid + "\",\"comm\":\"" + comm + "\""
+    if host == "" { return base }
+    return base + ",\"host\":\"" + host + "\""
 }
 
 fn json_escape(s: str) -> str {
@@ -145,7 +158,7 @@ fn read_recent_genomes() -> list {
 
 fn run_label() -> int {
     // 출력 디렉토리 보장
-    let _ = exec("mkdir -p '" + HOME + "/Dev/airgenome/forge'")
+    let _ = exec("mkdir -p '" + forge_dir() + "'")
 
     let rules = load_rules()
     if len(rules) == 0 { return 0 }
@@ -208,6 +221,26 @@ fn self_test() -> void {
     // 5. json_escape
     let esc = json_escape("a\"b\\c")
     if esc != "abc" { panic("self_test FAIL [json_escape]") }
+
+    // 6. unified record + host_filter (M11d)
+    let g_unified_ubu = "{\"ts\":\"x\",\"pid\":\"ubu.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"ubu\"}"
+    let g_unified_mac = "{\"ts\":\"x\",\"pid\":\"mac.42\",\"comm\":\"foo\",\"rss_kb\":0,\"vitals\":[95,5,0,0,0,0],\"ema\":[0,0,0,0,0,0],\"host\":\"mac\"}"
+
+    // 6a. host_filter 미사용 rule 은 호스트와 무관
+    if !rule_match(g_unified_ubu, r1) { panic("self_test FAIL [unified ubu CPU_SPIKE]") }
+    if !rule_match(g_unified_mac, r1) { panic("self_test FAIL [unified mac CPU_SPIKE]") }
+
+    // 6b. host=ubu 한정 rule
+    let r_ubu = parse_rule("{\"label\":\"REMOTE_CPU_SPIKE\",\"axis\":0,\"op\":\"gt\",\"threshold\":80,\"host\":\"ubu\"}")
+    if r_ubu.host_filter != "ubu" { panic("self_test FAIL [host_filter parse]") }
+    if !rule_match(g_unified_ubu, r_ubu) { panic("self_test FAIL [host=ubu match]") }
+    if rule_match(g_unified_mac, r_ubu) { panic("self_test FAIL [host=ubu must not match mac]") }
+
+    // 6c. unified extract_meta 에 host 포함, 기본은 미포함
+    let meta_u = extract_meta(g_unified_ubu)
+    if len(meta_u.split("\"host\":\"ubu\"")) < 2 { panic("self_test FAIL [unified meta host missing]") }
+    let meta_base = extract_meta(g_spike)
+    if len(meta_base.split("\"host\"")) > 1 { panic("self_test FAIL [base meta has host wrongly]") }
 
     println("  ✅ label self_test PASS")
 }

@@ -1,0 +1,63 @@
+{
+  "_schema": {
+    "version": 1,
+    "doc": "airgenome host registry — SSOT. bin/host.sh 로 add/remove. 직접 편집 시 bin/host.sh sync 필수.",
+    "fields": {
+      "enabled": "false 면 모든 소비자(probe/dispatch/remote_load/menubar)에서 제외",
+      "ssh_alias": "~/.ssh/config 의 Host 엔트리 (self kind 는 null)",
+      "kind": "lan | remote | self",
+      "has_gpu": "nvidia-smi 가용 여부 — probe schema 분기",
+      "threads": "nproc. dispatch score_heavy 의 thread bonus 기준",
+      "tier": "primary(LAN 상시) | secondary(원격 상시) | local(mac self)",
+      "tags": "compute | gpu | heavy | io — dispatch 후보 필터용"
+    }
+  },
+  "hosts": {
+    "ubu": {
+      "enabled": true,
+      "ssh_alias": "ubu",
+      "kind": "lan",
+      "has_gpu": true,
+      "threads": 12,
+      "tier": "primary",
+      "tags": [
+        "compute",
+        "gpu"
+      ]
+    },
+    "ubu2": {
+      "enabled": true,
+      "ssh_alias": "ubu2",
+      "kind": "lan",
+      "has_gpu": false,
+      "threads": 12,
+      "tier": "primary",
+      "tags": [
+        "compute"
+      ]
+    },
+    "htz": {
+      "enabled": true,
+      "ssh_alias": "hetzner",
+      "kind": "remote",
+      "has_gpu": false,
+      "threads": 32,
+      "tier": "secondary",
+      "tags": [
+        "compute",
+        "heavy"
+      ]
+    },
+    "mac": {
+      "enabled": true,
+      "ssh_alias": null,
+      "kind": "self",
+      "has_gpu": false,
+      "threads": 0,
+      "tier": "local",
+      "tags": [
+        "io"
+      ]
+    }
+  }
+}

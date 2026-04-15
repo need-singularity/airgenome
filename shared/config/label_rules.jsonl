@@ -3,3 +3,5 @@
 {"label":"FORK_BOMB","axis":0,"op":"gt","threshold":50,"and_axis":1,"and_op":"gt","and_threshold":20,"desc":"CPU>50 AND RAM>20 — 동시 소비"}
 {"label":"IO_STORM","axis":5,"op":"gt","threshold":50,"desc":"IO 축 > 50 (per-process io 측정 시)"}
 {"label":"GPU_HOG","axis":2,"op":"gt","threshold":80,"desc":"GPU 사용률 > 80% (원격 호스트 게놈 시)"}
+{"label":"REMOTE_UBU_CPU","axis":0,"op":"gt","threshold":85,"host":"ubu","desc":"M11d — ubu 호스트 한정 CPU>85"}
+{"label":"REMOTE_HTZ_CPU","axis":0,"op":"gt","threshold":85,"host":"htz","desc":"M11d — hetzner 호스트 한정 CPU>85"}

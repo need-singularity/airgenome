@@ -39,11 +39,12 @@ struct Vitals {
 }
 
 fn sample() -> Vitals {
-    let ncpu = to_int(exec("sysctl -n hw.ncpu 2>/dev/null || echo 8").trim())
+    // OS 분기는 쉘 `uname` 으로 처리 — Mac=sysctl/vm_stat, Linux=/proc/meminfo+nproc
+    let ncpu = to_int(exec("if [ \"$(uname)\" = \"Linux\" ]; then nproc; else sysctl -n hw.ncpu 2>/dev/null || echo 8; fi").trim())
     let cpu_total = to_float(exec("ps -A -o %cpu= | awk '{s+=$1}END{printf \"%.0f\",s}'").trim())
-    let total_ram = to_float(exec("sysctl -n hw.memsize | awk '{print int($1/1048576)}'").trim())
-    let ram_mb = to_float(exec("vm_stat | awk '/Pages active/{gsub(/\\./,\"\",$3); print int($3*4096/1048576)}'").trim())
-    let swap_mb = to_float(exec("sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.0f\",$3}'").trim())
+    let total_ram = to_float(exec("if [ \"$(uname)\" = \"Linux\" ]; then awk '/MemTotal/{print int($2/1024)}' /proc/meminfo; else sysctl -n hw.memsize | awk '{print int($1/1048576)}'; fi").trim())
+    let ram_mb = to_float(exec("if [ \"$(uname)\" = \"Linux\" ]; then awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{print int((t-a)/1024)}' /proc/meminfo; else vm_stat | awk '/Pages active/{gsub(/\\./,\"\",$3); print int($3*4096/1048576)}'; fi").trim())
+    let swap_mb = to_float(exec("if [ \"$(uname)\" = \"Linux\" ]; then awk '/SwapTotal/{t=$2} /SwapFree/{f=$2} END{print int((t-f)/1024)}' /proc/meminfo; else sysctl -n vm.swapusage 2>/dev/null | awk '{gsub(/M/,\"\",$3); printf \"%.0f\",$3}'; fi").trim())
 
     return Vitals {
         cpu: cpu_total / to_float(ncpu),
@@ -267,6 +268,36 @@ fn init_default_guard() -> AdaptiveThrottle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  RUNTIME PATHS — env("AIRGENOME_ROOT") override 지원
+//
+//  목적: harvest/label/forecast/genome_merge 의 hardcoded
+//        "$AIRGENOME/forge/..." 경로를 함수로 통일.
+//        AIRGENOME_ROOT 미설정 시 기존 동작 보존 (회귀 0).
+// ═══════════════════════════════════════════════════════════════════════
+
+fn airgenome_root() -> str {
+    let custom = env("AIRGENOME_ROOT")
+    if custom != "" { return custom }
+    return env("HOME") + "/Dev/airgenome"
+}
+
+fn forge_dir() -> str {
+    return airgenome_root() + "/forge"
+}
+
+fn ring_path(name: str) -> str {
+    return forge_dir() + "/" + name
+}
+
+// AIRGENOME_RING_NAME 으로 ring 파일명 override (예: "genomes.unified.ring").
+// 미설정 시 단일호스트 기본 "genomes.ring" 사용.
+fn default_ring_path() -> str {
+    let n = env("AIRGENOME_RING_NAME")
+    if n != "" { return ring_path(n) }
+    return ring_path("genomes.ring")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SELF-TEST
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -324,6 +355,13 @@ fn self_test() -> void {
     chk_eq_int("t.checks", t.checks, 0)
     chk_eq_float("throttle_batch_scale", throttle_batch_scale(t), 1.0)
     chk_eq_int("throttle_sleep_ms", throttle_sleep_ms(t), 0)
+
+    // Verify runtime paths — default fallback (AIRGENOME_ROOT 미설정 가정)
+    let home = env("HOME")
+    let expected_root = home + "/Dev/airgenome"
+    chk_true("forge_dir contains /forge", forge_dir() == expected_root + "/forge")
+    chk_true("ring_path joins name", ring_path("genomes.ring") == expected_root + "/forge/genomes.ring")
+    chk_true("default_ring_path fallback", default_ring_path() == expected_root + "/forge/genomes.ring")
 
     println("  ✅ lib.rs port verified")
 }

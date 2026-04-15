@@ -1,9 +1,9 @@
-// modules/probe.hexa — vitals probe (Mac + ubu + htz)
+// modules/probe.hexa — vitals probe (Mac + ubu + ubu2 + htz)
 //
 // 책임:
 //   1. Mac: core.sample() 로 self vitals 수집
 //   2. ubu/htz: ssh 5s timeout CSV 수집
-//   3. ~/Dev/nexus/shared/infra_state.json 원자적 갱신
+//   3. $NEXUS/shared/infra_state.json 원자적 갱신
 //   4. self_test() — L0 parse-check + runtime smoke
 //
 // 제약:
@@ -12,7 +12,7 @@
 //   - exec 실패는 빈 문자열로 판정
 //   - AG6: Mac heavy compute 금지 — sysctl/uptime 만 사용, ssh outbound 만
 
-use "/Users/ghost/Dev/airgenome/core/core"
+use "../core/core"
 
 let HOME = env("HOME")
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
@@ -28,6 +28,11 @@ fn probe_ubu_csv() -> str {
 
 fn probe_htz_csv() -> str {
     let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes hetzner 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); echo \"$L,$N,$M\"' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn probe_ubu2_csv() -> str {
+    let cmd = "ssh -o ConnectTimeout=5 -o BatchMode=yes ubu2 'export LANG=C; L=$(uptime | awk -F\"load average: \" \"{print \\$2}\" | cut -d, -f1); N=$(nproc); M=$(free -m | awk \"/^Mem:/{t=\\$2; a=\\$7; print t \\\",\\\" (t-a)}\"); echo \"$L,$N,$M\"' 2>/dev/null"
     return exec(cmd).trim()
 }
 
@@ -67,8 +72,8 @@ fn write_atomic(path: str, content: str) -> void {
     let _mv = exec("mv -f '" + tmp + "' '" + path + "'")
 }
 
-fn build_infra(ts: str, mac_j: str, ubu_j: str, htz_j: str) -> str {
-    return "{\"ts\":\"" + ts + "\",\"source\":\"modules/probe.hexa\",\"hosts\":{\"ubu\":" + ubu_j + ",\"htz\":" + htz_j + ",\"mac\":" + mac_j + "}}\n"
+fn build_infra(ts: str, mac_j: str, ubu_j: str, ubu2_j: str, htz_j: str) -> str {
+    return "{\"ts\":\"" + ts + "\",\"source\":\"modules/probe.hexa\",\"hosts\":{\"ubu\":" + ubu_j + ",\"ubu2\":" + ubu2_j + ",\"htz\":" + htz_j + ",\"mac\":" + mac_j + "}}\n"
 }
 
 fn self_test() -> void {
@@ -87,9 +92,10 @@ fn self_test() -> void {
     let mj = mac_json(v)
     if len(mj) < 20 { panic("self_test FAIL [mac_json len]") }
 
-    // 3. infra 합성
-    let infra = build_infra("2026-04-13T00:00:00Z", mj, off_u, off_h)
+    // 3. infra 합성 (ubu2 자리에 offline placeholder 재사용)
+    let infra = build_infra("2026-04-13T00:00:00Z", mj, off_u, off_h, off_h)
     if len(infra) < 80 { panic("self_test FAIL [infra len]") }
+    if !infra.contains("\"ubu2\"") { panic("self_test FAIL [ubu2 key missing]") }
 
     println("  ✅ probe self_test PASS")
 }
@@ -108,9 +114,10 @@ fn main() -> void {
     let v = sample()
     let ubu_j = ubu_json(probe_ubu_csv())
     let htz_j = htz_json(probe_htz_csv())
+    let ubu2_j = htz_json(probe_ubu2_csv())  // ubu2: GPU 없음 → htz schema 재사용
     let mac_j = mac_json(v)
 
-    let infra = build_infra(ts, mac_j, ubu_j, htz_j)
+    let infra = build_infra(ts, mac_j, ubu_j, ubu2_j, htz_j)
     write_atomic(INFRA_STATE, infra)
 }
 

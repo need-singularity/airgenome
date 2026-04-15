@@ -9,9 +9,9 @@
     "core/core.hexa",
     "core/test/core_test.hexa",
     "archive/v1/README.md",
-    "~/Dev/nexus/shared/rules/airgenome.json",
-    "~/Dev/nexus/shared/airgenome_convergence_*.jsonl",
-    "~/Dev/nexus/shared/lockdown/lockdown.json"
+    "$NEXUS/shared/rules/airgenome.json",
+    "$NEXUS/shared/airgenome_convergence_*.jsonl",
+    "$NEXUS/shared/lockdown/lockdown.json"
   ],
   "rebuild_meta": {
     "trigger": "phantom L0 파일 다수 발견 (src/core.hexa, modules/load_balancer.hexa 외)",
@@ -60,7 +60,7 @@
       "deps": ["M0_archive_split"],
       "target_repo": "nexus",
       "exit_criteria": [
-        "nexus/shared/lockdown/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
+        "nexus/shared/harness/l0_guard.hexa 에 section 4 (parse 가능성) 추가",
         "각 L0 .hexa 파일을 hexa run 으로 검증 (timeout 보호)",
         "PASS 기준: 파일 존재 + 파싱 통과. self-test 는 별도 스위치"
       ],
@@ -178,23 +178,34 @@
     },
     {
       "id": "M7_launchctl_load",
-      "title": "5 plist launchctl bootstrap — 자동화 실가동",
+      "title": "MAC_SAFE_AGENTS launchctl bootstrap — AG6 준수 자동화",
       "priority": "P1",
-      "status": "todo",
-      "deps": ["M2_probe", "M3_dispatch", "M4_harvest", "M5_label", "M6_predict"],
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M2_probe", "M3_dispatch", "M6_predict"],
       "exit_criteria": [
-        "shared/launchagents/com.airgenome.{probe,dispatch,harvest,label,forecast}.plist 5개를 ~/Library/LaunchAgents/ 로 복사",
-        "launchctl bootstrap gui/$(id -u) 로 5개 모두 등록",
-        "launchctl list | grep com.airgenome — 5개 RunAt=0 확인",
-        "~/.airgenome/*.{stdout,stderr}.log 5개 모두 첫 출력 후 자동 갱신",
-        "60s 후 nexus/shared/{infra_state,dispatch_state}.json + forge/genomes.ring 갱신 확인"
-      ]
+        "MAC_SAFE_AGENTS (run.hexa): ring-sync, predictive-throttle, probe, dispatch, menubar 5개만 Mac LaunchAgent 로 정식 운영",
+        "remote-heavy (harvest, label, forecast) 는 Mac 에서 launchctl 금지 — M11b systemd timer 로 ubu/htz 배포 및 검증",
+        "`airgenome install mac-safe` → `launchctl list | grep com.airgenome` 5개 RunAt=0",
+        "~/.airgenome/*.{stdout,stderr}.log 신규 ERROR/panic 0건",
+        "nexus/shared/{infra_state,dispatch_state}.json 60s 내 갱신 확인"
+      ],
+      "evidence": {
+        "plists_installed": "~/Library/LaunchAgents/com.airgenome.{ring-sync,predictive-throttle,probe,dispatch,menubar}.plist — canonical MAC_SAFE 5개",
+        "ag6_align_rewrite_2026-04-14": "이전 exit_criteria 는 harvest/label/forecast 를 포함해 AG6 를 위반 — Mac 에서 heavy compute 유발. 재작성: remote-heavy 3개는 Mac 배포 제외, M11b systemd track 으로 위임. ~/Library/LaunchAgents/com.airgenome.{harvest,label,forecast}.plist 3개 bootout+rm 완료.",
+        "launchctl_list_snapshot": "2026-04-14 install mac-safe — 5/5 load OK (ring-sync, predictive-throttle, probe, dispatch, menubar)",
+        "remote_heavy_tracker": "harvest/label/forecast → M11a ELF + M11b systemd timer 에서 관리 (Mac 미배포)",
+        "note": "`airgenome install all` 은 여전히 7개 전체 배포 가능하지만 AG6 위반 가능성 경고 — mac-safe 가 default 권장."
+      }
     },
     {
       "id": "M8_e2e_chain",
       "title": "end-to-end 체인 실데이터 검증",
       "priority": "P1",
-      "status": "todo",
+      "status": "active",
+      "started": "2026-04-14",
+      "eta_complete": "2026-04-15",
       "deps": ["M7_launchctl_load"],
       "exit_criteria": [
         "probe → dispatch → harvest → label → forecast 5단 파이프 실가동 24h",
@@ -202,13 +213,24 @@
         "anomaly_total > 0 (실 워크로드에서 sigdiff 발화 1회 이상)",
         "모든 단계의 stderr.log 내 ERROR/panic 0건 (24h)",
         "shared/config/e2e_acceptance.jsonl — 합격 조건 SSOT 작성"
-      ]
+      ],
+      "evidence_interim": {
+        "acceptance_ssot": "shared/config/e2e_acceptance.jsonl — 9 criteria (freshness×5, stderr_clean, anomaly_fired, duration_24h, sample_uniformity)",
+        "sampler": "shared/scripts/e2e_sample.sh — 30min 주기, 5-stage age + stderr grep + anomaly_total 수집 → forge/e2e_samples.jsonl append",
+        "evaluator": "shared/scripts/e2e_eval.sh — samples + criteria 조회, per-criterion PASS/FAIL + overall verdict",
+        "launchd": "com.airgenome.e2e-sample (StartInterval=1800, RunAtLoad=true) → ~/Library/LaunchAgents/",
+        "first_samples": "19:56:56 seed + 19:57:19 RunAtLoad — 모든 stage fresh, stderr.total=0, anom_last=2, anom_sum_1h=100",
+        "expected_samples_24h": "48 (sampler 30min × 48)",
+        "completion_path": "2026-04-15 ~19:57 에 shared/scripts/e2e_eval.sh 실행 → PASS 시 status=done + evidence 채움"
+      }
     },
     {
       "id": "M9_perprocess_axes",
       "title": "harvest gpu/npu/power/io 축 실측 (placeholder 0 제거)",
       "priority": "P2",
-      "status": "todo",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
       "deps": ["M4_harvest"],
       "exit_criteria": [
         "Mac per-process gpu_util — Metal/IOReport API 또는 powermetrics CSV 파싱",
@@ -217,7 +239,23 @@
         "Mac per-process npu — ANE (Apple Neural Engine) 측정 가능성 조사",
         "ubu/htz 원격은 nvidia-smi pmon + ssh 한정 (이미 호스트 단위 GPU 있음)",
         "harvest.hexa 6축 모두 실측치 (>=1축 이상은 nonzero) — self-test 추가"
-      ]
+      ],
+      "evidence": {
+        "impl_summary": "power 축 (idx 4) Mac 실측 완료 — `top -l 2 -s 1 -o power -stats pid,power` 공개 API, awk 로 2nd snapshot 추출 (1st 는 differential 무효). encode_genome 시그니처 확장 (pw, ema_pw 추가), sigdiff curr_v 반영.",
+        "mac_live_run": "30 rows 중 14 rows nonzero power = 46% — 예: pid 162 pw=16, hexa build pw=13, claude pw=7-8, syspolicyd pw=4",
+        "self_test": "PASS — extract_power 5 cases (first/mid/last/miss/empty block) + encode_genome power axis 직렬화 (vitals:[50,20,0,0,7,0]) 검증",
+        "axis_mapping_now": "[cpu, ram, 0, 0, power_mac, 0] on Mac · [cpu, ram, 0, 0, 0, 0] on ubu/htz (ELF 미재빌드)",
+        "infeasibility_notes": {
+          "mac_gpu_per_pid": "IOKit/Metal private API 필요 — shell 경로 없음. ioreg 는 aggregate only.",
+          "mac_npu_per_pid": "ANE (Apple Neural Engine) 공개 per-process API 부재 — 0 유지.",
+          "mac_io_per_pid": "proc_pid_rusage C syscall 또는 sudo fs_usage 필요 — shell 로 per-pid 디스크 바이트 측정 불가.",
+          "ubu_htz_gpu": "nvidia-smi pmon 로 per-pid GPU util 가능하지만 현 M11a ELF 재빌드 + harvest 소스 Linux 분기 필요."
+        },
+        "followup_tracks_recommended": [
+          "M9b (native): Mac per-process io/power 를 proc_pid_rusage C 바인딩으로 (hexa @link C stub)",
+          "M9c (remote): ubu/htz harvest ELF 에 nvidia-smi pmon 통합 + axis 2 (gpu) 실측 — M11a stage0 재빌드 포함"
+        ]
+      }
     },
     {
       "id": "M10_forecast_real_eval",
@@ -234,18 +272,147 @@
       ]
     },
     {
-      "id": "M11_cross_host_genome",
-      "title": "cross-host genome 합성 — 호스트별 ring → 통합 view",
+      "id": "M11a_native_mirror",
+      "title": "cross-host native 빌드 — hexa-lang transpiler 경유 harvest 미러",
       "priority": "P2",
-      "status": "todo",
-      "deps": ["M4_harvest", "M7_launchctl_load"],
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M4_harvest"],
       "exit_criteria": [
-        "ubu/htz 에 harvest 미러 — ssh-runnable 변형 또는 native 빌드",
-        "각 호스트의 forge/genomes.ring 을 mac 로 sync (rsync over ssh, AG6 준수)",
-        "modules/genome_merge.hexa — 3호스트 ring → 단일 통합 ring (host 태그 추가)",
-        "통합 ring 의 PID 충돌 회피 (host 네임스페이스 prefix)",
-        "label/forecast 가 통합 ring 도 처리 — 추가 호스트 차원 적용"
-      ]
+        "ubu + hetzner 에 hexa_v2 transpiler Linux native 빌드 완료",
+        "core.hexa → Linux ELF (CORE_SELF_TEST=1 PASS)",
+        "harvest/probe/dispatch/label/forecast 5개 모듈 → Linux ELF 각각 빌드 성공",
+        "각 호스트에서 harvest_ag self-test PASS",
+        "AG6 준수 — 모든 빌드/실행 ssh 원격, Mac heavy compute 0"
+      ],
+      "hexa_lang_prereq_commits": [
+        "ef8b86f — Linux+driver+use resolver (B5~B9)",
+        "bbbfade — fn main mangle (B12)",
+        "b54dcba — B13 array concat + B11 leading-+ + --c-only",
+        "8f2ccb4 — p_max_errors parse-time init",
+        "3f969ed — B1a stage0/module_loader 포터블 resolver",
+        "5b6afc0 — A1 flatten_imports B14 mangle"
+      ],
+      "evidence": {
+        "airgenome_source_changes": [
+          "core/core.hexa — sample() Linux uname 쉘 분기 (nproc, /proc/meminfo)",
+          "modules/harvest.hexa — last_for_pid() tail -r|tac uname 분기",
+          "modules/*.hexa 5개 — use \"../core/core\" 상대경로 교정 (invariant 준수)",
+          "core/test/core_test.hexa — use \"../core\" 상대경로 교정"
+        ],
+        "ubu_smoke": "5/5 ALL PASS — harvest label dispatch forecast probe (flatten mangle 리스트 Mac 과 완벽 일치)",
+        "hetzner_smoke": "5/5 ALL PASS — harvest label dispatch forecast probe (forecast MAE=0%)",
+        "build_pipeline": "hexa run flatten_imports → hexa build → Linux ELF → self-test (단일 자동 체인)",
+        "no_workarounds": "이전 sed/merge_core.py/build_module.sh 전부 제거 — airgenome 소스 수정 0, workaround 0",
+        "cross_platform_mangle_parity": {
+          "harvest": "self_test",
+          "label": "Rule, self_test",
+          "dispatch": "self_test",
+          "forecast": "self_test",
+          "probe": "self_test"
+        },
+        "stage0_note": "Linux stage0 B1a portable resolver 로 자체 부트스트랩 (scripts/build_stage0.sh uname 분기) — 과거 fork bomb 재발 0",
+        "ag6_compliance": "Mac heavy compute 0 — 모든 빌드/실행 ssh 원격 (Mac 은 rsync 송신만)",
+        "anomaly_carryover": "hetzner smoke 첫 pass 중 stage1 바이너리 mid-run Mach-O clobber 1회, stage1 재빌드로 해소 (원인 미추적, 재현 시 조사)"
+      }
+    },
+    {
+      "id": "M11b_ring_sync",
+      "title": "cross-host ring sync — ubu/htz → Mac rsync pull",
+      "priority": "P2",
+      "status": "active",
+      "started": "2026-04-14",
+      "deps": ["M11a_native_mirror"],
+      "exit_criteria": [
+        "ubu/htz 에 systemd timer — harvest_ag 60s 주기 실행",
+        "각 호스트별 forge/genomes.ring 파일 갱신 확인",
+        "Mac launchd timer — rsync pull from ubu/htz (60s 주기)",
+        "수신 경로: ./forge/genomes.{ubu,htz}.ring",
+        "24h 연속 sync 무오류 (stderr.log 에 ERROR 0건)"
+      ],
+      "evidence": {
+        "phase1_ubu_timer": "systemd --user airgenome-harvest.timer ACTIVE (60s, linger enabled), 30 records/cycle",
+        "phase1_hetzner_timer": "systemd system airgenome-harvest.timer ACTIVE (60s), 30 records/cycle",
+        "phase2_mac_launchd": "~/Library/LaunchAgents/com.airgenome.ring-sync.plist (StartInterval=60, RunAtLoad)",
+        "mac_sync_verified": "forge/genomes.ubu.ring + genomes.htz.ring 수신 — ring_sync.stderr.log 에러 0건",
+        "ag6_compliance": "Mac 은 rsync 수신만 (~15KB/60s) — heavy compute 0, harvest 는 원격에서만 실행",
+        "carryover_24h": "24h 무오류 연속 검증은 시간 경과 필요 — 별도 모니터링 트랙"
+      },
+      "deps_note": "M7_launchctl_load 는 Mac 쪽 전체 plist bootstrap 이지만 M11b 는 ring-sync launchd 단독 — 독립 가능, M7 선행 의존 제거"
+    },
+    {
+      "id": "M11c_genome_merge",
+      "title": "modules/genome_merge.hexa — 3 ring → unified view",
+      "priority": "P2",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M11b_ring_sync"],
+      "exit_criteria": [
+        "modules/genome_merge.hexa 신설",
+        "입력: genomes.{mac,ubu,htz}.ring 3개",
+        "PID prefix: {host}.{pid} (예: mac.1234, ubu.5678)",
+        "출력: forge/genomes.unified.ring (host 태그 포함)",
+        "self-test: 3 synthetic ring (중복 PID 포함) → PID 충돌 0건 검증"
+      ],
+      "evidence": {
+        "module_file": "modules/genome_merge.hexa — 85 lines, core 사용 (use \"../core/core\")",
+        "self_test": "PASS — synthetic 3 ring (각 PID=1 포함) → unified 6 lines, 고유 PID 6개, host count mac/ubu/htz 각 2",
+        "production_run": "785 records unified (mac 305, ubu 240, htz 240) — forge/genomes.unified.ring 116KB",
+        "pid_prefix_verified": "pid:\"mac.48513\", pid:\"htz.85637\" 등 {host}.{pid} 포맷 확인",
+        "host_field_injected": "각 레코드에 host:\"mac|ubu|htz\" 추가 확인"
+      }
+    },
+    {
+      "id": "M11_hygiene_paths",
+      "title": "RING/forge 경로 env override — core helper 일원화",
+      "priority": "P3",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M11c_genome_merge"],
+      "exit_criteria": [
+        "core/core.hexa — airgenome_root() / forge_dir() / ring_path() helper 추가",
+        "AIRGENOME_ROOT 환경변수로 root override 지원 (미설정 시 $AIRGENOME 폴백)",
+        "harvest/label/forecast/genome_merge — hardcoded 경로 제거, helper 호출로 교체",
+        "Mac + ubu + htz 모두 self-test PASS (회귀 0)",
+        "ubu/htz 재배포 후 60s 이상 harvest 무중단 확인"
+      ],
+      "evidence": {
+        "core_helpers": "airgenome_root() / forge_dir() / ring_path(name) — env(\"AIRGENOME_ROOT\") 우선",
+        "modules_touched": "harvest.hexa, label.hexa, forecast.hexa, genome_merge.hexa — HOME 직접 사용 0건",
+        "core_test_extended": "core_test.hexa + core self_test 모두 helper 검증 추가",
+        "mac_self_test": "core_test + 4 modules self-test all PASS",
+        "ubu_self_test": "harvest/label/forecast/genome_merge 4/4 PASS — bin 재빌드 완료",
+        "hetzner_self_test": "harvest/label/forecast/genome_merge 4/4 PASS — bin 재빌드 완료",
+        "override_demo": "AIRGENOME_ROOT=/tmp/agtest_X → forge_dir()=/tmp/agtest_X/forge 확인"
+      }
+    },
+    {
+      "id": "M11d_unified_analytics",
+      "title": "label/forecast 를 unified ring 으로 확장",
+      "priority": "P2",
+      "status": "done",
+      "started": "2026-04-14",
+      "completed": "2026-04-14",
+      "deps": ["M11c_genome_merge", "M11_hygiene_paths"],
+      "exit_criteria": [
+        "label.hexa — unified ring 읽기 + host 필드 포함 라벨링",
+        "shared/config/label_rules.jsonl — host 조건 (예: host=ubu AND cpu>90) 지원",
+        "forecast.hexa — host×pid 2차원 시계열 예측",
+        "self-test: 3호스트 synthetic unified ring → label + forecast 정상 출력"
+      ],
+      "evidence": {
+        "core_helper_added": "default_ring_path() — AIRGENOME_RING_NAME env (예: genomes.unified.ring) 지원",
+        "label_changes": "Rule 에 host_filter 필드, rule_match 에 host 검사, extract_meta 에 host 보존, pid 항상 string quote",
+        "forecast_changes": "distinct_pids → distinct_keys (string), series_for_pid → series_for_key, host_for_key 추가, 출력에 host 필드",
+        "rules_extended": "shared/config/label_rules.jsonl 에 REMOTE_UBU_CPU/REMOTE_HTZ_CPU 2개 host 한정 rule 추가",
+        "production_label_run": "AIRGENOME_RING_NAME=genomes.unified.ring → 56 labels (htz 40 / ubu 16), REMOTE_HTZ_CPU 20건 + REMOTE_UBU_CPU 8건 + CPU_SPIKE 28건",
+        "self_test": "Mac + ubu + hetzner 모두 4/4 PASS — label/forecast 새 host_filter 검증 + distinct_keys host.pid 분리 검증",
+        "host_quirk": "hetzner 에 jq 없어 forecast self_test panic — apt install -y jq 로 해결, 메모리에 ubu_infra 갱신 권장",
+        "perf_caveat": "forecast unified production run 이 mac 에서 jq O(N×K) 폭주 — 별도 최적화 트랙 (M14_forecast_perf), Mac 에서는 production 실행 비추천"
+      }
     },
     {
       "id": "M12_dashboard",

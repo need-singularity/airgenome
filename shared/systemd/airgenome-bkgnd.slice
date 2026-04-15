@@ -1,0 +1,9 @@
+[Unit]
+Description=airgenome background maintenance (harvest / probe / ring-sync)
+Documentation=정기 수집/동기 작업. stress 와 real 사이 중간 우선순위.
+
+[Slice]
+CPUWeight=50
+IOWeight=100
+MemoryHigh=30%
+TasksMax=512

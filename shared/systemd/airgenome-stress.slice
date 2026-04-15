@@ -1,0 +1,13 @@
+[Unit]
+Description=airgenome stress tests (deferrable, low priority)
+Documentation=openssl speed / blowup.hexa 등 벤치/부하 테스트 전용
+
+[Slice]
+# CPUWeight=10 → real(1000) 경쟁 시 거의 양보. 유휴 CPU 는 흡수.
+CPUWeight=10
+IOWeight=10
+# 메모리도 제한 — real slice 는 80%, stress 는 50% 에서 swap/kill 리스크
+MemoryHigh=40%
+MemoryMax=50%
+TasksMax=1024
+# Nice=19 (userland) 추가 보호

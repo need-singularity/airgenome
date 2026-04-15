@@ -1,0 +1,9 @@
+{"id":"probe_freshness","stage":"probe","path":"/Users/ghost/Dev/nexus/shared/infra_state.json","max_age_s":180,"note":"probe StartInterval=60 + jitter buffer"}
+{"id":"dispatch_freshness","stage":"dispatch","path":"/Users/ghost/Dev/nexus/shared/dispatch_state.json","max_age_s":180,"note":"dispatch StartInterval=60 + jitter buffer"}
+{"id":"harvest_freshness","stage":"harvest","path":"/Users/ghost/Dev/airgenome/forge/genomes.ring","max_age_s":180,"note":"harvest StartInterval=60 + jitter buffer"}
+{"id":"label_freshness","stage":"label","path":"/Users/ghost/Dev/airgenome/forge/labeled_anomaly.jsonl","max_age_s":600,"note":"label StartInterval=300 + jitter buffer"}
+{"id":"forecast_freshness","stage":"forecast","path":"/Users/ghost/Dev/airgenome/forge/forecast.jsonl","max_age_s":7200,"note":"forecast StartInterval=3600 + jitter buffer"}
+{"id":"stderr_clean","kind":"grep_count","pattern":"ERROR|panic|PANIC|Traceback|FATAL","files":["/Users/ghost/.airgenome/probe.stderr.log","/Users/ghost/.airgenome/dispatch.stderr.log","/Users/ghost/.airgenome/harvest.stderr.log","/Users/ghost/.airgenome/label.stderr.log","/Users/ghost/.airgenome/forecast.stderr.log"],"max_matches":0,"note":"5 stage stderr 합계 ERROR/panic 0건"}
+{"id":"anomaly_fired","kind":"harvest_anomaly","source":"/Users/ghost/.airgenome/harvest.stdout.log","pattern":"anomaly_total=","min_total_across_24h":1,"note":"24h 동안 anomaly_total>0 이 최소 1회"}
+{"id":"duration_24h","kind":"sample_coverage","min_samples":40,"sample_interval_s":1800,"note":"30min 주기 48 samples 예상 · 40+ 커버리지 필수"}
+{"id":"sample_uniformity","kind":"sample_gap_max","max_gap_s":5400,"note":"샘플 간 간격 최대 90min (중단 감지)"}

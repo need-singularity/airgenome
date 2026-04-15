@@ -1,0 +1,97 @@
+// modules/genome_merge.hexa — 3호스트 ring → unified ring (M11c)
+//
+// 책임:
+//   1. forge/genomes.{mac,ubu,htz}.ring 3개 (또는 genomes.ring for mac) 스캔
+//   2. 각 라인에 host 필드 삽입, pid 를 "{host}.{pid}" string 으로 변환 (PID 충돌 회피)
+//   3. forge/genomes.unified.ring 에 합병 출력 (원자적 rewrite)
+//
+// 입력 스키마 (호스트별 ring, JSONL):
+//   {"ts":"...","pid":123,"comm":"...","rss_kb":N,"vitals":[...],"ema":[...]}
+//
+// 출력 스키마 (unified, JSONL):
+//   {"ts":"...","pid":"mac.123","comm":"...","rss_kb":N,"vitals":[...],"ema":[...],"host":"mac"}
+//
+// 제약:
+//   - use "../core/core" 만 (invariants AG-core-only)
+//   - jq 로 JSON 조작 (Mac 경량)
+//   - try/catch 미사용
+
+use "../core/core"
+
+let FORGE    = forge_dir()
+let MAC_RING = ring_path("genomes.ring")
+let UBU_RING = ring_path("genomes.ubu.ring")
+let HTZ_RING = ring_path("genomes.htz.ring")
+let UNIFIED  = ring_path("genomes.unified.ring")
+
+// 호스트 ring 한 개를 unified 에 append.
+// 파일 없으면 0 반환, 있으면 처리된 라인 수.
+fn merge_host(src: str, host: str, out: str) -> int {
+    let chk = exec("[ -f '" + src + "' ] && echo ok || echo no").trim()
+    if chk != "ok" { return 0 }
+    let cmd = "jq -c '. + {host:\"" + host + "\", pid:(\"" + host + ".\" + (.pid|tostring))}' '" + src + "' >> '" + out + "'"
+    exec(cmd)
+    return to_int(exec("wc -l < '" + src + "' 2>/dev/null || echo 0").trim())
+}
+
+fn run_merge() -> int {
+    exec("mkdir -p '" + FORGE + "'")
+    let tmp = UNIFIED + ".tmp"
+    exec("rm -f '" + tmp + "'")
+    let m = merge_host(MAC_RING, "mac", tmp)
+    let u = merge_host(UBU_RING, "ubu", tmp)
+    let h = merge_host(HTZ_RING, "htz", tmp)
+    exec("mv -f '" + tmp + "' '" + UNIFIED + "'")
+    return m + u + h
+}
+
+fn self_test() -> void {
+    let tmp = "/tmp/agm_test"
+    exec("mkdir -p '" + tmp + "' && rm -f '" + tmp + "'/*.ring")
+
+    // 합성 ring 3개 — 각각 PID 1 을 포함하여 충돌 재현
+    exec("printf '%s\\n' '{\"pid\":1,\"cpu\":10}' '{\"pid\":2,\"cpu\":20}' > '" + tmp + "/mac.ring'")
+    exec("printf '%s\\n' '{\"pid\":1,\"cpu\":30}' '{\"pid\":3,\"cpu\":40}' > '" + tmp + "/ubu.ring'")
+    exec("printf '%s\\n' '{\"pid\":1,\"cpu\":50}' '{\"pid\":4,\"cpu\":60}' > '" + tmp + "/htz.ring'")
+
+    let uout = tmp + "/unified.ring"
+    exec("rm -f '" + uout + "'")
+    exec("jq -c '. + {host:\"mac\", pid:(\"mac.\" + (.pid|tostring))}' '" + tmp + "/mac.ring' > '" + uout + "'")
+    exec("jq -c '. + {host:\"ubu\", pid:(\"ubu.\" + (.pid|tostring))}' '" + tmp + "/ubu.ring' >> '" + uout + "'")
+    exec("jq -c '. + {host:\"htz\", pid:(\"htz.\" + (.pid|tostring))}' '" + tmp + "/htz.ring' >> '" + uout + "'")
+
+    let count = to_int(exec("wc -l < '" + uout + "'").trim())
+    if count != 6 { panic("self_test FAIL [unified count] expected=6 got=" + to_string(count)) }
+
+    // PID prefix 충돌 회피 확인: 원본 pid=1 3개 → mac.1/ubu.1/htz.1 모두 고유
+    let unique_pids = to_int(exec("jq -r '.pid' '" + uout + "' | sort -u | wc -l").trim())
+    if unique_pids != 6 { panic("self_test FAIL [pid collision] expected=6 got=" + to_string(unique_pids)) }
+
+    // host 필드 정확성
+    let mac_count = to_int(exec("jq -r 'select(.host==\"mac\") | .pid' '" + uout + "' | wc -l").trim())
+    if mac_count != 2 { panic("self_test FAIL [mac host count] expected=2 got=" + to_string(mac_count)) }
+
+    let ubu_count = to_int(exec("jq -r 'select(.host==\"ubu\") | .pid' '" + uout + "' | wc -l").trim())
+    if ubu_count != 2 { panic("self_test FAIL [ubu host count] expected=2 got=" + to_string(ubu_count)) }
+
+    let htz_count = to_int(exec("jq -r 'select(.host==\"htz\") | .pid' '" + uout + "' | wc -l").trim())
+    if htz_count != 2 { panic("self_test FAIL [htz host count] expected=2 got=" + to_string(htz_count)) }
+
+    println("  ✅ genome_merge self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+
+    let n = run_merge()
+    println("genome_merge done — total=" + to_string(n))
+}
+
+main()
