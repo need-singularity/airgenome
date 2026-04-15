@@ -20,6 +20,11 @@ use "../core/core"
 let HOME = env("HOME")
 let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
 let DISPATCH_STATE = HOME + "/Dev/nexus/shared/dispatch_state.json"
+let SLOTS_DIR = HOME + "/.airgenome/host_slots"
+
+// ACTIVE_PENALTY_PER — active 슬롯 1개당 감점. 쏠림 억제 목적.
+// 10 = 완만(쏠림 살짝), 20 = 기본(1개면 host 전환), 30 = 공격(항상 분산)
+let ACTIVE_PENALTY_PER = 20
 
 // 공백 안전 jq 추출 — 누락 필드는 빈 문자열 반환
 fn jqx(expr: str, path: str) -> str {
@@ -46,6 +51,24 @@ fn score_compute(cpu_free: int, ram_free: int, load_int: int) -> int {
     if raw < 0 { return 0 }
     if raw > 100 { return 100 }
     return raw
+}
+
+// active_slots — ~/.airgenome/host_slots/<host>.<kind>.active 카운터 읽기.
+// 파일 없거나 숫자 아니면 0. executor.sh 가 flock 하에서 atomic 쓰기.
+fn active_slots(host: str, kind: str) -> int {
+    let path = SLOTS_DIR + "/" + host + "." + kind + ".active"
+    let s = exec("cat '" + path + "' 2>/dev/null").trim()
+    if s == "" { return 0 }
+    return to_int_safe(s)
+}
+
+// apply_active_penalty — base 점수에서 active*PENALTY_PER 감점. 0~100 clamp.
+fn apply_active_penalty(base: int, active: int) -> int {
+    let penalty = active * ACTIVE_PENALTY_PER
+    let adj = base - penalty
+    if adj < 0 { return 0 }
+    if adj > 100 { return 100 }
+    return adj
 }
 
 fn score_gpu(status: str, gpu_util: int, vram_free_pct: int) -> int {
@@ -101,11 +124,14 @@ fn view_ubu(path: str) -> HostView {
     if vram_t > 0 {
         vram_free = (vram_t - vram_u) * 100 / vram_t
     }
+    let a_c = active_slots("ubu", "compute")
+    let a_g = active_slots("ubu", "gpu")
+    let a_h = active_slots("ubu", "heavy")
     return HostView {
         name: "ubu", status: "active",
-        compute: score_compute(cpu_free, ram_free, load_i),
-        gpu: score_gpu("active", gpu_util, vram_free),
-        heavy: score_heavy(cpu_free, ram_free, 8)
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_c),
+        gpu: apply_active_penalty(score_gpu("active", gpu_util, vram_free), a_g),
+        heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, 8), a_h)
     }
 }
 
@@ -129,11 +155,13 @@ fn view_ubu2(path: str) -> HostView {
         if util_pct > 100 { util_pct = 100 }
         cpu_free = 100 - util_pct
     }
+    let a_c2 = active_slots("ubu2", "compute")
+    let a_h2 = active_slots("ubu2", "heavy")
     return HostView {
         name: "ubu2", status: "active",
-        compute: score_compute(cpu_free, ram_free, load_i),
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_c2),
         gpu: 0,
-        heavy: score_heavy(cpu_free, ram_free, threads)
+        heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, threads), a_h2)
     }
 }
 
@@ -157,11 +185,13 @@ fn view_htz(path: str) -> HostView {
         if util_pct > 100 { util_pct = 100 }
         cpu_free = 100 - util_pct
     }
+    let a_ch = active_slots("htz", "compute")
+    let a_hh = active_slots("htz", "heavy")
     return HostView {
         name: "htz", status: "active",
-        compute: score_compute(cpu_free, ram_free, load_i),
+        compute: apply_active_penalty(score_compute(cpu_free, ram_free, load_i), a_ch),
         gpu: 0,
-        heavy: score_heavy(cpu_free, ram_free, threads)
+        heavy: apply_active_penalty(score_heavy(cpu_free, ram_free, threads), a_hh)
     }
 }
 
@@ -294,6 +324,28 @@ fn self_test() -> void {
     let out = build_dispatch("2026-04-13T00:00:00Z", ubu_ok, ubu2_off, htz_off, mac_only, true)
     if len(out) < 100 { panic("self_test FAIL [build_dispatch len]") }
     if !out.contains("\"ubu2\"") { panic("self_test FAIL [build_dispatch missing ubu2 scores]") }
+
+    // 7. apply_active_penalty 경계
+    let p0 = apply_active_penalty(100, 0)
+    if p0 != 100 { panic("self_test FAIL [apply_active_penalty active=0]") }
+    let p1 = apply_active_penalty(100, 1)
+    if p1 != 80 { panic("self_test FAIL [apply_active_penalty active=1]") }   // 100 - 20
+    let p2 = apply_active_penalty(50, 3)
+    if p2 != 0 { panic("self_test FAIL [apply_active_penalty active=3 clamp]") }  // 50-60 → 0
+    let p3 = apply_active_penalty(100, 10)
+    if p3 != 0 { panic("self_test FAIL [apply_active_penalty huge active]") }
+
+    // 8. active_slots 라운드트립 — 파일 없을 때 0, 있을 때 읽어옴
+    let a_none = active_slots("nonexistent_host", "heavy")
+    if a_none != 0 { panic("self_test FAIL [active_slots missing file should 0]") }
+    // 임시 파일로 3 주입 후 읽기
+    let tmp_host = "__selftest_host__"
+    let _mk = exec("mkdir -p '" + SLOTS_DIR + "'")
+    let tmp_file = SLOTS_DIR + "/" + tmp_host + ".heavy.active"
+    write_file(tmp_file, "3")
+    let a_three = active_slots(tmp_host, "heavy")
+    let _rm = exec("rm -f '" + tmp_file + "'")
+    if a_three != 3 { panic("self_test FAIL [active_slots should read 3]") }
 
     println("  ✅ dispatch self_test PASS")
 }

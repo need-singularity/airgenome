@@ -1,6 +1,6 @@
 {
   "_schema": {
-    "version": 1,
+    "version": 2,
     "doc": "airgenome host registry — SSOT. bin/host.sh 로 add/remove. 직접 편집 시 bin/host.sh sync 필수.",
     "fields": {
       "enabled": "false 면 모든 소비자(probe/dispatch/remote_load/menubar)에서 제외",
@@ -9,7 +9,8 @@
       "has_gpu": "nvidia-smi 가용 여부 — probe schema 분기",
       "threads": "nproc. dispatch score_heavy 의 thread bonus 기준",
       "tier": "primary(LAN 상시) | secondary(원격 상시) | local(mac self)",
-      "tags": "compute | gpu | heavy | io — dispatch 후보 필터용"
+      "tags": "compute | gpu | heavy | io — dispatch 후보 필터용",
+      "slots": "kind 별 동시 실행 하드캡 (executor flock). dispatch 는 active*20 감점으로 쏠림 분산. 0 이면 해당 kind 금지, 필드 누락이면 무제한."
     }
   },
   "hosts": {
@@ -23,7 +24,12 @@
       "tags": [
         "compute",
         "gpu"
-      ]
+      ],
+      "slots": {
+        "heavy": 1,
+        "compute": 2,
+        "gpu": 1
+      }
     },
     "ubu2": {
       "enabled": true,
@@ -34,7 +40,11 @@
       "tier": "primary",
       "tags": [
         "compute"
-      ]
+      ],
+      "slots": {
+        "heavy": 1,
+        "compute": 2
+      }
     },
     "htz": {
       "enabled": true,
@@ -46,7 +56,11 @@
       "tags": [
         "compute",
         "heavy"
-      ]
+      ],
+      "slots": {
+        "heavy": 2,
+        "compute": 4
+      }
     },
     "mac": {
       "enabled": true,
@@ -57,7 +71,11 @@
       "tier": "local",
       "tags": [
         "io"
-      ]
+      ],
+      "slots": {
+        "heavy": 0,
+        "compute": 0
+      }
     }
   }
 }
