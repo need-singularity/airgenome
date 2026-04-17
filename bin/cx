@@ -94,19 +94,12 @@ if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     remote_env_prefix='CLAUDE_CONFIG_DIR="$HOME/'"$base"'" '
 fi
 
-# cwd 매핑: Mac $HOME/Dev/<rest> → 원격 $HOME/mac_dev/<rest> (sshfs reverse-mount).
-# 매칭 안 되면 (~/Dev 밖) $HOME 에서 실행. 원격에 mount 없으면 cd 실패 → $HOME fallback.
+# cwd 매핑: 원격에 /Users/ghost → $HOME/mac_home symlink 가 있으므로 Mac 절대경로를 그대로 cd.
+# 장점: Mac 경로 ($HOME 밖 포함) 가 원격에서도 동일하게 resolve. cd 실패 시 $HOME fallback.
 remote_cwd_prefix=""
 if [ "$host" != "mac" ]; then
     mac_cwd=$(pwd)
-    case "$mac_cwd" in
-        "$HOME/Dev"|"$HOME/Dev"/*)
-            rel="${mac_cwd#$HOME/Dev}"
-            rel="${rel#/}"
-            # cd 실패 시 $HOME 으로 fallback — 네트워크/마운트 이슈 대응
-            remote_cwd_prefix='cd "$HOME/mac_dev/'"$rel"'" 2>/dev/null || cd "$HOME"; '
-            ;;
-    esac
+    remote_cwd_prefix='cd '"$(printf '%q' "$mac_cwd")"' 2>/dev/null || cd "$HOME"; '
 fi
 
 # 실행 + duration

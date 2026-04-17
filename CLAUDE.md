@@ -342,3 +342,12 @@ ref:
   conv      nexus/shared/airgenome_convergence_*.jsonl
   gates     nexus/shared/gate_config.jsonl              HEXA-GATE 동적
   api       $NEXUS/shared/CLAUDE.md
+
+crosshost (M11e_claude_route, 2026-04-17~):
+  pipeline  cl(계정) → CLAUDE_EXEC=cx → cx(호스트 priority-first: ubu→ubu2→mac) → ssh 원격 claude
+  files     bin/cx / modules/claude_route.hexa / forge/claude_genome.jsonl / shared/config/hosts.json
+  sshfs     원격 ~/mac_home = Mac:/Users/ghost. /Users/ghost → ~/mac_home symlink 로 Mac 절대경로 그대로 resolve
+  systemd   원격 ~/.config/systemd/user/mac-home.service (linger ON, boot 자동 마운트)
+  auth      Mac keychain → 원격 .credentials.json 이식 (/tmp/port_tokens.sh). 만료 시 재실행
+  env       zshrc: PATH 에 $HOME/Dev/airgenome/bin 추가, CLAUDE_EXEC=$HOME/Dev/airgenome/bin/cx
+  mac_load  claude + 자식 (hexa/npm/빌드) 전부 원격 CPU. Mac 은 ssh client + sshd 파일 서빙만
