@@ -1,0 +1,79 @@
+#!/bin/bash
+# bin/remote_account_sync — accounts.json + keychain_map.json 기준으로 전 계정 원격 동기화
+#
+# 동작:
+#   1. nexus/shared/.runtime/accounts/accounts.json 에서 계정 목록 read
+#   2. rsync (config 골격 only, projects/cache/history 등 제외)
+#   3. Mac keychain → 원격 ~/.claude-<name>/.credentials.json
+#   4. installMethod: "native" → "unknown" 패치 (Linux claude 의 native 경고 우회)
+#
+# 사용:
+#   remote_account_sync ubu              # ubu 만
+#   remote_account_sync ubu ubu2         # 복수
+#   remote_account_sync                  # 기본: ubu ubu2
+#
+# Why 이 스크립트: 10+2 계정 + 2 호스트 조합에서 일부 빠지면 원격에서 브라우저 OAuth 재로그인 강제.
+# accounts.json 을 single source 로 삼아 "추가된 계정이 자동으로 포함" 되도록.
+
+set -euo pipefail
+
+ACCOUNTS="${ACCOUNTS:-/Users/ghost/Dev/nexus/shared/.runtime/accounts/accounts.json}"
+KEYMAP="${KEYMAP:-/Users/ghost/Dev/nexus/shared/config/claude_keychain_map.json}"
+
+[ -f "$ACCOUNTS" ] || { echo "ERROR: accounts.json 없음 ($ACCOUNTS)" >&2; exit 2; }
+[ -f "$KEYMAP" ]   || { echo "ERROR: keychain map 없음 ($KEYMAP)" >&2; exit 2; }
+command -v jq       >/dev/null || { echo "ERROR: jq 필요" >&2; exit 3; }
+command -v security >/dev/null || { echo "ERROR: security (macOS) 필요" >&2; exit 3; }
+
+hosts=("$@")
+[ ${#hosts[@]} -eq 0 ] && hosts=(ubu ubu2)
+
+# 계정명 배열 (natural sort)
+names=()
+while IFS= read -r n; do names+=("$n"); done < <(jq -r '.accounts[].name' "$ACCOUNTS" | sort -V)
+
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+
+for host in "${hosts[@]}"; do
+    log "=== $host ==="
+
+    # 1. rsync config 골격
+    for n in "${names[@]}"; do
+        src="$HOME/.claude-$n/"
+        [ -d "$src" ] || { log "  $n: Mac 디렉토리 없음 skip"; continue; }
+        rsync -az --timeout=120 \
+            --exclude='projects/' --exclude='projects.bak/' \
+            --exclude='cache/' --exclude='paste-cache/' \
+            --exclude='file-history/' --exclude='session-env/' \
+            --exclude='shell-snapshots/' --exclude='history.jsonl' \
+            --exclude='backups/' --exclude='sessions/' \
+            --exclude='plugins/' --exclude='plans/' \
+            --exclude='settings.json' \
+            "$src" "$host:.claude-$n/" >/dev/null
+        log "  rsync $n OK"
+    done
+
+    # 2. 토큰 이식
+    for n in "${names[@]}"; do
+        hex=$(jq -r --arg k "$n" '.map[$k] // empty' "$KEYMAP")
+        [ -n "$hex" ] || { log "  $n: keymap 없음 skip"; continue; }
+        blob=$(security find-generic-password -l "Claude Code-credentials-$hex" -a ghost -w 2>/dev/null || true)
+        [ -n "$blob" ] || { log "  $n: keychain empty (hex=$hex)"; continue; }
+        printf '%s' "$blob" \
+            | ssh "$host" "cat > ~/.claude-$n/.credentials.json && chmod 600 ~/.claude-$n/.credentials.json"
+        log "  token $n len=${#blob}"
+    done
+
+    # 3. installMethod 패치 — native → unknown (원격은 npm 설치)
+    ssh "$host" "for f in ~/.claude-*/.claude.json; do
+        [ -f \"\$f\" ] || continue
+        im=\$(jq -r '.installMethod // empty' \"\$f\")
+        if [ \"\$im\" = native ]; then
+            tmp=\"\$f.tmp.\$\$\"
+            jq '.installMethod = \"unknown\"' \"\$f\" > \"\$tmp\" && mv \"\$tmp\" \"\$f\"
+        fi
+    done"
+    log "  installMethod 패치 완료"
+done
+
+log "DONE (hosts=${hosts[*]} accounts=${#names[@]})"
