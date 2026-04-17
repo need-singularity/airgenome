@@ -415,6 +415,37 @@
       }
     },
     {
+      "id": "M11e_claude_route",
+      "title": "AI-native claude CLI router — ubu/ubu2 우선 + mac fallback",
+      "priority": "P2",
+      "status": "active",
+      "started": "2026-04-17",
+      "deps": ["M2_probe", "M3_dispatch", "M11a_native_mirror"],
+      "exit_criteria": [
+        "ubu + ubu2 에 Node 20 + @anthropic-ai/claude-code 설치 (/usr/local)",
+        "modules/claude_route.hexa — use \"../core/core\" 만, select / record / self-test 서브커맨드, self-test PASS",
+        "선택 규칙: priority-first (ubu → ubu2 → mac). score(>0)은 살아있음 판정에만, 호스트 간 비교 없음",
+        "bin/cx — wrapper: select → ssh -t alias claude / local claude, 세션 종료 시 genome append",
+        "forge/claude_genome.jsonl — {ts,host,duration_s,exit,rtt_ms} append-only JSONL",
+        "bin/cx 가 기존 mac claude 함수 shadow 안 함 (별도 이름)",
+        "lockdown_gate verify 회귀 0 — claude_route L0 등록은 follow-up PR"
+      ],
+      "evidence": {
+        "install": "ubu + ubu2 에 node v20.18.0 + claude 2.1.112 설치 완료 (wget 기반 NodeJS prebuilt + sudo npm -g install)",
+        "module": "modules/claude_route.hexa (190+ lines) — use \"../core/core\", select/record/self-test 서브커맨드, self_test PASS (clamp/to_int_safe/pick 우선순위/record roundtrip/recent_failures 검증)",
+        "module_quirk": "hexa-lang 예약어 select 회피 → 함수명 choose_host. hexa run sandboxed remote 실행 → record write 는 Mac rsync-back 없어 self-test 내부 전용. 실 genome 은 bin/cx 에서 bash append.",
+        "wrapper": "bin/cx — --force-host / --show / claude forward args 지원. SSH probe 로 RTT 측정 후 ssh -t alias claude 실행, mac 이면 command claude. 세션 종료 후 JSONL append.",
+        "live_tests": {
+          "ubu": "cx --force-host ubu --version → 2.1.112 (Claude Code), rtt=71ms, duration=1s, exit=0",
+          "ubu2": "cx --force-host ubu2 --version → 2.1.112, rtt=51ms",
+          "mac": "cx --force-host mac --version → 2.1.112, rtt=0ms (local command claude)",
+          "select_live": "hexa run modules/claude_route.hexa select → ubu (infra_state 실측 기반)"
+        },
+        "genome_samples": "forge/claude_genome.jsonl 에 3 라인 기록 확인 (mac/ubu/ubu2 각 1)",
+        "lockdown_verify": "lockdown_gate verify --scope L0 → 74 PASS / 3 FAIL (FAIL 은 nexus CODEOWNERS/branch protection drift, 무관)"
+      }
+    },
+    {
       "id": "M12_dashboard",
       "title": "사람용 관찰 대시보드 (menubar + web)",
       "priority": "P3",

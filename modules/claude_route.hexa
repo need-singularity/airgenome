@@ -1,0 +1,222 @@
+// modules/claude_route.hexa — AI-native Claude CLI host selector
+//
+// 책임:
+//   1. $NEXUS/shared/infra_state.json 에서 ubu/ubu2/mac 상태 읽기
+//   2. forge/claude_genome.jsonl 에서 최근 실패 count → score 페널티
+//   3. select subcommand — best host name 을 stdout 에 단 한 줄
+//   4. record subcommand — 세션 결과 append to claude_genome.jsonl
+//   5. self-test — parse + score boundary + genome append roundtrip
+//
+// 제약:
+//   - use "../core/core" 만 (invariant AG-core-only)
+//   - try/catch 미사용 (hexa-lang stage1)
+//   - float 연산 회피 — int + jq 만
+//
+// score 공식 (0~100) — "건강" 판정에만 사용 (>0 이면 사용 가능):
+//   base = (cpu_free + ram_free) / 2
+//   penalty = min(3, recent_failures) * 15
+//   score = clamp(base - penalty, 0, 100)
+//
+// 선택 규칙 (priority-first, 2026-04-17 사용자 결정):
+//   1. ubu 가 살아있으면(score>0) → ubu
+//   2. 아니면 ubu2 살아있으면 → ubu2
+//   3. 아니면 → mac (최후 fallback)
+//   호스트 간 score 비교 없음. 부하 기반 밸런싱이 아니라 확정 순위.
+
+use "../core/core"
+
+let HOME = env("HOME")
+let INFRA_STATE = HOME + "/Dev/nexus/shared/infra_state.json"
+
+fn genome_path() -> str {
+    return forge_dir() + "/claude_genome.jsonl"
+}
+
+fn jqx(expr: str, path: str) -> str {
+    let cmd = "jq -r '" + expr + " // \"\"' '" + path + "' 2>/dev/null"
+    return exec(cmd).trim()
+}
+
+fn to_int_safe(s: str) -> int {
+    if s == "" { return 0 }
+    let parts = s.split(".")
+    if len(parts) == 0 { return 0 }
+    let head = parts[0]
+    if head == "" { return 0 }
+    return to_int(head)
+}
+
+fn clamp(v: int, lo: int, hi: int) -> int {
+    if v < lo { return lo }
+    if v > hi { return hi }
+    return v
+}
+
+// 최근 N 세션 중 host 실패(exit != 0) 개수. 파일 없으면 0.
+fn recent_failures(host: str, n: int) -> int {
+    let gp = genome_path()
+    let cmd = "tail -n 50 '" + gp + "' 2>/dev/null | jq -r --arg h '" + host + "' 'select(.host==$h and .exit!=0) | .ts' 2>/dev/null | tail -n " + to_string(n) + " | wc -l"
+    return to_int_safe(exec(cmd).trim())
+}
+
+struct Candidate {
+    name: str
+    status: str
+    score: int
+}
+
+fn score_ubu() -> Candidate {
+    let st = jqx(".hosts.ubu.status", INFRA_STATE)
+    if st != "active" { return Candidate { name: "ubu", status: st, score: 0 } }
+    let load_i = to_int_safe(jqx(".hosts.ubu.load", INFRA_STATE))
+    let ram_total = to_int_safe(jqx(".hosts.ubu.ram_total_mb", INFRA_STATE))
+    let ram_used = to_int_safe(jqx(".hosts.ubu.ram_used_mb", INFRA_STATE))
+    let ram_free = 0
+    if ram_total > 0 { ram_free = (ram_total - ram_used) * 100 / ram_total }
+    // load 근사: load < 2 → 90% free / 2~4 → 50 / >=4 → 20
+    let cpu_free = 90
+    if load_i >= 2 { cpu_free = 50 }
+    if load_i >= 4 { cpu_free = 20 }
+    let base = (cpu_free + ram_free) / 2
+    let fails = recent_failures("ubu", 3)
+    let penalty = fails * 15
+    return Candidate { name: "ubu", status: "active", score: clamp(base - penalty, 0, 100) }
+}
+
+fn score_ubu2() -> Candidate {
+    let st = jqx(".hosts.ubu2.status", INFRA_STATE)
+    if st != "active" { return Candidate { name: "ubu2", status: st, score: 0 } }
+    let load_i = to_int_safe(jqx(".hosts.ubu2.load", INFRA_STATE))
+    let threads = to_int_safe(jqx(".hosts.ubu2.cpu_threads", INFRA_STATE))
+    let ram_total = to_int_safe(jqx(".hosts.ubu2.ram_total_mb", INFRA_STATE))
+    let ram_used = to_int_safe(jqx(".hosts.ubu2.ram_used_mb", INFRA_STATE))
+    let ram_free = 0
+    if ram_total > 0 { ram_free = (ram_total - ram_used) * 100 / ram_total }
+    // threads 기반 정확 util
+    let cpu_free = 80
+    if threads > 0 {
+        let util = load_i * 100 / threads
+        if util > 100 { util = 100 }
+        cpu_free = 100 - util
+    }
+    let base = (cpu_free + ram_free) / 2
+    let fails = recent_failures("ubu2", 3)
+    let penalty = fails * 15
+    return Candidate { name: "ubu2", status: "active", score: clamp(base - penalty, 0, 100) }
+}
+
+fn score_mac() -> Candidate {
+    let st = jqx(".hosts.mac.status", INFRA_STATE)
+    if st != "active" { return Candidate { name: "mac", status: st, score: 0 } }
+    let cpu_pct = to_int_safe(jqx(".hosts.mac.cpu_pct", INFRA_STATE))
+    let ram_pct = to_int_safe(jqx(".hosts.mac.ram_pct", INFRA_STATE))
+    let cpu_free = 100 - cpu_pct
+    let ram_free = 100 - ram_pct
+    let base = (cpu_free + ram_free) / 2
+    let fails = recent_failures("mac", 3)
+    let penalty = fails * 15
+    return Candidate { name: "mac", status: "active", score: clamp(base - penalty, 0, 100) }
+}
+
+// priority-first: ubu → ubu2 → mac. 순위대로 살아있는(score>0) 첫 호스트.
+// score 는 "건강" 판정(>0 이면 사용 가능)에만 쓰고, 호스트 간 비교는 하지 않는다.
+fn pick(u: Candidate, u2: Candidate, m: Candidate) -> str {
+    if u.score > 0 { return "ubu" }
+    if u2.score > 0 { return "ubu2" }
+    return "mac"
+}
+
+fn choose_host() -> str {
+    let u = score_ubu()
+    let u2 = score_ubu2()
+    let m = score_mac()
+    return pick(u, u2, m)
+}
+
+// record session result. append 1 JSON line to genome file (mkdir -p forge).
+fn record(host: str, duration_s: int, exit_code: int, rtt_ms: int) -> void {
+    // NOTE: hexa run 은 sandboxed remote 실행이라 이 write 는 Mac 으로 rsync 되지 않음.
+    //       실제 운용은 bin/cx 에서 직접 bash append — 이 함수는 self-test 전용.
+    let ts = exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+    let line = "{\"ts\":\"" + ts + "\",\"host\":\"" + host + "\",\"duration_s\":" + to_string(duration_s) + ",\"exit\":" + to_string(exit_code) + ",\"rtt_ms\":" + to_string(rtt_ms) + "}\n"
+    let gp = genome_path()
+    let tmp = gp + ".tmp.rec"
+    let _mk = exec("mkdir -p '" + forge_dir() + "'")
+    write_file(tmp, line)
+    let _ap = exec("cat '" + tmp + "' >> '" + gp + "' ; rm -f '" + tmp + "'")
+}
+
+fn self_test() -> void {
+    // 1. clamp 경계
+    if clamp(50, 0, 100) != 50 { panic("self_test FAIL [clamp mid]") }
+    if clamp(-5, 0, 100) != 0 { panic("self_test FAIL [clamp lo]") }
+    if clamp(150, 0, 100) != 100 { panic("self_test FAIL [clamp hi]") }
+
+    // 2. to_int_safe 경계
+    if to_int_safe("") != 0 { panic("self_test FAIL [to_int_safe empty]") }
+    if to_int_safe("3.14") != 3 { panic("self_test FAIL [to_int_safe float]") }
+    if to_int_safe("42") != 42 { panic("self_test FAIL [to_int_safe int]") }
+
+    // 3. pick 우선순위
+    let u_hi = Candidate { name: "ubu", status: "active", score: 80 }
+    let u_lo = Candidate { name: "ubu", status: "active", score: 30 }
+    let u_off = Candidate { name: "ubu", status: "offline", score: 0 }
+    let u2_hi = Candidate { name: "ubu2", status: "active", score: 70 }
+    let u2_eq = Candidate { name: "ubu2", status: "active", score: 80 }
+    let u2_off = Candidate { name: "ubu2", status: "offline", score: 0 }
+    let m_any = Candidate { name: "mac", status: "active", score: 90 }
+    let m_off = Candidate { name: "mac", status: "offline", score: 0 }
+
+    // priority-first: ubu 살아있으면 무조건 ubu (score 크기는 무시)
+    if pick(u_hi, u2_hi, m_any) != "ubu" { panic("self_test FAIL [priority ubu hi]") }
+    if pick(u_lo, u2_hi, m_any) != "ubu" { panic("self_test FAIL [priority ubu low but alive]") }
+    if pick(u_hi, u2_eq, m_any) != "ubu" { panic("self_test FAIL [priority ubu over ubu2]") }
+    // ubu 죽었을 때만 ubu2
+    if pick(u_off, u2_hi, m_any) != "ubu2" { panic("self_test FAIL [priority ubu off → ubu2]") }
+    // 둘 다 죽어야 mac
+    if pick(u_off, u2_off, m_any) != "mac" { panic("self_test FAIL [priority both off → mac]") }
+    if pick(u_off, u2_off, m_off) != "mac" { panic("self_test FAIL [priority all off → mac fallback]") }
+
+    // 4. record roundtrip — 임시 genome 파일에 한 줄 쓰고 jq 로 필드 확인
+    let gp = genome_path()
+    let bak = gp + ".bak.selftest"
+    let _bak = exec("cp -f '" + gp + "' '" + bak + "' 2>/dev/null || true")
+    // 새 line 기록 후 마지막 line 파싱
+    record("selftest_host", 42, 0, 123)
+    let last_host = exec("tail -n 1 '" + gp + "' | jq -r .host 2>/dev/null").trim()
+    let last_dur = exec("tail -n 1 '" + gp + "' | jq -r .duration_s 2>/dev/null").trim()
+    let last_rtt = exec("tail -n 1 '" + gp + "' | jq -r .rtt_ms 2>/dev/null").trim()
+    // 원복: 마지막 라인 제거 (backup 있으면 restore, 없으면 last line 만 pop)
+    if exec("test -f '" + bak + "' && echo yes || echo no").trim() == "yes" {
+        let _rst = exec("mv -f '" + bak + "' '" + gp + "'")
+    } else {
+        let _trim = exec("sed -i.bak '$d' '" + gp + "' 2>/dev/null && rm -f '" + gp + ".bak' || true")
+    }
+    if last_host != "selftest_host" { panic("self_test FAIL [record host=" + last_host + "]") }
+    if last_dur != "42" { panic("self_test FAIL [record duration=" + last_dur + "]") }
+    if last_rtt != "123" { panic("self_test FAIL [record rtt=" + last_rtt + "]") }
+
+    // 5. recent_failures — 파일 없는 호스트는 0
+    let nf = recent_failures("ghost_host_nonexistent", 3)
+    if nf != 0 { panic("self_test FAIL [recent_failures missing host]") }
+
+    println("  ✅ claude_route self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" { self_test(); return }
+        if sub == "select" { println(choose_host()); return }
+        if sub == "record" {
+            if len(a) < 7 { panic("usage: record <host> <duration_s> <exit> <rtt_ms>") }
+            record(a[3], to_int(a[4]), to_int(a[5]), to_int(a[6]))
+            return
+        }
+    }
+    // default: select
+    println(choose_host())
+}
+
+main()

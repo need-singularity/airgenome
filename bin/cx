@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# bin/cx — AI-native Claude CLI router (ubu/ubu2 우선, mac fallback)
+#
+# 책임:
+#   1. modules/claude_route.hexa select → best host
+#   2. mac 이면 local `command claude`, remote 이면 `ssh -t <alias> claude`
+#   3. SSH handshake RTT 측정 (remote only)
+#   4. 세션 종료 후 modules/claude_route.hexa record 로 genome 기록
+#
+# 사용:
+#   cx                         # 기본 claude TUI
+#   cx "~/Dev/foo"             # arg 전달 (forward)
+#   cx --force-host mac        # 강제 라우팅
+#   cx --show                  # 선택만, 실행 안 함
+#
+# Why 별도 이름: Mac 의 `claude` 가 shell 함수 wrapper (터미널 제목 설정) 라 shadow 하면 충돌.
+
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+MODULE="modules/claude_route.hexa"
+REG="shared/config/hosts.json"
+GENOME="$ROOT/forge/claude_genome.jsonl"
+
+die() { echo "cx: $*" >&2; exit 2; }
+
+# ms precision timer — Linux date %N 비호환 macOS → perl fallback
+now_ms() {
+    if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
+    else
+        # 저해상도 fallback
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
+
+# arg parsing — --force-host / --show 는 wrapper 전용, 나머지는 claude 로 forward
+force_host=""
+show_only=false
+fwd=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force-host) force_host=$2; shift 2 ;;
+        --show)       show_only=true; shift ;;
+        --)           shift; fwd+=("$@"); break ;;
+        *)            fwd+=("$1"); shift ;;
+    esac
+done
+
+# host 선택
+if [ -n "$force_host" ]; then
+    host=$force_host
+else
+    host=$(hexa run "$MODULE" select 2>/dev/null | tail -n 1)
+fi
+[ -n "$host" ] || die "select failed — infra_state 읽기 실패?"
+
+if [ "$show_only" = true ]; then
+    echo "cx → $host"
+    exit 0
+fi
+
+# alias 조회 (mac 제외)
+alias=""
+if [ "$host" != "mac" ]; then
+    alias=$(jq -r --arg h "$host" '.hosts[$h].ssh_alias // ""' "$REG")
+    [ -n "$alias" ] || die "host '$host' ssh_alias 없음"
+fi
+
+echo "cx → $host${alias:+ ($alias)}" >&2
+
+# RTT 측정 (remote only)
+rtt=0
+if [ "$host" != "mac" ]; then
+    r0=$(now_ms)
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$alias" true 2>/dev/null; then
+        r1=$(now_ms)
+        rtt=$(( r1 - r0 ))
+    else
+        echo "cx: ssh probe 실패 — mac 으로 fallback" >&2
+        host=mac
+        alias=""
+    fi
+fi
+
+# CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
+# 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
+# cl 을 안 썼으면 이 변수는 비어있고, 원격 claude 는 기본 ~/.claude 사용.
+remote_env_prefix=""
+if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    base=$(basename "$CLAUDE_CONFIG_DIR")
+    # $HOME 은 remote 셸이 전개 — ssh 로 전달되는 문자열에 리터럴 '$HOME' 로 두기
+    remote_env_prefix='CLAUDE_CONFIG_DIR="$HOME/'"$base"'" '
+fi
+
+# cwd 매핑: Mac $HOME/Dev/<rest> → 원격 $HOME/mac_dev/<rest> (sshfs reverse-mount).
+# 매칭 안 되면 (~/Dev 밖) $HOME 에서 실행. 원격에 mount 없으면 cd 실패 → $HOME fallback.
+remote_cwd_prefix=""
+if [ "$host" != "mac" ]; then
+    mac_cwd=$(pwd)
+    case "$mac_cwd" in
+        "$HOME/Dev"|"$HOME/Dev"/*)
+            rel="${mac_cwd#$HOME/Dev}"
+            rel="${rel#/}"
+            # cd 실패 시 $HOME 으로 fallback — 네트워크/마운트 이슈 대응
+            remote_cwd_prefix='cd "$HOME/mac_dev/'"$rel"'" 2>/dev/null || cd "$HOME"; '
+            ;;
+    esac
+fi
+
+# 실행 + duration
+# ${fwd[@]+"${fwd[@]}"} — 빈 배열에서 set -u unbound 방지 (bash 3.2 호환)
+t0=$(date +%s)
+if [ "$host" = "mac" ]; then
+    command claude ${fwd[@]+"${fwd[@]}"}
+    rc=$?
+else
+    # 원격 실행용 quoted cmd 합성 (cd + env prefix + claude + args)
+    remote_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
+    ssh -t "$alias" "$remote_cmd"
+    rc=$?
+fi
+t1=$(date +%s)
+dur=$(( t1 - t0 ))
+
+# genome 기록 (bash 직접 append — hexa sandbox 우회)
+# 스키마: {ts, host, duration_s, exit, rtt_ms}
+mkdir -p "$(dirname "$GENOME")"
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"ts":"%s","host":"%s","duration_s":%d,"exit":%d,"rtt_ms":%d}\n' \
+    "$ts" "$host" "$dur" "$rc" "$rtt" >> "$GENOME"
+
+exit $rc
