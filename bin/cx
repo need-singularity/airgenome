@@ -17,6 +17,7 @@
 
 set -uo pipefail
 
+CALLER_CWD="$(pwd)"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MODULE="modules/claude_route.hexa"
@@ -98,8 +99,8 @@ fi
 # 장점: Mac 경로 ($HOME 밖 포함) 가 원격에서도 동일하게 resolve. cd 실패 시 $HOME fallback.
 remote_cwd_prefix=""
 if [ "$host" != "mac" ]; then
-    mac_cwd=$(pwd)
-    remote_cwd_prefix='cd '"$(printf '%q' "$mac_cwd")"' 2>/dev/null || cd "$HOME"; '
+    # CALLER_CWD 는 cx 최상단에서 저장한 Mac 호출 시점 pwd ($ROOT cd 전)
+    remote_cwd_prefix='cd '"$(printf '%q' "$CALLER_CWD")"' 2>/dev/null || cd "$HOME"; '
 fi
 
 # 실행 + duration
