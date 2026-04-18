@@ -1,0 +1,15 @@
+[Unit]
+Description=Mount Mac /private/var/folders via SSHFS at %h/mac_tmp (image-paste path resolve)
+After=network-online.target mac-home.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/mac_tmp
+ExecStart=/usr/bin/sshfs -f -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,cache_timeout=5,kernel_cache mac:/private/var/folders %h/mac_tmp
+ExecStop=/bin/fusermount3 -u %h/mac_tmp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
