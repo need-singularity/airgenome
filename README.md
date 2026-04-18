@@ -11,14 +11,29 @@ core/                  # 분리된 라이브러리 — Vitals, sample, assess, A
   core.hexa
   test/core_test.hexa
 modules/               # roadmap milestone 모듈 (M2 이후) — use "../core/core" 만
+bin/
+  bootstrap            # fresh Mac 17-tier init (brew → claude → ssh → cl-refresh launchd → ...)
+  cx                   # cross-host claude router (ssh -t 직결, ControlMaster 의존)
 shared/
   config/roadmap/      # rebuild v2 SSOT (milestones, invariants)
+  config/hosts.json    # cx/dispatch 용 원격 호스트 registry
   launchagents/        # com.airgenome.*.plist (launchd 스케줄)
 archive/v1/            # v1 시점 모든 코드/데이터 (read-only)
 nexus/                 # cross-project SSOT (별도 프로젝트)
 CLAUDE.md              # 프로젝트 인스트럭션 (Claude Code)
-cl                     # claude wrapper
 ```
+
+## Setup (fresh Mac)
+
+```bash
+git clone https://github.com/need-singularity/airgenome ~/Dev/airgenome
+~/Dev/airgenome/bin/bootstrap                      # 전 tier 대화형
+BOOTSTRAP_YES=1 ~/Dev/airgenome/bin/bootstrap      # 전 tier non-interactive
+BOOTSTRAP_ONLY="5,6,14" ~/Dev/airgenome/bin/bootstrap  # tier 5/6/14 만
+```
+
+Claude 계정별 `/login` (OAuth 브라우저) 완료 후 `bootstrap` 재실행 → tier 16/17 가
+`claude_keychain_map.json` + `accounts.json` 자동 갱신.
 
 ## Commands
 

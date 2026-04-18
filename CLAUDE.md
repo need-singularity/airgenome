@@ -344,10 +344,19 @@ ref:
   api       $NEXUS/shared/CLAUDE.md
 
 crosshost (M11e_claude_route, 2026-04-17~):
-  pipeline  cl(계정) → CLAUDE_EXEC=cx → cx(호스트 priority-first: ubu→ubu2→mac) → ssh 원격 claude
+  pipeline  cl(계정) → CLAUDE_EXEC=cx → cx(호스트 priority-first: ubu→ubu2→mac) → ssh -t 직결 원격 claude
+  v3        2026-04-18 tmux 완전 제거 — ssh -t 단일 호출. Mac ~/.ssh/config 의 ControlMaster 로 probe→exec
+            master 세션 재사용 (추가 handshake 0ms). cl 측 18f×80ms LAUNCH_SPINNER 삭제 (-1.4s).
+            cl FOCUSED_BG_REFRESH: TUI 접속 시 선택 계정 1건만 bg refresh (ccmon 스타일).
   files     bin/cx / modules/claude_route.hexa / forge/claude_genome.jsonl / shared/config/hosts.json
   sshfs     원격 ~/mac_home = Mac:/Users/ghost. /Users/ghost → ~/mac_home symlink 로 Mac 절대경로 그대로 resolve
   systemd   원격 ~/.config/systemd/user/mac-home.service (linger ON, boot 자동 마운트)
-  auth      Mac keychain → 원격 .credentials.json 이식 (/tmp/port_tokens.sh). 만료 시 재실행
+  auth      Mac keychain → 원격 .credentials.json 이식 (bin/remote_account_sync). 만료 시 재실행
   env       zshrc: PATH 에 $HOME/Dev/airgenome/bin 추가, CLAUDE_EXEC=$HOME/Dev/airgenome/bin/cx
   mac_load  claude + 자식 (hexa/npm/빌드) 전부 원격 CPU. Mac 은 ssh client + sshd 파일 서빙만
+
+init (fresh Mac, 2026-04-18):
+  bootstrap bin/bootstrap — 17-tier idempotent. brew → repo clone → zshrc → claude CLI → ssh config/키/ssh-copy-id →
+            tailscale → gh auth → loop skill → cl-refresh launchd → airgenome LaunchAgents → keychain_map 자동 스캔 →
+            accounts.json. BOOTSTRAP_YES=1 non-interactive, BOOTSTRAP_ONLY="5,6,14" 특정 tier 만.
+  순서      Claude 계정 /login 은 OAuth 브라우저 강제 → bootstrap 재실행 tier 16/17 로 keychain_map + accounts 완성
