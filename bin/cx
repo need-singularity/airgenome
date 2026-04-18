@@ -75,7 +75,9 @@ fi
 
 echo "cx → $host${alias:+ ($alias)}" >&2
 
-# RTT 측정 (remote only)
+# RTT 측정 (remote only).
+# Mac ~/.ssh/config 의 ControlMaster 설정에 의존 — probe 가 master 세션을 웜업,
+# 이후 ssh -t 는 동일 master 재사용 → 두 번째 핸드셰이크 skip (~200ms↓).
 rtt=0
 if [ "$host" != "mac" ]; then
     r0=$(now_ms)
@@ -135,6 +137,7 @@ else
     fi
     # ssh -t 직결. cd + env + claude. printf %q 로 args 안전 인코딩.
     # ServerAliveInterval=60 : 유휴 60s 마다 keep-alive, 3회 실패시 연결 종료 → 끊김 감지.
+    # Mac ssh config 의 ControlMaster 로 probe 웜업 master 재사용 (추가 handshake 0ms).
     inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
     ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" "$inner_cmd"
     rc=$?
