@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# bin/claudx-fan — 병렬 shard 발사 (M13a, 2026-04-19)
+#
+# 여러 task/prompt 를 동시에 N 개 claudx 프로세스로 분배.
+# 각 프로세스는 pool.pickBest 가 자연스럽게 서로 다른 계정을 선택 (첫 iter
+# 결과 기반 markExhausted → 다음 프로세스는 다른 계정). 사실상 12계정 fan-out.
+#
+# 결과 수렴: 각 task 의 응답을 fan-result.<ts>.jsonl 에 append.
+#
+# usage:
+#   claudx-fan "task1" "task2" "task3"              # 3 task 동시
+#   claudx-fan --file tasks.txt                     # 파일에서 줄 단위 load
+#   claudx-fan --max 6 task1 task2 ... task20       # 최대 동시 6, 나머지 큐잉
+#   claudx-fan task1 task2 -- --model sonnet         # -- 이후 claudx 패스스루
+#
+# env:
+#   CLAUDX_FAN_MAX      동시 프로세스 (default 8, v1 launcher_cap 관례)
+#   CLAUDX_FAN_STATE    결과 저장 디렉토리 (default $CLAUDX_STATE)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLAUDX="$CX_ROOT/bin/claudx"
+
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+: "${CLAUDX_FAN_MAX:=8}"
+: "${CLAUDX_FAN_STATE:=$CLAUDX_STATE}"
+export CLAUDX_STATE
+mkdir -p "$CLAUDX_FAN_STATE"
+
+ts_start=$(date +%Y%m%d-%H%M%S)
+RESULT="$CLAUDX_FAN_STATE/fan-result.$ts_start.jsonl"
+
+die() { echo "claudx-fan: $*" >&2; exit 2; }
+info() { echo "claudx-fan: $*" >&2; }
+ts_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# parse args
+max="$CLAUDX_FAN_MAX"
+task_file=""
+tasks=()
+extra=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --max)    max=$2; shift 2 ;;
+        --file)   task_file=$2; shift 2 ;;
+        --)       shift; extra=("$@"); break ;;
+        *)        tasks+=("$1"); shift ;;
+    esac
+done
+
+if [ -n "$task_file" ]; then
+    [ -f "$task_file" ] || die "--file not found: $task_file"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        case "$line" in '#'*) continue ;; esac
+        tasks+=("$line")
+    done < "$task_file"
+fi
+
+[ "${#tasks[@]}" -eq 0 ] && die "no tasks (positional or --file)"
+
+info "dispatching ${#tasks[@]} task(s), max_parallel=$max, result=$RESULT"
+printf '%s\n' "$(jq -cn --arg ts "$(ts_iso)" --arg n "${#tasks[@]}" --arg m "$max" \
+    '{ts:$ts,event:"fan_start",n_tasks:($n|tonumber),max_parallel:($m|tonumber)}')" >> "$RESULT"
+
+# stopfile
+STOP_FILE="$CLAUDX_FAN_STATE/fan.stop"
+[ -f "$STOP_FILE" ] && rm -f "$STOP_FILE"
+
+# 각 task 를 background 로 발사, 동시 cap 제어
+pids=()
+run_task() {
+    local idx="$1"
+    local task="$2"
+    local t0=$(date +%s)
+    local out rc
+    out=$("$CLAUDX" -p "$task" --output-format json ${extra[@]+"${extra[@]}"} 2>&1)
+    rc=$?
+    local t1=$(date +%s)
+    local dur=$((t1 - t0))
+    # resp_head 추출
+    local resp_head=""
+    resp_head=$(printf '%s' "$out" | jq -r '.result // .text // empty' 2>/dev/null | head -c 800)
+    [ -z "$resp_head" ] && resp_head=$(printf '%s' "$out" | head -c 800)
+    # append
+    local line
+    line=$(jq -cn --arg ts "$(ts_iso)" --arg i "$idx" --arg t "$task" --arg rc "$rc" --arg d "$dur" --arg r "$resp_head" \
+        '{ts:$ts,idx:($i|tonumber),event:"task_done",task:$t,rc:($rc|tonumber),dur_s:($d|tonumber),resp_head:$r}')
+    # atomic append via flock-like (unix append 자체는 atomic)
+    printf '%s\n' "$line" >> "$RESULT"
+}
+
+wait_slot() {
+    # 현재 살아있는 job 수가 max 미만 될 때까지 대기
+    while :; do
+        local alive=0
+        local new=()
+        for p in "${pids[@]}"; do
+            if kill -0 "$p" 2>/dev/null; then alive=$((alive + 1)); new+=("$p"); fi
+        done
+        pids=("${new[@]}")
+        [ "$alive" -lt "$max" ] && return 0
+        [ -f "$STOP_FILE" ] && return 1
+        sleep 1
+    done
+}
+
+for i in "${!tasks[@]}"; do
+    [ -f "$STOP_FILE" ] && break
+    wait_slot || break
+    run_task "$i" "${tasks[$i]}" &
+    pids+=($!)
+    info "[$i] fired (bg pid=$!)"
+    sleep 0.2  # stagger 살짝 — pool pickBest 가 서로 다른 계정 잡게
+done
+
+# 대기
+for p in "${pids[@]}"; do wait "$p" 2>/dev/null || true; done
+
+# 종합
+total=$(grep -c '"event":"task_done"' "$RESULT" 2>/dev/null || echo 0)
+ok=$(jq -r 'select(.event=="task_done" and .rc==0) | .idx' "$RESULT" 2>/dev/null | wc -l)
+printf '%s\n' "$(jq -cn --arg ts "$(ts_iso)" --arg t "$total" --arg o "$ok" \
+    '{ts:$ts,event:"fan_end",total:($t|tonumber),ok:($o|tonumber)}')" >> "$RESULT"
+info "fan_end — total=$total ok=$ok result=$RESULT"

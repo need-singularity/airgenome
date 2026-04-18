@@ -83,6 +83,50 @@ function usdOfUsage(model, u) {
   return inTok * p.in / 1e6 + outTok * p.out / 1e6;
 }
 
+// --- Input filter (v1 gate.hexa 이식) ---
+
+const HEAVY_KEYWORDS = [
+  /\bstress\s+test\b/i,
+  /\bfork[\s_-]?bomb\b/i,
+  /:\(\)\{\s*:\|:&\s*\};:/,  // classic fork bomb
+  /\byes\s*>\s*\//,            // yes > /...
+  /\bcargo\s+build\s+--release\s+--all\s+--all-features\b/i,
+  /\bblowup[\s_-]?engine\b/i,
+  /\brm\s+-rf\s+\/(?:\*|$)/,
+  /\bdd\s+if=\/dev\/zero\s+of=\//i,
+];
+
+const NO_UNSAFE = process.env.CLAUDX_UNSAFE !== '1';
+const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '524288', 10); // 512KB
+
+function checkInputFilter(bodyStr) {
+  if (!bodyStr || !NO_UNSAFE) return null;
+  // size gate
+  if (bodyStr.length > MAX_PROMPT_BYTES) {
+    return { kind: 'size', bytes: bodyStr.length, limit: MAX_PROMPT_BYTES };
+  }
+  // heavy keyword in prompt text (messages array values)
+  try {
+    const j = JSON.parse(bodyStr);
+    const msgs = j.messages || [];
+    for (const m of msgs) {
+      const content = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(c => c.text || '').join(' ') : '';
+      for (const re of HEAVY_KEYWORDS) {
+        if (re.test(content)) return { kind: 'heavy_keyword', pattern: re.toString() };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function syntheticFilterBlock(verdict) {
+  const body = JSON.stringify({
+    type: 'error',
+    error: { type: 'invalid_request_error', message: 'claudx input filter: ' + verdict.kind + ' (CLAUDX_UNSAFE=1 로 bypass)' },
+  });
+  return new Response(body, { status: 400, headers: { 'content-type': 'application/json' } });
+}
+
 // --- Redact (M13d / v1e) ---
 
 const REDACT_PATTERNS = [
@@ -418,11 +462,25 @@ globalThis.fetch = async function claudx_fetch(input, init) {
   const u = urlString(input);
   if (!isAnthropicCompletion(u)) return origFetch(input, init);
 
-  // Hook 1: budget cap (synthetic 429 before network)
+  // Hook 0: budget cap (synthetic 429 before network)
   const block = budgetBlock();
   if (block) {
     logEvent({ event: 'budget_block', kind: block.kind, spent: block.spent, cap: block.cap, url: u.slice(0, 80) });
     return synthetic429(block.kind, block);
+  }
+
+  // Hook 0b: input filter (size + heavy keyword) — v1 gate 이식
+  let _earlyBodyStr = '';
+  try {
+    if (init && typeof init.body === 'string') _earlyBodyStr = init.body;
+    else if (input && typeof input === 'object' && input.body) {
+      try { _earlyBodyStr = await input.clone().text(); } catch (_) {}
+    }
+  } catch (_) {}
+  const filterVerdict = checkInputFilter(_earlyBodyStr);
+  if (filterVerdict) {
+    logEvent({ event: 'input_filter_block', ...filterVerdict, url: u.slice(0, 80) });
+    return syntheticFilterBlock(filterVerdict);
   }
 
   // model / cwd / sid 추출 — logging 용

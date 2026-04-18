@@ -528,6 +528,25 @@
       ]
     },
     {
+      "id": "M13e_claudx_watch",
+      "title": "claudx-watch — 루프 stall 감지 watchdog (heartbeat gap + rotation storm)",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx", "M13c_claudx_economy"],
+      "problem": "자율모드 돌 때 claude 가 network hang / 좀비 / 무응답 상태가 되어도 claudx-loop 는 exit 만 감지 — 진행 중처럼 보이지만 실제 stall 인 경우 포착 못 함.",
+      "approach": "cost.jsonl 과 rotations.jsonl 의 마지막 ts 를 heartbeat 로 사용. 30s 간격 체크, 임계치(default 180s) 초과 silence 시 STALL 이벤트 emit. --auto 모드에선 claude 자식 SIGTERM 후 claudx-loop 가 재기동. --tty 는 알림.",
+      "exit_criteria": [
+        "bin/claudx-watch [--auto] [--tty] [--stall-sec N] [--interval N]",
+        "heartbeat 소스: cost.jsonl 최근 ts, rotations.jsonl 최근 ts (더 최근 값 사용)",
+        "rotation storm 감지: 60s 내 rotating 이벤트 >= 3건이면 RATE_STORM 이벤트",
+        "stall 이벤트 포맷: {ts, event:'stall'|'rate_storm', gap_s, source} → watch.jsonl",
+        "--auto: STALL 시 pkill -TERM claudx-loop 의 child claude. claudx-loop 가 iter++ 하며 재기동",
+        "--tty: Mac osascript notification / Linux notify-send / 없으면 bell",
+        "smoke: stall 모의 (cost.jsonl touch 후 180s+ 대기) → STALL emit 확인"
+      ]
+    },
+    {
       "id": "M13b_claudx_burn",
       "title": "claudx-burn — 풀 고갈까지 smash/free 키워드 연속 발사",
       "priority": "P0",

@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# bin/claudx-watch — 루프 stall 감지 watchdog (M13e, 2026-04-19)
+#
+# heartbeat 소스:
+#   $CLAUDX_STATE/cost.jsonl    — 성공 응답 기록 (e1 recordCost)
+#   $CLAUDX_STATE/rotations.jsonl — rotation/budget/cache/preempt 이벤트
+# 두 파일의 최근 ts 중 더 최근 값을 last_heartbeat 로 사용.
+# 60s 내 rotating 이벤트 >=3 이면 RATE_STORM (한도 연속 hit 중).
+#
+# usage:
+#   claudx-watch                     # 30s 간격 체크, stall 시 stderr + watch.jsonl
+#   claudx-watch --auto              # stall 시 claude 자식 SIGTERM (claudx-loop 가 재기동)
+#   claudx-watch --tty               # 알림 (macOS osascript / Linux notify-send / bell)
+#   claudx-watch --stall-sec 300     # 임계치 override (default 180)
+#   claudx-watch --interval 15       # 체크 주기
+#   claudx-watch --once              # 1회 체크 후 종료
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+mkdir -p "$CLAUDX_STATE"
+
+COST_LOG="$CLAUDX_STATE/cost.jsonl"
+ROT_LOG="$CLAUDX_STATE/rotations.jsonl"
+WATCH_LOG="$CLAUDX_STATE/watch.jsonl"
+
+STALL_SEC=180
+INTERVAL=30
+AUTO=0
+TTY=0
+ONCE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --auto)       AUTO=1; shift ;;
+        --tty)        TTY=1; shift ;;
+        --stall-sec)  STALL_SEC=$2; shift 2 ;;
+        --interval)   INTERVAL=$2; shift 2 ;;
+        --once)       ONCE=1; shift ;;
+        -h|--help)    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)            echo "claudx-watch: unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+ts_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+now_s() { date +%s; }
+
+log_evt() {
+    # $1 = json body
+    printf '%s\n' "$1" >> "$WATCH_LOG"
+}
+
+notify() {
+    local msg="$1"
+    echo "[claudx-watch] $msg" >&2
+    if [ "$TTY" = "1" ]; then
+        # bell
+        printf '\a'
+        # Mac
+        if command -v osascript >/dev/null 2>&1; then
+            osascript -e "display notification \"$msg\" with title \"claudx-watch\"" 2>/dev/null
+        fi
+        # Linux
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send "claudx-watch" "$msg" 2>/dev/null
+        fi
+    fi
+}
+
+kick_restart() {
+    # claudx-loop 의 child claude 에 SIGTERM → claudx-loop 가 iter++ 재기동
+    local killed=0
+    for pid in $(pgrep -f "cli\.js" 2>/dev/null); do
+        # 부모가 claudx/claudx-loop/cx 인지 확인
+        ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        pppid=$(ps -o ppid= -p "$ppid" 2>/dev/null | tr -d ' ')
+        if ps -o cmd= -p "$ppid" "$pppid" 2>/dev/null | grep -qE 'claudx|cx '; then
+            kill -TERM "$pid" 2>/dev/null && killed=$((killed + 1))
+        fi
+    done
+    log_evt "$(jq -cn --arg ts "$(ts_iso)" --arg k "$killed" '{ts:$ts,event:"kick_restart",killed:($k|tonumber)}')"
+    notify "SIGTERM sent to $killed claude child(ren) — claudx-loop will restart"
+}
+
+get_last_ts() {
+    local f="$1"
+    [ -f "$f" ] || { echo 0; return; }
+    tail -1 "$f" 2>/dev/null | jq -r '.ts // empty' 2>/dev/null | \
+      { read -r t; [ -n "$t" ] && date -u -d "$t" +%s 2>/dev/null || \
+        date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$t" +%s 2>/dev/null || echo 0; }
+}
+
+count_rotations_recent() {
+    local window_s=60
+    local cutoff=$(( $(now_s) - window_s ))
+    [ -f "$ROT_LOG" ] || { echo 0; return; }
+    tail -30 "$ROT_LOG" 2>/dev/null | \
+      jq -r --arg c "$cutoff" 'select(.event=="rotating") | .ts' | \
+      while read -r t; do
+          ts=$(date -u -d "$t" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$t" +%s 2>/dev/null || echo 0)
+          [ "$ts" -ge "$cutoff" ] && echo 1
+      done | wc -l
+}
+
+check_once() {
+    local now=$(now_s)
+    local last_cost last_rot latest
+    last_cost=$(get_last_ts "$COST_LOG")
+    last_rot=$(get_last_ts "$ROT_LOG")
+    if [ "$last_cost" -gt "$last_rot" ]; then latest=$last_cost; else latest=$last_rot; fi
+    local gap=$((now - latest))
+    local rot_count
+    rot_count=$(count_rotations_recent)
+    rot_count=${rot_count:-0}
+
+    # stall?
+    if [ "$latest" -gt 0 ] && [ "$gap" -gt "$STALL_SEC" ]; then
+        log_evt "$(jq -cn --arg ts "$(ts_iso)" --arg g "$gap" --arg s "$STALL_SEC" \
+            '{ts:$ts,event:"stall",gap_s:($g|tonumber),threshold:($s|tonumber)}')"
+        notify "STALL detected — gap=${gap}s (threshold=${STALL_SEC}s)"
+        [ "$AUTO" = "1" ] && kick_restart
+        return 1
+    fi
+
+    # rate storm?
+    if [ "$rot_count" -ge 3 ]; then
+        log_evt "$(jq -cn --arg ts "$(ts_iso)" --arg n "$rot_count" \
+            '{ts:$ts,event:"rate_storm",count_60s:($n|tonumber)}')"
+        notify "RATE_STORM — $rot_count rotations in last 60s (pool nearly drained)"
+        return 2
+    fi
+
+    # ok (quiet)
+    return 0
+}
+
+# 최초 기동 알림
+log_evt "$(jq -cn --arg ts "$(ts_iso)" --arg p "$$" --arg s "$STALL_SEC" --arg i "$INTERVAL" --arg a "$AUTO" \
+    '{ts:$ts,pid:($p|tonumber),event:"watch_start",stall_sec:($s|tonumber),interval:($i|tonumber),auto:($a|tonumber)}')"
+
+trap 'log_evt "$(jq -cn --arg ts \"$(ts_iso)\" '\''{ts:$ts,event:"watch_stop"}'\'')"; exit 0' TERM INT HUP
+
+if [ "$ONCE" = "1" ]; then
+    check_once; exit $?
+fi
+
+while true; do
+    check_once || true
+    sleep "$INTERVAL"
+done
