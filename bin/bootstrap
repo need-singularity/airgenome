@@ -120,4 +120,21 @@ else
     log "~/.git-credentials 없음 — Mac 에서 git push 한 번 후 bin/sync_git_creds 재실행"
 fi
 
+# ─ 9. cx_remote_launch 원격 설치 ───────────────────────────────────────
+# cx (bin/cx) 가 호출하는 원격 launcher. tmux 래핑으로 ssh 끊김 시 claude persist.
+if [ -f "$DEV/airgenome/shared/scripts/cx_remote_launch" ]; then
+    log "cx_remote_launch 원격 배포..."
+    HOSTS=$(jq -r '.hosts | to_entries[] | select(.value.enabled==true and .value.kind!="self") | .value.ssh_alias' "$DEV/airgenome/shared/config/hosts.json" 2>/dev/null)
+    for alias in $HOSTS; do
+        (
+            ssh -o ConnectTimeout=5 -o BatchMode=yes "$alias" 'mkdir -p ~/.airgenome' 2>/dev/null && \
+            scp -q "$DEV/airgenome/shared/scripts/cx_remote_launch" "$alias:~/.airgenome/cx_remote_launch" 2>&1 && \
+            ssh "$alias" 'chmod +x ~/.airgenome/cx_remote_launch' 2>&1 && \
+            log "  cx_remote_launch → $alias: OK" || \
+            log "  cx_remote_launch → $alias: SKIP (unreachable?)"
+        ) &
+    done
+    wait
+fi
+
 log "bootstrap 완료. 새 terminal 열거나 'exec zsh' 로 shell 환경 재로드."
