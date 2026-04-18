@@ -106,7 +106,23 @@ fi
 remote_cwd_prefix=""
 if [ "$host" != "mac" ]; then
     # CALLER_CWD 는 cx 최상단에서 저장한 Mac 호출 시점 pwd ($ROOT cd 전)
-    remote_cwd_prefix='cd '"$(printf '%q' "$CALLER_CWD")"' 2>/dev/null || cd "$HOME"; '
+    # fallback chain: Mac 절대경로 → 원격 $HOME 내 동일 relative → $HOME
+    #   1) Mac 절대경로 ($HOME/mac_home symlink 또는 sshfs 마운트 경유)
+    #   2) /Users/ghost/foo → $HOME/foo (원격에 clone 있을 때)
+    #   3) /Users/ghost/Dev/foo → $HOME/Dev/foo (Dev/ 하위 convention)
+    #   4) $HOME (최후 안전망)
+    caller_quoted=$(printf '%q' "$CALLER_CWD")
+    # Mac HOME prefix 제거한 relative 경로 (예: /Users/ghost/Dev/airgenome → Dev/airgenome)
+    case "$CALLER_CWD" in
+        /Users/ghost/*)
+            rel="${CALLER_CWD#/Users/ghost/}"
+            rel_quoted=$(printf '%q' "$rel")
+            remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"/'"$rel_quoted"' 2>/dev/null || cd "$HOME"; '
+            ;;
+        *)
+            remote_cwd_prefix='cd '"$caller_quoted"' 2>/dev/null || cd "$HOME"; '
+            ;;
+    esac
 fi
 
 # 실행 + duration
