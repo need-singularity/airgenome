@@ -125,27 +125,21 @@ else
         : > "$_cx_marker"
         echo "cx: /login 은 Mac 에서 'CLAUDE_CONFIG_DIR=\$HOME/.claude-<n> claude' — 원격 /login 은 Mac keychain 미반영 (오늘 1회)" >&2
     fi
-    # 원격 실행용 quoted cmd 합성 (cd + env prefix + claude + args)
+    # 원격 실행용 cmd 합성 (cd + env prefix + claude + args) — base64 로 ssh quoting 회피.
     inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
-    # 2026-04-18: tmux 2-phase 래핑 — ssh 끊김/^C cascade 로 claude SIGHUP 사망 방지.
-    # Phase1 (non-tty): tmux new-session -A -d 로 detached 세션 + inner_cmd 시동. 중첩 if/else 없이 단순 문자열이라 ssh quoting 안전.
-    # Phase2 (tty): tmux attach. 세션 존재하면 reattach, 없으면 (tmux 미설치 등) inner_cmd 직접 실행.
-    # opt-out: CX_NO_TMUX=1 또는 non-interactive (stdin/stdout 파이프)
-    if [ "${CX_NO_TMUX:-0}" = "1" ] || [ ! -t 0 ] || [ ! -t 1 ]; then
-        ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" "$inner_cmd"
-        rc=$?
-    else
-        session_base="$(basename "${CLAUDE_CONFIG_DIR:-default}")"
-        session_base="${session_base#.claude-}"
-        session="cx-${session_base}"
-        # Phase 1: 세션 없을 때만 생성 (+inner_cmd 시동). 이미 있으면 no-op.
-        ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 "$alias" \
-            "command -v tmux >/dev/null 2>&1 && tmux new-session -A -d -s $(printf '%q' "$session") $(printf '%q' "$inner_cmd")" 2>/dev/null
-        # Phase 2: tty ssh 로 attach. 실패 (tmux 없음/세션 죽음) 시 inner_cmd 직접.
-        ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" \
-            "tmux attach -t $(printf '%q' "$session") 2>/dev/null || $inner_cmd"
-        rc=$?
-    fi
+    # 2026-04-18: cx_remote_launch 방식 — 원격에 미리 배포된 launcher 가
+    # base64 디코드 → tmux new-session -A (attached ssh 의 pty 위에서) → claude 가 실제 tty 확보.
+    # detached tmux 에서 claude 가 즉시 exit 하던 문제 해결.
+    # launcher 는 bin/bootstrap + bin/sync_cx_launcher 로 설치. 미설치 시 raw fallback.
+    session_base="$(basename "${CLAUDE_CONFIG_DIR:-default}")"
+    session_base="${session_base#.claude-}"
+    session="cx-${session_base}"
+    cmd_b64=$(printf '%s' "$inner_cmd" | base64 | tr -d '\n')
+    # ssh -t 단일 호출. launcher 가 tty/tmux 판정 후 exec.
+    # if/else 로 명확히 분기 — inner_cmd 안의 `;` 이 다음 statement 로 escape 되는 것 방지.
+    ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" \
+        "if [ -x ~/.airgenome/cx_remote_launch ]; then bash ~/.airgenome/cx_remote_launch '$session' '$cmd_b64'; else $inner_cmd; fi"
+    rc=$?
 fi
 t1=$(date +%s)
 dur=$(( t1 - t0 ))
