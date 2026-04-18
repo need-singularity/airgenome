@@ -14,6 +14,9 @@
 #   CLAUDX_LOOP_BURST_SEC burst window seconds (default 60)
 #   CLAUDX_LOOP_LOG       iteration log path (default $CLAUDX_STATE/loop.jsonl)
 #   CLAUDX_NO_WATCH=1     claudx-watch 자동 부팅 opt-out (기본 on)
+#   CLAUDX_AUTOLOOP       첫 iter 에 /loop 자동 주입. 예: "30m 현재 할일 진행"
+#                         → claude 가 "끝" 선언해도 30분뒤 /loop 가 다음 턴 trigger
+#                         --autoloop 플래그 또는 이 env 로 지정
 
 set -uo pipefail
 
@@ -70,7 +73,20 @@ iter=0
 burst_t0=$(date +%s)
 burst_count=0
 
-log_evt '{ts:$ts,pid:$pid,event:"loop_start",args:$args}' --arg args "$*"
+# --autoloop <spec> 파싱 — first iter 에 "/loop <spec>" 자동 주입
+autoloop_spec=""
+real_args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --autoloop) autoloop_spec=$2; shift 2 ;;
+        *)          real_args+=("$1"); shift ;;
+    esac
+done
+# env 가 있으면 플래그 없을 때만 우선
+[ -z "$autoloop_spec" ] && autoloop_spec="${CLAUDX_AUTOLOOP:-}"
+set -- ${real_args[@]+"${real_args[@]}"}
+
+log_evt '{ts:$ts,pid:$pid,event:"loop_start",args:$args,autoloop:$al}' --arg args "$*" --arg al "$autoloop_spec"
 
 while true; do
     if [ -f "$CLAUDX_LOOP_STOP" ]; then
@@ -86,7 +102,12 @@ while true; do
     t0=$(date +%s)
     log_evt '{ts:$ts,pid:$pid,event:"spawn",iter:($i|tonumber)}' --arg i "$iter"
 
-    "$CLAUDX" "$@" &
+    # 첫 iter + autoloop 지정 시 /loop 를 initial prompt 로 주입
+    spawn_args=("$@")
+    if [ "$iter" -eq 1 ] && [ -n "$autoloop_spec" ]; then
+        spawn_args=("/loop $autoloop_spec" "$@")
+    fi
+    "$CLAUDX" ${spawn_args[@]+"${spawn_args[@]}"} &
     RUNNING_PID=$!
     wait "$RUNNING_PID" 2>/dev/null
     rc=$?
