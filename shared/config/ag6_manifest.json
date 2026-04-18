@@ -13,6 +13,7 @@
     "improve-loop":        { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 600,  "mac_start_interval": 600,  "mac_run_at_load": false, "reason": "self-improve — 10min tick, 저빈도" },
     "e2e-sample":          { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 1800, "mac_start_interval": 1800, "mac_run_at_load": false, "reason": "end-to-end probe — 30min" },
     "menubar":             { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 0,    "mac_start_interval": 0,    "mac_run_at_load": true,  "reason": "GUI — Aqua session KeepAlive" },
+    "doctor":              { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 86400, "mac_start_interval": 86400, "mac_run_at_load": false, "reason": "daily drift audit — LaunchAgent 정책 회귀 방지" },
     "daemons":             { "mac_allowed": false, "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 0,    "reason": "BLOCKED — nohup 무한루프 spawner → compressor 폭주 → WindowServer panic (2026-04-16, 2026-04-18)" },
     "harvest":             { "mac_allowed": false, "remote_allowed": true,  "scheduler": "systemd",  "interval_sec": 60,   "reason": "heavy — per-process sampling" },
     "label":               { "mac_allowed": false, "remote_allowed": true,  "scheduler": "systemd",  "interval_sec": 300,  "reason": "heavy — anomaly classification" },
