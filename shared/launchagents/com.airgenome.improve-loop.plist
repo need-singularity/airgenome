@@ -2,49 +2,38 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>com.airgenome.improve-loop</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/bin/improve_loop.sh</string>
-        <string>run</string>
-    </array>
-
-    <!-- 5분마다 pending task 1개 실행 (queue 비면 auto-refill) -->
-    <key>StartInterval</key>
-    <integer>300</integer>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>ThrottleInterval</key>
-    <integer>300</integer>
-
-    <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/improve-loop.stdout.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/improve-loop.stderr.log</string>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/ghost/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
-        <key>HOME</key>
-        <string>/Users/ghost</string>
-        <key>LANG</key>
-        <string>en_US.UTF-8</string>
-    </dict>
-
-    <key>ProcessType</key>
-    <string>Background</string>
-
-    <key>Nice</key>
-    <integer>5</integer>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/ghost</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>/Users/ghost/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+	</dict>
+	<key>Label</key>
+	<string>com.airgenome.improve-loop</string>
+	<key>Nice</key>
+	<integer>5</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/ghost/Dev/airgenome/bin/improve_loop.sh</string>
+		<string>run</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/ghost/.airgenome/improve-loop.stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ghost/.airgenome/improve-loop.stdout.log</string>
+	<key>StartInterval</key>
+	<integer>600</integer>
+	<key>ThrottleInterval</key>
+	<integer>600</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/ghost/Dev/airgenome</string>
 </dict>
 </plist>

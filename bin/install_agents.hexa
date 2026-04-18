@@ -1,0 +1,360 @@
+// bin/install_agents.hexa — AG6-safe LaunchAgent installer
+//
+// Mac plist 설치 시 ag6_manifest.json 검증.
+// mac_allowed=false 인 모듈은 설치 거부 + 경고.
+//
+// Usage:
+//   hexa run install_agents.hexa              # mac-safe 만 설치
+//   hexa run install_agents.hexa verify       # AG6 검증만
+//   hexa run install_agents.hexa remote       # 원격 systemd timer 배포
+//   hexa run install_agents.hexa uninstall    # Mac heavy plist 강제 제거
+
+use "../core/core"
+
+let MANIFEST = airgenome_root() + "/shared/config/ag6_manifest.json"
+let PLIST_DIR = airgenome_root() + "/shared/launchagents"
+let SYSTEMD_DIR = airgenome_root() + "/shared/systemd"
+let HOSTS_FILE = airgenome_root() + "/shared/config/hosts.json"
+let DEST = env("HOME") + "/Library/LaunchAgents"
+let UID_VAL = exec("id -u").trim()
+
+fn mac_safe_modules() -> list {
+    let raw = exec("jq -r '.modules|to_entries[]|select(.value.mac_allowed==true)|.key' \"" + MANIFEST + "\"").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn mac_blocked_modules() -> list {
+    let raw = exec("jq -r '.modules|to_entries[]|select(.value.mac_allowed==false)|.key' \"" + MANIFEST + "\"").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+// manifest 에서 모듈 정책 조회. 반환 형식 "interval|run_at_load" (예: "300|false"). 없으면 "".
+fn module_policy(mod_name: str) -> str {
+    let q = ".modules[\"" + mod_name + "\"] | if . == null then \"\" else \"\\(.mac_start_interval // 0)|\\(.mac_run_at_load // false)\" end"
+    return exec("jq -r '" + q + "' \"" + MANIFEST + "\"").trim()
+}
+
+// Idempotent PlistBuddy 정책 적용. interval_str=="0"/""/"null" 이면 StartInterval/ThrottleInterval 삭제 (KeepAlive/GUI 패턴 유지).
+fn enforce_plist_policy(plist: str, interval_str: str, ral_str: str) -> void {
+    let mut safe_ral = "false"
+    if ral_str == "true" { safe_ral = "true" }
+    let _ = exec("/usr/libexec/PlistBuddy -c 'Delete :RunAtLoad' '" + plist + "' 2>/dev/null; /usr/libexec/PlistBuddy -c 'Add :RunAtLoad bool " + safe_ral + "' '" + plist + "' 2>/dev/null")
+    if interval_str == "0" || interval_str == "" || interval_str == "null" {
+        let _ = exec("/usr/libexec/PlistBuddy -c 'Delete :StartInterval' '" + plist + "' 2>/dev/null")
+        let _ = exec("/usr/libexec/PlistBuddy -c 'Delete :ThrottleInterval' '" + plist + "' 2>/dev/null")
+    } else {
+        let _ = exec("/usr/libexec/PlistBuddy -c 'Delete :StartInterval' '" + plist + "' 2>/dev/null; /usr/libexec/PlistBuddy -c 'Add :StartInterval integer " + interval_str + "' '" + plist + "' 2>/dev/null")
+        let _ = exec("/usr/libexec/PlistBuddy -c 'Delete :ThrottleInterval' '" + plist + "' 2>/dev/null; /usr/libexec/PlistBuddy -c 'Add :ThrottleInterval integer " + interval_str + "' '" + plist + "' 2>/dev/null")
+    }
+}
+
+// bootout 후 bootstrap — 새 plist 값 즉시 반영.
+fn reload_agent(label: str, plist: str) -> void {
+    let _ = exec("launchctl bootout gui/" + UID_VAL + "/" + label + " 2>/dev/null || true")
+    let _ = exec("launchctl bootstrap gui/" + UID_VAL + " '" + plist + "' 2>/dev/null || true")
+}
+
+fn verify_ag6() -> int {
+    let blocked = mac_blocked_modules()
+    let mut violations = 0
+    let mut i = 0
+    while i < len(blocked) {
+        let mod_name = blocked[i].trim()
+        if mod_name != "" {
+            let plist = DEST + "/com.airgenome." + mod_name + ".plist"
+            let exists = exec("[ -f '" + plist + "' ] && echo y || echo n").trim()
+            if exists == "y" {
+                println("  AG6 VIOLATION: " + plist + " exists (mac_allowed=false)")
+                violations = violations + 1
+            }
+            // launchctl 체크
+            let loaded = exec("launchctl list com.airgenome." + mod_name + " >/dev/null 2>&1 && echo y || echo n").trim()
+            if loaded == "y" {
+                println("  AG6 VIOLATION: com.airgenome." + mod_name + " loaded in launchctl")
+                violations = violations + 1
+            }
+        }
+        i = i + 1
+    }
+    if violations == 0 {
+        println("AG6 verify: PASS — no violations")
+    } else {
+        println("AG6 verify: FAIL — " + to_string(violations) + " violations")
+    }
+    return violations
+}
+
+fn uninstall_blocked() -> void {
+    let blocked = mac_blocked_modules()
+    let mut i = 0
+    while i < len(blocked) {
+        let mod_name = blocked[i].trim()
+        if mod_name != "" {
+            let label = "com.airgenome." + mod_name
+            let plist = DEST + "/" + label + ".plist"
+            let _ = exec("launchctl bootout gui/" + UID_VAL + "/" + label + " 2>/dev/null || true")
+            let _ = exec("rm -f '" + plist + "'")
+            println("  removed: " + label)
+        }
+        i = i + 1
+    }
+    println("uninstall done. verifying...")
+    let _ = verify_ag6()
+}
+
+fn install_mac_safe() -> void {
+    println("Installing mac-safe agents (policy-enforced)...")
+    // blocked 제거 먼저 — daemons 등 AG6 위반 plist 선 정리.
+    uninstall_blocked()
+    let safe = mac_safe_modules()
+    let blocked = mac_blocked_modules()
+    let mut installed = 0
+    let mut i = 0
+
+    // 1. manifest 에 mac_allowed=true 인 모듈
+    while i < len(safe) {
+        let mod_name = safe[i].trim()
+        if mod_name != "" {
+            let src = PLIST_DIR + "/com.airgenome." + mod_name + ".plist"
+            let exists = exec("[ -f '" + src + "' ] && echo y || echo n").trim()
+            if exists == "y" {
+                let label = "com.airgenome." + mod_name
+                let dest_plist = DEST + "/" + label + ".plist"
+                let _ = exec("cp '" + src + "' '" + dest_plist + "'")
+                let pol = module_policy(mod_name)
+                let parts = pol.split("|")
+                if len(parts) == 2 {
+                    enforce_plist_policy(dest_plist, parts[0].trim(), parts[1].trim())
+                }
+                reload_agent(label, dest_plist)
+                println("  OK: " + mod_name + " [" + pol + "]")
+                installed = installed + 1
+            }
+        }
+        i = i + 1
+    }
+
+    // 2. manifest 에 없지만 shared/launchagents/ 에 있는 기타 plist
+    let all_plists = exec("ls '" + PLIST_DIR + "'/*.plist 2>/dev/null | xargs -I{} basename {} .plist").trim()
+    if all_plists != "" {
+        let plist_list = all_plists.split("\n")
+        i = 0
+        while i < len(plist_list) {
+            let base = plist_list[i].trim()
+            let mod_name = base.replace("com.airgenome.", "")
+            // 이미 처리됐거나 blocked 면 스킵
+            let mut skip = false
+            let mut j = 0
+            while j < len(safe) {
+                if safe[j].trim() == mod_name { skip = true }
+                j = j + 1
+            }
+            j = 0
+            while j < len(blocked) {
+                if blocked[j].trim() == mod_name {
+                    skip = true
+                    println("  BLOCKED (AG6): " + mod_name)
+                }
+                j = j + 1
+            }
+            if !skip {
+                let src = PLIST_DIR + "/" + base + ".plist"
+                let dest_plist = DEST + "/" + base + ".plist"
+                let _ = exec("cp '" + src + "' '" + dest_plist + "'")
+                // unlisted — 안전 default (SI=300, RunAtLoad=false) 강제.
+                enforce_plist_policy(dest_plist, "300", "false")
+                reload_agent(base, dest_plist)
+                println("  WARN: " + mod_name + " (unlisted, safe defaults applied — manifest 등록 권장)")
+                installed = installed + 1
+            }
+            i = i + 1
+        }
+    }
+
+    println("Installed " + to_string(installed) + " agents.")
+    let _ = verify_ag6()
+}
+
+fn install_remote() -> void {
+    println("Deploying systemd timers to remote hosts...")
+    let blocked = mac_blocked_modules()
+    let hosts_raw = exec("jq -r '.hosts|to_entries[]|select(.value.kind!=\"self\" and .value.enabled==true)|\"\\(.key)::::\\(.value.ssh_alias)\"' \"" + HOSTS_FILE + "\"").trim()
+    if hosts_raw == "" {
+        println("  no remote hosts found")
+        return
+    }
+    let hosts = hosts_raw.split("\n")
+
+    let mut i = 0
+    while i < len(blocked) {
+        let mod_name = blocked[i].trim()
+        if mod_name == "" { i = i + 1; continue }
+        let svc = "airgenome-" + mod_name + ".service"
+        let tmr = "airgenome-" + mod_name + ".timer"
+        let svc_path = SYSTEMD_DIR + "/" + svc
+        let tmr_path = SYSTEMD_DIR + "/" + tmr
+        let svc_exists = exec("[ -f '" + svc_path + "' ] && echo y || echo n").trim()
+        if svc_exists != "y" {
+            println("  SKIP: " + svc + " not found")
+            i = i + 1
+            continue
+        }
+
+        let mut j = 0
+        while j < len(hosts) {
+            let entry = hosts[j].trim()
+            if entry != "" {
+                let parts = entry.split("::::")
+                let host_name = parts[0]
+                let alias = parts[1]
+
+                let user = exec("ssh -o ConnectTimeout=3 " + alias + " whoami 2>/dev/null").trim()
+                if user == "" {
+                    println("  SKIP: " + host_name + " (" + alias + ") unreachable")
+                    j = j + 1
+                    continue
+                }
+
+                let mut dest_dir = ""
+                let mut ctl = ""
+                if user == "root" {
+                    dest_dir = "/etc/systemd/system"
+                    ctl = "systemctl"
+                } else {
+                    dest_dir = "/home/" + user + "/.config/systemd/user"
+                    ctl = "systemctl --user"
+                }
+
+                let _ = exec("ssh " + alias + " 'mkdir -p " + dest_dir + "'")
+                let _ = exec("scp -q '" + svc_path + "' " + alias + ":" + dest_dir + "/")
+                let _ = exec("scp -q '" + tmr_path + "' " + alias + ":" + dest_dir + "/")
+                let _ = exec("ssh " + alias + " '" + ctl + " daemon-reload && " + ctl + " enable --now " + tmr + "'")
+                println("  OK: " + mod_name + " -> " + host_name + " (" + alias + ")")
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+// 배포본 (DEST) 의 plist 가 manifest 정책과 일치하는지 감사. drift 개수 반환.
+fn doctor() -> int {
+    println("airgenome doctor — ~/Library/LaunchAgents vs manifest drift 감사")
+    let safe = mac_safe_modules()
+    let mut drift = 0
+    let mut i = 0
+    while i < len(safe) {
+        let mod_name = safe[i].trim()
+        if mod_name != "" {
+            let plist = DEST + "/com.airgenome." + mod_name + ".plist"
+            let exists = exec("[ -f '" + plist + "' ] && echo y || echo n").trim()
+            if exists == "n" {
+                println("  MISSING: " + mod_name)
+                drift = drift + 1
+            } else {
+                let cur_si = exec("/usr/libexec/PlistBuddy -c 'Print :StartInterval' '" + plist + "' 2>/dev/null || echo 0").trim()
+                let cur_ral = exec("/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' '" + plist + "' 2>/dev/null || echo false").trim()
+                let pol = module_policy(mod_name)
+                let parts = pol.split("|")
+                if len(parts) == 2 {
+                    let want_si = parts[0].trim()
+                    let want_ral = parts[1].trim()
+                    let mut bad = false
+                    if want_si == "0" {
+                        if cur_si != "0" && cur_si != "" { bad = true }
+                    } else {
+                        if cur_si != want_si { bad = true }
+                    }
+                    if cur_ral != want_ral { bad = true }
+                    if bad {
+                        println("  DRIFT: " + mod_name + " have(SI=" + cur_si + " RAL=" + cur_ral + ") want(SI=" + want_si + " RAL=" + want_ral + ")")
+                        drift = drift + 1
+                    } else {
+                        println("  OK: " + mod_name + " SI=" + cur_si + " RAL=" + cur_ral)
+                    }
+                }
+            }
+        }
+        i = i + 1
+    }
+    let vio = verify_ag6()
+    let total = drift + vio
+    if total == 0 {
+        println("doctor: PASS (0 drift, 0 AG6 violations)")
+    } else {
+        println("doctor: FAIL — drift=" + to_string(drift) + " ag6_viol=" + to_string(vio))
+    }
+    return total
+}
+
+// SSOT (shared/launchagents/) plist 들을 manifest 정책과 동기화. git 저장본이 항상 안전값 유지.
+fn sync_ssot() -> void {
+    println("Syncing SSOT plists (shared/launchagents/) to manifest policy...")
+    let safe = mac_safe_modules()
+    let mut i = 0
+    let mut patched = 0
+    while i < len(safe) {
+        let mod_name = safe[i].trim()
+        if mod_name != "" {
+            let plist = PLIST_DIR + "/com.airgenome." + mod_name + ".plist"
+            let exists = exec("[ -f '" + plist + "' ] && echo y || echo n").trim()
+            if exists == "y" {
+                let pol = module_policy(mod_name)
+                let parts = pol.split("|")
+                if len(parts) == 2 {
+                    enforce_plist_policy(plist, parts[0].trim(), parts[1].trim())
+                    println("  patched: " + mod_name + " -> " + pol)
+                    patched = patched + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    println("SSOT patched: " + to_string(patched))
+}
+
+fn self_test() -> void {
+    // manifest 읽기
+    let safe = mac_safe_modules()
+    if len(safe) < 3 { panic("self_test FAIL [mac_safe < 3]") }
+    let blocked = mac_blocked_modules()
+    if len(blocked) < 2 { panic("self_test FAIL [blocked < 2]") }
+
+    // blocked 에 harvest 포함
+    let mut found_harvest = false
+    let mut i = 0
+    while i < len(blocked) {
+        if blocked[i].trim() == "harvest" { found_harvest = true }
+        i = i + 1
+    }
+    if !found_harvest { panic("self_test FAIL [harvest not blocked]") }
+
+    // safe 에 probe 포함
+    let mut found_probe = false
+    i = 0
+    while i < len(safe) {
+        if safe[i].trim() == "probe" { found_probe = true }
+        i = i + 1
+    }
+    if !found_probe { panic("self_test FAIL [probe not in safe]") }
+
+    println("  install_agents self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    let mut sub = ""
+    if len(a) >= 3 { sub = a[2] }
+
+    if sub == "verify" { let _ = verify_ag6(); return }
+    if sub == "uninstall" { uninstall_blocked(); return }
+    if sub == "remote" { install_remote(); return }
+    if sub == "self-test" { self_test(); return }
+    if sub == "doctor" { let _ = doctor(); return }
+    if sub == "sync-ssot" { sync_ssot(); return }
+    install_mac_safe()
+}
+
+main()

@@ -2,28 +2,30 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>com.airgenome.e2e-sample</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>/Users/ghost/Dev/airgenome/shared/scripts/e2e_sample.sh</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>1800</integer>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/e2e_sample.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/e2e_sample.stderr.log</string>
-    <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>Nice</key>
-    <integer>19</integer>
-    <key>LowPriorityIO</key>
-    <true/>
+	<key>Label</key>
+	<string>com.airgenome.e2e-sample</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>19</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/ghost/Dev/airgenome/shared/scripts/e2e_sample.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/ghost/.airgenome/e2e_sample.stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ghost/.airgenome/e2e_sample.stdout.log</string>
+	<key>StartInterval</key>
+	<integer>1800</integer>
+	<key>ThrottleInterval</key>
+	<integer>1800</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/ghost/Dev/airgenome</string>
 </dict>
 </plist>

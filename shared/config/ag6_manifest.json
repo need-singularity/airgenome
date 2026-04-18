@@ -1,0 +1,21 @@
+{
+  "_doc": "AG6 module placement SSOT — 어떤 모듈이 어디서 실행 가능한지 단일 진실. install guard 가 이 파일을 읽고 Mac plist 설치/정책 강제.",
+  "_rule": "mac_allowed=false 인 모듈의 plist 가 ~/Library/LaunchAgents/ 에 존재하면 AG6 위반",
+  "_policy_doc": "mac_start_interval (0=KeepAlive/no interval) + mac_run_at_load — install_agents 가 배포 시 PlistBuddy 로 강제 적용. 2026-04-18 WindowServer watchdog panic 재발 방지.",
+  "modules": {
+    "probe":               { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "light — sample() only" },
+    "dispatch":            { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "light — jq scoring" },
+    "predictive-throttle": { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "light — Mac self-protect" },
+    "ring-sync":           { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "light — rsync pull only" },
+    "dashboard":           { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "light — jq reads + HTML string concat" },
+    "compute-tick":        { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "orchestration only — lb.sh 가 ubu 로 dispatch" },
+    "remote-load":         { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 300,  "mac_start_interval": 300,  "mac_run_at_load": false, "reason": "orchestration only — ssh probe (ControlMaster 재사용)" },
+    "improve-loop":        { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 600,  "mac_start_interval": 600,  "mac_run_at_load": false, "reason": "self-improve — 10min tick, 저빈도" },
+    "e2e-sample":          { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 1800, "mac_start_interval": 1800, "mac_run_at_load": false, "reason": "end-to-end probe — 30min" },
+    "menubar":             { "mac_allowed": true,  "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 0,    "mac_start_interval": 0,    "mac_run_at_load": true,  "reason": "GUI — Aqua session KeepAlive" },
+    "daemons":             { "mac_allowed": false, "remote_allowed": false, "scheduler": "launchd",  "interval_sec": 0,    "reason": "BLOCKED — nohup 무한루프 spawner → compressor 폭주 → WindowServer panic (2026-04-16, 2026-04-18)" },
+    "harvest":             { "mac_allowed": false, "remote_allowed": true,  "scheduler": "systemd",  "interval_sec": 60,   "reason": "heavy — per-process sampling" },
+    "label":               { "mac_allowed": false, "remote_allowed": true,  "scheduler": "systemd",  "interval_sec": 300,  "reason": "heavy — anomaly classification" },
+    "forecast":            { "mac_allowed": false, "remote_allowed": true,  "scheduler": "systemd",  "interval_sec": 300,  "reason": "heavy — Holt smoothing" }
+  }
+}

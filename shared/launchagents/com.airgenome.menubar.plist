@@ -2,42 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>com.airgenome.menubar</string>
-
-    <!-- 2026-04-14: launchd 가 binary 직접 호출 시 2초 내 unload 되는 현상 (원인 미파악).
-         `open -a` 로 Aqua 에 위임하면 안정적. KeepAlive 제거 — open 은 1회 exec 후 exit,
-         Airgenome 은 Aqua 세션이 유지. 재시작은 RunAtLoad(로그인) 또는 수동. -->
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/open</string>
-        <string>-a</string>
-        <string>/Applications/Airgenome.app</string>
-    </array>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/menubar.stdout.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/menubar.stderr.log</string>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/ghost/Dev/airgenome</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
-        <key>HOME</key>
-        <string>/Users/ghost</string>
-        <key>LANG</key>
-        <string>en_US.UTF-8</string>
-    </dict>
-
-    <key>LimitLoadToSessionType</key>
-    <string>Aqua</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/ghost</string>
+		<key>LANG</key>
+		<string>en_US.UTF-8</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+	</dict>
+	<key>Label</key>
+	<string>com.airgenome.menubar</string>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/open</string>
+		<string>-a</string>
+		<string>/Applications/Airgenome.app</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/ghost/.airgenome/menubar.stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ghost/.airgenome/menubar.stdout.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/ghost/Dev/airgenome</string>
 </dict>
 </plist>

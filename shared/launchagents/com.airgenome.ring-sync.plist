@@ -2,21 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>Label</key>
-    <string>com.airgenome.ring-sync</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>/usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' ubu:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.ubu.ring 2>&amp;1; /usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' ubu2:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.ubu2.ring 2>&amp;1; /usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' hetzner:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.htz.ring 2>&amp;1</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>60</integer>
-    <key>StandardOutPath</key>
-    <string>/Users/ghost/.airgenome/ring_sync.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/Users/ghost/.airgenome/ring_sync.stderr.log</string>
-    <key>RunAtLoad</key>
-    <true/>
+	<key>Label</key>
+	<string>com.airgenome.ring-sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>/usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' ubu:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.ubu.ring 2&gt;&amp;1; /usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' ubu2:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.ubu2.ring 2&gt;&amp;1; /usr/bin/rsync -az -e '/usr/bin/ssh -o ConnectTimeout=5 -o BatchMode=yes' hetzner:Dev/airgenome/forge/genomes.ring /Users/ghost/Dev/airgenome/forge/genomes.htz.ring 2&gt;&amp;1</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/ghost/.airgenome/ring_sync.stderr.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ghost/.airgenome/ring_sync.stdout.log</string>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>ThrottleInterval</key>
+	<integer>300</integer>
 </dict>
 </plist>

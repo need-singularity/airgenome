@@ -4,29 +4,33 @@
 <dict>
 	<key>EnvironmentVariables</key>
 	<dict>
+		<key>HEXA_LOCAL</key>
+		<string>1</string>
 		<key>HOME</key>
 		<string>/Users/ghost</string>
 		<key>PATH</key>
 		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
 	</dict>
-	<key>KeepAlive</key>
-	<dict>
-		<key>SuccessfulExit</key>
-		<false/>
-	</dict>
 	<key>Label</key>
-	<string>com.airgenome.compute-tick</string>
+	<string>com.airgenome.dashboard</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/bin/bash</string>
-		<string>/Users/ghost/Dev/airgenome/bin/compute_tick.sh</string>
+		<string>/Users/ghost/Dev/hexa-lang/hexa</string>
+		<string>run</string>
+		<string>/Users/ghost/Dev/airgenome/modules/dashboard.hexa</string>
 	</array>
 	<key>RunAtLoad</key>
 	<false/>
 	<key>StandardErrorPath</key>
-	<string>/Users/ghost/.airgenome/compute-tick.stderr.log</string>
+	<string>/Users/ghost/.airgenome/dashboard.stderr.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/ghost/.airgenome/compute-tick.stdout.log</string>
+	<string>/Users/ghost/.airgenome/dashboard.stdout.log</string>
 	<key>StartInterval</key>
 	<integer>300</integer>
 	<key>ThrottleInterval</key>
