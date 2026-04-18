@@ -3,6 +3,19 @@
 # `Host mac` HostName 에 주입. tailscale 이 없는 호스트 (ubu2) 의 stale
 # hardcoded IP 문제를 해결한다.
 #
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [Phase A 2026-04-18] reverse-dep 단순화
+#   - ubu2 의 needs_mac_ip 플래그를 false 로 전환 (shared/config/hosts.json).
+#   - 현재 동작: hosts.json 에 needs_mac_ip=true 인 호스트가 없으므로 이
+#     스크립트는 no-op (launchd 가 5분마다 호출해도 0 호스트 반복 후 종료).
+#   - 근거: cx/hexa_remote 는 Mac→원격 단방향이고, cx 의 remote_cwd_prefix
+#     fallback chain (Mac 절대경로 → $HOME/relative → $HOME) 이 sshfs 없는
+#     호스트도 커버함. ubu2 는 sshfs 가 stale 이어도 cwd fallback 으로 동작.
+#   - Phase B 에서 tailscale 기반 고정 100.x 주소로 전면 대체 예정.
+#   - 파일/플래그 보존 이유: Phase B 미완 시 수동 rollback (needs_mac_ip=true)
+#     만으로 즉시 복귀 가능하도록.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
 # 동작:
 #   1. 현재 en0 의 inet IP 추출
 #   2. 원격의 ~/.ssh/config 백업 → sed 로 'Host mac' 블록의 HostName 치환
@@ -10,7 +23,7 @@
 #
 # Usage:
 #   bin/mac_ip_push              # hosts.json 의 enabled=true && needs_mac_ip=true
-#   bin/mac_ip_push ubu2         # 특정 호스트만
+#   bin/mac_ip_push ubu2         # 특정 호스트만 (수동 ad-hoc)
 #
 # 주기: launchd (com.airgenome.mac-ip-push.plist) 5분 간격으로 자동 실행.
 # sudo 없이 user-level 로만 작동. tailscale 가용 호스트는 고정 100.x IP 사용

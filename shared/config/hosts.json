@@ -46,7 +46,7 @@
         "heavy": 1,
         "compute": 2
       },
-      "needs_mac_ip": true
+      "needs_mac_ip": false
     },
     "htz": {
       "enabled": true,
