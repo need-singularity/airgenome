@@ -86,6 +86,12 @@ while true; do
     if [ "$rc" = "0" ] && [ "$dur" -ge 10 ]; then
         # long clean exit — assume user quit intentionally
         log_evt '{ts:$ts,pid:$pid,event:"clean_exit_break"}'
+        # M13f: 긴 작업 (>60s) 이면 완료 알림
+        if [ "$dur" -ge "${CLAUDX_NOTIFY_MIN_SEC:-60}" ]; then
+            msg="claudx iter $iter done (${dur}s)"
+            command -v osascript >/dev/null 2>&1 && osascript -e "display notification \"$msg\" with title \"claudx\"" 2>/dev/null
+            command -v notify-send >/dev/null 2>&1 && notify-send "claudx" "$msg" 2>/dev/null
+        fi
         break
     fi
     if [ "$stop_requested" = true ]; then break; fi

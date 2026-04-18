@@ -99,6 +99,109 @@ const HEAVY_KEYWORDS = [
 const NO_UNSAFE = process.env.CLAUDX_UNSAFE !== '1';
 const MAX_PROMPT_BYTES = parseInt(process.env.CLAUDX_MAX_PROMPT_BYTES || '524288', 10); // 512KB
 
+// M13f UI tune flags
+const TITLE_LOCK = process.env.CLAUDX_TITLE_LOCK !== '0';
+const NO_BADGE = process.env.CLAUDX_NO_BADGE === '1';
+const NO_SLASH_ALIAS = process.env.CLAUDX_NO_SLASH_ALIAS === '1';
+
+// Slash alias table — commands.json autonomous 키워드 축약
+const SLASH_ALIAS = {
+  '/s': 'smash',
+  '/sm': 'smash',
+  '/f': 'free',
+  '/fd': 'free dfs 3',
+  '/g': 'go',
+  '/t': 'todo',
+  '/k': 'keep',
+  '/lm': 'lm',
+};
+
+function expandSlashAlias(bodyStr) {
+  if (!bodyStr || NO_SLASH_ALIAS) return bodyStr;
+  try {
+    const j = JSON.parse(bodyStr);
+    if (!Array.isArray(j.messages) || j.messages.length === 0) return bodyStr;
+    const last = j.messages[j.messages.length - 1];
+    if (last.role !== 'user') return bodyStr;
+    const mutate = (text) => {
+      const trimmed = text.trim();
+      for (const [from, to] of Object.entries(SLASH_ALIAS)) {
+        if (trimmed === from) return to;
+        if (trimmed.startsWith(from + ' ')) return to + trimmed.slice(from.length);
+        if (trimmed.startsWith(from + '\n')) return to + trimmed.slice(from.length);
+      }
+      return text;
+    };
+    if (typeof last.content === 'string') {
+      const n = mutate(last.content);
+      if (n !== last.content) { last.content = n; return JSON.stringify(j); }
+    } else if (Array.isArray(last.content)) {
+      let touched = false;
+      for (const c of last.content) {
+        if (c.type === 'text' && typeof c.text === 'string') {
+          const n = mutate(c.text);
+          if (n !== c.text) { c.text = n; touched = true; }
+        }
+      }
+      if (touched) return JSON.stringify(j);
+    }
+  } catch (_) {}
+  return bodyStr;
+}
+
+// Badge prefix (print/json 모드 한정 — stream TUI 는 stderr status 로 우회)
+function injectBadge(jsonText, acct) {
+  if (NO_BADGE || !jsonText) return jsonText;
+  try {
+    const j = JSON.parse(jsonText);
+    if (typeof j.result === 'string') {
+      const today = todayCostUSD().toFixed(3);
+      const prefix = `[${acct} · $${today}] `;
+      j.result = prefix + j.result;
+      return JSON.stringify(j);
+    }
+  } catch (_) {}
+  return jsonText;
+}
+
+function todayCostUSD() {
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 86400;
+    const data = fs.readFileSync(COST_LOG, 'utf8');
+    let total = 0;
+    for (const line of data.split('\n')) {
+      if (!line) continue;
+      try {
+        const j = JSON.parse(line);
+        const t = Math.floor(new Date(j.ts).getTime() / 1000);
+        if (t >= cutoff) total += j.usd || 0;
+      } catch (_) {}
+    }
+    return total;
+  } catch (_) { return 0; }
+}
+
+// Title lock — stdout 의 OSC 0;...\007 / 1;... / 2;... 이스케이프 필터
+// claude TUI 가 session 중 title 덮어쓰는 것 방지.
+if (TITLE_LOCK && process.stdout && typeof process.stdout.write === 'function') {
+  const cwdName = path.basename(process.cwd());
+  const origWrite = process.stdout.write.bind(process.stdout);
+  const TITLE_RE = /\x1B\]([012]);[^\x07\x1B]*(?:\x07|\x1B\\)/g;
+  process.stdout.write = function claudx_write(chunk, enc, cb) {
+    try {
+      if (typeof chunk === 'string') {
+        chunk = chunk.replace(TITLE_RE, '');
+      } else if (Buffer.isBuffer(chunk) && chunk.includes(0x1B)) {
+        const s = chunk.toString('utf8');
+        if (/\x1B\]/.test(s)) chunk = Buffer.from(s.replace(TITLE_RE, ''), 'utf8');
+      }
+    } catch (_) {}
+    return origWrite(chunk, enc, cb);
+  };
+  // 한번 고정
+  try { origWrite(`\x1B]0;${cwdName}\x07`); } catch (_) {}
+}
+
 function checkInputFilter(bodyStr) {
   if (!bodyStr || !NO_UNSAFE) return null;
   // size gate
@@ -483,6 +586,16 @@ globalThis.fetch = async function claudx_fetch(input, init) {
     return syntheticFilterBlock(filterVerdict);
   }
 
+  // Hook 0c: slash alias expansion (M13f — /s → smash 등)
+  if (_earlyBodyStr && !NO_SLASH_ALIAS) {
+    const expanded = expandSlashAlias(_earlyBodyStr);
+    if (expanded !== _earlyBodyStr) {
+      logEvent({ event: 'slash_alias_expanded' });
+      init = Object.assign({}, init || {}, { body: expanded });
+      _earlyBodyStr = expanded;
+    }
+  }
+
   // model / cwd / sid 추출 — logging 용
   let reqBodyStr = '';
   try {
@@ -532,13 +645,21 @@ globalThis.fetch = async function claudx_fetch(input, init) {
       try { freshenUsageCache(resp, curAcct); } catch (_) {}
       try { preemptSwapCheck(resp, curAcct); } catch (_) {}
 
-      // cache set — body peek 필요. stream 이면 skip
+      // cache set + badge injection (print/json 모드만)
       if (hash && !NO_CACHE) {
         try {
           const clone = resp.clone();
-          const txt = await clone.text();
-          // 휴리스틱: 한 줄 JSON 또는 chunked text 가 완전히 도착했을 때만 캐시
-          if (txt && txt.length > 0 && txt.length < 5_000_000) cacheSet(hash, resp, txt);
+          let txt = await clone.text();
+          if (txt && txt.length > 0 && txt.length < 5_000_000) {
+            // badge prefix (json 단일 응답 한정 — stream 은 TUI 층에서 처리)
+            const badged = injectBadge(txt, curAcct);
+            if (badged !== txt) {
+              cacheSet(hash, resp, badged);
+              const headers = new Headers(resp.headers);
+              return scrubRateLimitHeaders(new Response(badged, { status: resp.status, headers }));
+            }
+            cacheSet(hash, resp, txt);
+          }
         } catch (_) {}
       }
 

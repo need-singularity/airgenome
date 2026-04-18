@@ -100,6 +100,7 @@ while [ $# -gt 0 ]; do
 done
 
 # --- pick acct ---
+# 우선순위: --force-acct > upstream CLAUDE_CONFIG_DIR (cl 등) > pool.pickBest
 picked_name=""
 picked_dir=""
 if [ -n "$force_acct" ]; then
@@ -108,7 +109,12 @@ if [ -n "$force_acct" ]; then
         picked_dir=$(jq -r --arg n "$force_acct" '.accounts[] | select(.name==$n) | .config_dir // empty' "$CLAUDX_POOL" 2>/dev/null)
     fi
     [ -n "$picked_dir" ] || die "--force-acct '$force_acct' not in pool ($CLAUDX_POOL)"
+elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    # upstream (cl, user env) 이 이미 선택함 — 존중
+    picked_dir="$CLAUDE_CONFIG_DIR"
+    picked_name=$(basename "$CLAUDE_CONFIG_DIR" | sed 's/^\.claude-//')
 else
+    # 완전히 비어있을 때만 자체 pick
     picked_line=$(node "$POOL_JS" pick 2>/dev/null)
     if [ -n "$picked_line" ]; then
         picked_name=$(printf '%s' "$picked_line" | awk -F'\t' '{print $1}')
@@ -117,7 +123,7 @@ else
 fi
 
 if [ -n "$picked_dir" ]; then
-    # apply CLAUDX_HOME_MAP (같은 로직이 pool.js 에도 있음) 로 spawn 된 claude 가 local creds 읽게
+    # apply CLAUDX_HOME_MAP 로 spawn 된 claude 가 local creds 읽게
     if [ -n "${CLAUDX_HOME_MAP:-}" ]; then
         from="${CLAUDX_HOME_MAP%%:*}"
         to="${CLAUDX_HOME_MAP##*:}"
@@ -126,9 +132,18 @@ if [ -n "$picked_dir" ]; then
         esac
     fi
     export CLAUDE_CONFIG_DIR="$picked_dir"
-    info "acct=$picked_name cfg=$picked_dir"
+    # status line (M13f): acct + cost_today + pool_active
+    if [ "$CLAUDX_QUIET" != "1" ] && [ -x "$CX_ROOT/bin/claudx-idea" ]; then
+        today_cost=$(jq -r --arg s "$(($(date +%s) - 86400))" '
+            select((.ts | fromdateiso8601) >= ($s | tonumber)) | (.usd // 0)
+          ' "$CLAUDX_STATE/cost.jsonl" 2>/dev/null | awk 'BEGIN{s=0}{s+=$1}END{printf "%.3f", s}')
+        pool_ok=$(node "$POOL_JS" status 2>/dev/null | awk -F'\t' '$4=="ok"{c++} END{print c+0}')
+        info "acct=$picked_name cfg=$picked_dir today=\$$today_cost pool_ok=$pool_ok"
+    else
+        info "acct=$picked_name cfg=$picked_dir"
+    fi
 else
-    info "no acct pre-pick; using existing CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-(default)}"
+    info "no acct — using default ~/.claude (pool empty or unreachable)"
 fi
 
 # --- inject interceptor via NODE_OPTIONS ---

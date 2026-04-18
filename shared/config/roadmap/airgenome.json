@@ -528,6 +528,24 @@
       ]
     },
     {
+      "id": "M13f_claudx_ui_tune",
+      "title": "claudx UI 튜닝 번들 — 뱃지·상태라인·슬래시alias·푸시알림·제목락",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx", "M13c_claudx_economy"],
+      "approach": "interceptor + claudx + claudx-loop 에 경량 훅 추가. node 프로세스 in-process 이므로 stdout/request/response 세 레이어 가로챔.",
+      "exit_criteria": [
+        "interceptor.js: expandSlashAlias (request body mutation — /s,/f,/g,/t,/k → smash,free,go,todo,keep)",
+        "interceptor.js: injectBadgeIfPrint — JSON 응답의 .result 에 [acct · $today] prefix (print/json mode 한정)",
+        "interceptor.js: title_lock — stdout OSC [012];... 이스케이프 정규식 필터 + cwd basename 고정. CLAUDX_TITLE_LOCK=0 으로 off",
+        "bin/claudx: 확장 status line — pre-launch 시 acct/cost_today/pool_active 3조각 표시",
+        "bin/claudx-loop: notify_long_exit — iter dur>60s 면 osascript/notify-send 알림",
+        "환경변수: CLAUDX_TITLE_LOCK, CLAUDX_NO_BADGE, CLAUDX_NO_SLASH_ALIAS, CLAUDX_NOTIFY_MIN_SEC",
+        "smoke: title lock OSC 필터 regex 테스트, slash alias request JSON mutation 확인"
+      ]
+    },
+    {
       "id": "M13e_claudx_watch",
       "title": "claudx-watch — 루프 stall 감지 watchdog (heartbeat gap + rotation storm)",
       "priority": "P1",
