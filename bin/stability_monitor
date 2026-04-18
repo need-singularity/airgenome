@@ -33,6 +33,17 @@ NOW_EPOCH="$(date +%s)"
 PAGE_SIZE="$(vm_stat 2>/dev/null | awk '/page size of/{print $8}')"
 : "${PAGE_SIZE:=16384}"
 
+# get_free_mb — vm_stat 재샘플 후 free_mb (free + speculative) 반환
+# fast-tick loop 에서 free 회복 여부를 판정하는 용도.
+get_free_mb() {
+    local _vm _fp _sp
+    _vm="$(vm_stat 2>/dev/null)"
+    _fp="$(awk '/Pages free:/{gsub(/\./,"",$3); print $3}' <<<"$_vm")"
+    _sp="$(awk '/Pages speculative:/{gsub(/\./,"",$3); print $3}' <<<"$_vm")"
+    : "${_fp:=0}"; : "${_sp:=0}"
+    echo $(( (_fp + _sp) * PAGE_SIZE / 1048576 ))
+}
+
 vm="$(vm_stat 2>/dev/null)"
 free_pages="$(awk '/Pages free:/{gsub(/\./,"",$3); print $3}' <<<"$vm")"
 spec_pages="$(awk '/Pages speculative:/{gsub(/\./,"",$3); print $3}' <<<"$vm")"
@@ -42,6 +53,8 @@ comp_pages="$(awk '/Pages occupied by compressor:/{gsub(/\./,"",$5); print $5}' 
 # bytes -> GB (integer)
 free_gb=$(( (free_pages + spec_pages) * PAGE_SIZE / 1073741824 ))
 comp_gb=$(( comp_pages * PAGE_SIZE / 1073741824 ))
+# MB resolution (emergency kill path needs < 500MB precision)
+free_mb=$(( (free_pages + spec_pages) * PAGE_SIZE / 1048576 ))
 
 load_1m="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
 : "${load_1m:=0}"
@@ -161,11 +174,60 @@ if [ "$level" = "CRITICAL" ] && [ -n "$top_pid" ] && [ "$top_rss_gb" -gt 3 ] && 
     esac
 fi
 
+# --- [5.5] Emergency KILL — post-throttle last-resort 분기 ---
+# Mac panic 재발 방지 (2026-04-18 16:49 런어웨이 → kernel panic).
+# 조건 (AND): free_mb < 500 AND rss_mb > 5120 AND name !~ claude AND name !in system list.
+# renice/cpulimit 로 막을 수 없는 runaway (free 500MB 밑으로 떨어진 상태) 에서만 SIGKILL.
+# 기존 renice/cpulimit 경로는 그대로 두고, 이 블록은 post-throttle 단계 마지막에 순수 추가.
+emergency_kill="no"
+emergency_detail=""
+if [ -n "$top_pid" ] && [ "$free_mb" -lt 500 ]; then
+    # rss_mb 재계산 (top_rss_kb 는 이미 위에서 구함)
+    em_rss_mb=$(( top_rss_kb / 1024 ))
+    if [ "$em_rss_mb" -gt 5120 ]; then
+        # 프로세스 name 재조회 (top_comm 이 비어 있을 수 있어서 방어적 재확인)
+        em_comm="$(ps -o comm= -p "$top_pid" 2>/dev/null || true)"
+        em_name="${em_comm##*/}"
+        # claude 절대 보호 — 이름에 claude 포함되면 skip
+        case "$em_name" in
+            *claude*|claude)
+                emergency_kill="skip_claude_protected"
+                emergency_detail="pid=$top_pid name=$em_name"
+                ;;
+            # 시스템 프로세스 절대 보호
+            WindowServer|Finder|kernel_task|launchd|loginwindow|coreaudiod|mds|mds_stores)
+                emergency_kill="skip_system_protected"
+                emergency_detail="pid=$top_pid name=$em_name"
+                ;;
+            "")
+                # 이미 사라진 프로세스
+                emergency_kill="skip_vanished"
+                emergency_detail="pid=$top_pid"
+                ;;
+            *)
+                # AND 4조건 전부 만족 — SIGKILL
+                kill -KILL "$top_pid" 2>/dev/null
+                kill_rc=$?
+                emergency_kill="killed"
+                emergency_detail="pid=$top_pid rss_mb=$em_rss_mb free_mb=$free_mb name=$em_name rc=$kill_rc"
+                # stderr 로그 (launchd 가 캡처)
+                printf 'EMERGENCY KILL pid=%s rss_mb=%s free_mb=%s name=%s rc=%s\n' \
+                    "$top_pid" "$em_rss_mb" "$free_mb" "$em_name" "$kill_rc" >&2
+                # jsonl type=emergency_kill 이벤트 (SSOT 로그)
+                printf '{"ts":"%s","type":"emergency_kill","pid":"%s","rss_mb":%s,"free_mb":%s,"name":"%s","rc":%s}\n' \
+                    "$NOW_ISO" "$top_pid" "$em_rss_mb" "$free_mb" "$em_name" "$kill_rc" \
+                    >> "$JSONL"
+                ;;
+        esac
+    fi
+fi
+
 # --- [6] 로그 기록 ---
 # stability.jsonl — 매 tick
-printf '{"ts":"%s","level":"%s","free_gb":%s,"comp_gb":%s,"load_1m":"%s","claude_count":%s,"stage0_count":%s,"hexa_v2_count":%s,"top_pid":"%s","top_rss_gb":%s,"top_etime_s":%s,"crit_streak":%s,"action":"%s","detail":"%s"}\n' \
-    "$NOW_ISO" "$level" "$free_gb" "$comp_gb" "$load_1m" "$claude_count" "$stage0_count" "$hexa_v2_count" \
+printf '{"ts":"%s","level":"%s","free_gb":%s,"free_mb":%s,"comp_gb":%s,"load_1m":"%s","claude_count":%s,"stage0_count":%s,"hexa_v2_count":%s,"top_pid":"%s","top_rss_gb":%s,"top_etime_s":%s,"crit_streak":%s,"action":"%s","detail":"%s","emergency":"%s","emergency_detail":"%s"}\n' \
+    "$NOW_ISO" "$level" "$free_gb" "$free_mb" "$comp_gb" "$load_1m" "$claude_count" "$stage0_count" "$hexa_v2_count" \
     "${top_pid:-}" "$top_rss_gb" "$top_etime_sec" "$crit_streak" "$action" "$action_detail" \
+    "$emergency_kill" "$emergency_detail" \
     >> "$JSONL"
 
 # WARN/CRITICAL 만 alerts
@@ -187,6 +249,78 @@ if [ -f "$JSONL" ]; then
     : "${sz:=0}"
     if [ "$sz" -gt 5242880 ]; then
         tail -n 2000 "$JSONL" > "$JSONL.tmp" && mv "$JSONL.tmp" "$JSONL"
+    fi
+fi
+
+# --- [7] Fast-tick loop — free < 1GB 일 때만 활성화 ---
+# launchd StartInterval=60s 가 tick 을 놓칠 때 보조 방어선.
+# 오늘(2026-04-18) 30-35s 에 13GB 폭주 재발 방지.
+#
+# 제약:
+#   - 1회 정상 tick (위 [1]~[6]) 은 항상 수행 — 기본 동작 변경 없음
+#   - free >= 1024 MB 면 아래 루프 자체가 activate 안 됨 (정상 CPU 낭비 0)
+#   - 최대 30회 × 2s = 60s (launchd 다음 tick 과 겹치지 않음)
+#   - renice/cpulimit 는 1회로 충분 → fast loop 는 emergency_kill 분기만 반복 체크
+#   - claude / 시스템 프로세스 보호는 emergency_kill 블록 재사용으로 유지
+
+# emergency_check_only — top_pid / rss / free 재샘플 후 emergency SIGKILL 조건만 평가.
+# renice / cpulimit / term_candidate / state 쓰기 일절 수행 안 함.
+# 기존 [5.5] 블록과 동일한 보호 가드 적용 (claude/WindowServer/Finder/...).
+emergency_check_only() {
+    local _free_mb _stage0_lines _top_line _tp _tr_kb _tc _tn _em_rss
+    _free_mb="$(get_free_mb)"
+    if [ "$_free_mb" -ge 500 ]; then
+        return 0
+    fi
+    # hexa_stage0.real / hexa_v2 top-1 재탐색
+    _stage0_lines="$(ps -Ao pid=,rss=,etime=,comm= 2>/dev/null | awk '$NF ~ /hexa_stage0\.real$/ || $NF ~ /hexa_v2$/ {print}')"
+    _top_line="$(printf '%s\n' "$_stage0_lines" | awk 'NF' | sort -k2 -n -r | head -1)"
+    [ -z "$_top_line" ] && return 0
+    _tp="$(awk '{print $1}' <<<"$_top_line")"
+    _tr_kb="$(awk '{print $2}' <<<"$_top_line")"
+    _em_rss=$(( _tr_kb / 1024 ))
+    [ "$_em_rss" -le 5120 ] && return 0
+    _tc="$(ps -o comm= -p "$_tp" 2>/dev/null || true)"
+    _tn="${_tc##*/}"
+    case "$_tn" in
+        *claude*|claude|WindowServer|Finder|kernel_task|launchd|loginwindow|coreaudiod|mds|mds_stores|"")
+            return 0
+            ;;
+        *)
+            kill -KILL "$_tp" 2>/dev/null
+            local _rc=$?
+            printf 'EMERGENCY KILL (fast-tick) pid=%s rss_mb=%s free_mb=%s name=%s rc=%s\n' \
+                "$_tp" "$_em_rss" "$_free_mb" "$_tn" "$_rc" >&2
+            printf '{"ts":"%s","type":"emergency_kill","source":"fast_tick","pid":"%s","rss_mb":%s,"free_mb":%s,"name":"%s","rc":%s}\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_tp" "$_em_rss" "$_free_mb" "$_tn" "$_rc" \
+                >> "$JSONL"
+            ;;
+    esac
+    return 0
+}
+
+# Entry: 현재 tick 직후의 free_mb 기준으로 fast-loop 여부 결정.
+if [ "$free_mb" -lt 1024 ]; then
+    printf '{"ts":"%s","type":"fast_tick_enter","free_mb":%s}\n' \
+        "$NOW_ISO" "$free_mb" >> "$JSONL"
+    printf '%s FAST-TICK ENTER free_mb=%s\n' "$NOW_ISO" "$free_mb" >> "$ALERTS"
+    ft_i=0
+    while [ "$ft_i" -lt 30 ]; do
+        sleep 2
+        ft_free="$(get_free_mb)"
+        if [ "$ft_free" -ge 1024 ]; then
+            ft_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf '{"ts":"%s","type":"fast_tick_exit","reason":"recovered","iter":%s,"free_mb":%s}\n' \
+                "$ft_now" "$ft_i" "$ft_free" >> "$JSONL"
+            break
+        fi
+        emergency_check_only
+        ft_i=$(( ft_i + 1 ))
+    done
+    if [ "$ft_i" -ge 30 ]; then
+        ft_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '{"ts":"%s","type":"fast_tick_exit","reason":"max_iter","iter":%s,"free_mb":%s}\n' \
+            "$ft_now" "$ft_i" "$(get_free_mb)" >> "$JSONL"
     fi
 fi
 

@@ -1,0 +1,368 @@
+// modules/dashboard.hexa — M12 정적 HTML 대시보드 생성
+//
+// 책임:
+//   1. forge/labeled_anomaly.jsonl → 최근 anomaly Top 10
+//   2. infra_state.json → host 별 vitals 카드
+//   3. dispatch_state.json → 현재 dispatch 선택
+//   4. predictive_throttle_state.json → throttle 상태
+//   5. throttle_history.jsonl → CPU/RAM 스파크라인 (SVG)
+//   6. genomes.unified.ring → 호스트별 genome 통계
+//
+// 출력: forge/dashboard.html (단일 정적 파일, 브라우저 직접 열기)
+//
+// 제약 (AG6): Mac 에서 light 연산만. jq 파싱 + 문자열 결합.
+//
+// hexa quirks 주의:
+//   - let 은 block scope → if 내부 let 은 외부 변수 shadow → let mut + 재할당
+//   - split("\t") 은 리터럴 \t 일 수 있음 → jq 출력은 ::: 구분자
+//   - HTML 은 single-quote 금지 (셸 printf 충돌) → \" 로 double-quote 사용
+
+use "../core/core"
+
+let NEXUS = env("HOME") + "/Dev/nexus/shared"
+let INFRA_FILE = NEXUS + "/infra_state.json"
+let DISPATCH_FILE = NEXUS + "/dispatch_state.json"
+let THROTTLE_STATE = forge_dir() + "/predictive_throttle_state.json"
+let THROTTLE_HIST = ring_path("throttle_history.jsonl")
+let ANOMALY_FILE = forge_dir() + "/labeled_anomaly.jsonl"
+let UNIFIED_RING = ring_path("genomes.unified.ring")
+let OUTPUT = forge_dir() + "/dashboard.html"
+let DQ = "\""
+
+// ───────────────────────────────────────────────────────────
+//  HTML helpers
+// ───────────────────────────────────────────────────────────
+
+fn esc(s: str) -> str {
+    let r = s.replace("&", "&amp;")
+    let r2 = r.replace("<", "&lt;")
+    return r2.replace(">", "&gt;")
+}
+
+fn ts_iso() -> str {
+    return exec("date -u +%Y-%m-%dT%H:%M:%SZ").trim()
+}
+
+fn q(attr: str) -> str {
+    // HTML attribute quoting: q("cards") → ="cards"
+    return "=" + DQ + attr + DQ
+}
+
+// ───────────────────────────────────────────────────────────
+//  SVG sparkline from comma-separated int values
+// ───────────────────────────────────────────────────────────
+
+fn svg_spark(csv: str, color: str, w: int, h: int) -> str {
+    if csv == "" { return "<span>no data</span>" }
+    let vals = csv.split(",")
+    let n = len(vals)
+    if n < 2 { return "<span>1 pt</span>" }
+
+    let mut mx = 1
+    let mut i = 0
+    while i < n {
+        let v = to_int(vals[i].trim())
+        if v > mx { mx = v }
+        i = i + 1
+    }
+
+    let mut pts = ""
+    i = 0
+    while i < n {
+        let v = to_int(vals[i].trim())
+        let x = (i * w) / (n - 1)
+        let y = h - (v * h) / mx
+        if i > 0 { pts = pts + " " }
+        pts = pts + to_string(x) + "," + to_string(y)
+        i = i + 1
+    }
+
+    return "<svg width" + q(to_string(w)) + " height" + q(to_string(h))
+         + " style" + q("vertical-align:middle") + "><polyline points" + q(pts)
+         + " fill" + q("none") + " stroke" + q(color)
+         + " stroke-width" + q("1.5") + "/></svg>"
+}
+
+// ───────────────────────────────────────────────────────────
+//  Data extraction via jq
+// ───────────────────────────────────────────────────────────
+
+fn section_host_cards() -> str {
+    let raw = exec("cat " + DQ + INFRA_FILE + DQ + " 2>/dev/null").trim()
+    if raw == "" { return "<p>infra_state unavailable</p>" }
+
+    let ts = exec("jq -r .ts " + DQ + INFRA_FILE + DQ).trim()
+    let hosts_json = exec("jq -r '.hosts|keys[]' " + DQ + INFRA_FILE + DQ).trim()
+    let hosts = hosts_json.split("\n")
+
+    let mut html = "<div class" + q("cards") + ">"
+    let mut i = 0
+    while i < len(hosts) {
+        let h = hosts[i].trim()
+        if h != "" {
+            let status = exec("jq -r '.hosts." + h + ".status//\"unknown\"' " + DQ + INFRA_FILE + DQ).trim()
+            let load = exec("jq -r '.hosts." + h + ".load//.hosts." + h + ".cpu_pct//\"--\"' " + DQ + INFRA_FILE + DQ).trim()
+            let ram = exec("jq -r '.hosts." + h + ".ram_used_mb//.hosts." + h + ".ram_pct//\"--\"' " + DQ + INFRA_FILE + DQ).trim()
+            let gpu = exec("jq -r '.hosts." + h + ".gpu_util//\"--\"' " + DQ + INFRA_FILE + DQ).trim()
+
+            let mut dot_cls = "dot green"
+            if status != "active" { dot_cls = "dot gray" }
+
+            html = html + "<div class" + q("card") + ">"
+            html = html + "<div class" + q("card-title") + "><span class" + q(dot_cls) + "></span>" + esc(h) + "</div>"
+            html = html + "<div class" + q("card-row") + ">Load: <b>" + esc(load) + "</b></div>"
+            html = html + "<div class" + q("card-row") + ">RAM: <b>" + esc(ram) + "</b></div>"
+            html = html + "<div class" + q("card-row") + ">GPU: <b>" + esc(gpu) + "</b></div>"
+            html = html + "</div>"
+        }
+        i = i + 1
+    }
+    html = html + "</div>"
+    html = html + "<div class" + q("ts-note") + ">infra sampled: " + esc(ts) + "</div>"
+    return html
+}
+
+fn section_dispatch() -> str {
+    let raw = exec("jq -r . " + DQ + DISPATCH_FILE + DQ + " 2>/dev/null").trim()
+    if raw == "" { return "<p>dispatch_state unavailable</p>" }
+
+    let compute = exec("jq -r .selection.compute " + DQ + DISPATCH_FILE + DQ).trim()
+    let gpu = exec("jq -r .selection.gpu " + DQ + DISPATCH_FILE + DQ).trim()
+    let heavy = exec("jq -r .selection.heavy " + DQ + DISPATCH_FILE + DQ).trim()
+    let ag6 = exec("jq -r .ag6_gate " + DQ + DISPATCH_FILE + DQ).trim()
+    let ts = exec("jq -r .ts " + DQ + DISPATCH_FILE + DQ).trim()
+
+    let mut ag6_badge = "open"
+    if ag6 == "active" { ag6_badge = "ACTIVE" }
+
+    return "<table class" + q("tbl") + ">"
+         + "<tr><td>compute</td><td><b>" + esc(compute) + "</b></td></tr>"
+         + "<tr><td>gpu</td><td><b>" + esc(gpu) + "</b></td></tr>"
+         + "<tr><td>heavy</td><td><b>" + esc(heavy) + "</b></td></tr>"
+         + "<tr><td>AG6 gate</td><td><span class" + q("badge ag6-" + ag6) + ">" + esc(ag6_badge) + "</span></td></tr>"
+         + "</table>"
+         + "<div class" + q("ts-note") + ">dispatch: " + esc(ts) + "</div>"
+}
+
+fn section_throttle() -> str {
+    let raw = exec("cat " + DQ + THROTTLE_STATE + DQ + " 2>/dev/null").trim()
+    if raw == "" { return "<p>throttle_state unavailable</p>" }
+
+    let level = exec("jq -r .level " + DQ + THROTTLE_STATE + DQ).trim()
+    let pred_cpu = exec("jq -r .pred_cpu " + DQ + THROTTLE_STATE + DQ).trim()
+    let pred_ram = exec("jq -r .pred_ram " + DQ + THROTTLE_STATE + DQ).trim()
+    let action = exec("jq -r .action " + DQ + THROTTLE_STATE + DQ).trim()
+
+    let mut icon = "&#x1F7E2;"
+    if level == "WARM" { icon = "&#x1F7E1;" }
+    if level == "STRESS" { icon = "&#x1F534;" }
+    if level == "THROTTLE" { icon = "&#x1F7E0;" }
+
+    return "<div class" + q("throttle-box level-" + level) + ">"
+         + "<span class" + q("throttle-icon") + ">" + icon + "</span>"
+         + "<span class" + q("throttle-level") + ">" + esc(level) + "</span>"
+         + "<div class" + q("throttle-detail") + ">pred CPU: " + esc(pred_cpu) + "% &nbsp; RAM: " + esc(pred_ram) + "%</div>"
+         + "<div class" + q("throttle-detail") + ">action: " + esc(action) + "</div>"
+         + "</div>"
+}
+
+fn section_sparklines() -> str {
+    let cpu_csv = exec("tail -30 " + DQ + THROTTLE_HIST + DQ + " 2>/dev/null | jq -r .cpu | paste -sd, -").trim()
+    let ram_csv = exec("tail -30 " + DQ + THROTTLE_HIST + DQ + " 2>/dev/null | jq -r .ram | paste -sd, -").trim()
+
+    return "<div class" + q("spark-row") + ">"
+         + "<div class" + q("spark-item") + "><span class" + q("spark-label") + ">CPU (30 samples)</span>" + svg_spark(cpu_csv, "#e74c3c", 200, 32) + "</div>"
+         + "<div class" + q("spark-item") + "><span class" + q("spark-label") + ">RAM (30 samples)</span>" + svg_spark(ram_csv, "#3498db", 200, 32) + "</div>"
+         + "</div>"
+}
+
+fn section_anomaly_top10() -> str {
+    // jq 출력을 ::: 구분자로 (탭 대신 — hexa split("\t") 불확실)
+    let rows = exec("tail -100 " + DQ + ANOMALY_FILE + DQ + " 2>/dev/null | jq -r '\"\\(.ts):::\\(.host // \"--\"):::\\(.pid):::\\(.comm // \"--\"):::\\(.label)\"' | sort -r | head -10").trim()
+    if rows == "" { return "<p>no anomalies recorded</p>" }
+
+    let lines = rows.split("\n")
+    let mut html = "<table class" + q("tbl anomaly-tbl") + ">"
+    html = html + "<tr><th>Time</th><th>Host</th><th>PID</th><th>Process</th><th>Label</th></tr>"
+    let mut i = 0
+    while i < len(lines) {
+        let l = lines[i].trim()
+        if l != "" {
+            let cols = l.split(":::")
+            let mut ts_v = ""
+            let mut host_v = ""
+            let mut pid_v = ""
+            let mut comm_v = ""
+            let mut label_v = ""
+            if len(cols) > 0 { ts_v = cols[0] }
+            if len(cols) > 1 { host_v = cols[1] }
+            if len(cols) > 2 { pid_v = cols[2] }
+            if len(cols) > 3 { comm_v = cols[3] }
+            if len(cols) > 4 { label_v = cols[4] }
+
+            let mut label_class = "lbl-default"
+            if label_v == "CPU_SPIKE" { label_class = "lbl-cpu" }
+            if label_v == "MEM_LEAK" { label_class = "lbl-mem" }
+            if label_v == "FORK_BOMB" { label_class = "lbl-fork" }
+            if label_v == "IO_STORM" { label_class = "lbl-io" }
+            if label_v == "GPU_HOG" { label_class = "lbl-gpu" }
+
+            html = html + "<tr>"
+            html = html + "<td>" + esc(ts_v) + "</td>"
+            html = html + "<td>" + esc(host_v) + "</td>"
+            html = html + "<td>" + esc(pid_v) + "</td>"
+            html = html + "<td>" + esc(comm_v) + "</td>"
+            html = html + "<td><span class" + q("badge " + label_class) + ">" + esc(label_v) + "</span></td>"
+            html = html + "</tr>"
+        }
+        i = i + 1
+    }
+    html = html + "</table>"
+    return html
+}
+
+fn section_ring_stats() -> str {
+    let mac_n = exec("grep -c '\"host\":\"mac\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
+    let ubu_n = exec("grep -c '\"host\":\"ubu\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
+    let htz_n = exec("grep -c '\"host\":\"htz\"' " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
+    let total = exec("wc -l < " + DQ + UNIFIED_RING + DQ + " 2>/dev/null || echo 0").trim()
+
+    let ubu_ring = exec("wc -l < " + DQ + ring_path("genomes.ubu.ring") + DQ + " 2>/dev/null || echo 0").trim()
+    let ubu2_ring = exec("wc -l < " + DQ + ring_path("genomes.ubu2.ring") + DQ + " 2>/dev/null || echo 0").trim()
+    let htz_ring = exec("wc -l < " + DQ + ring_path("genomes.htz.ring") + DQ + " 2>/dev/null || echo 0").trim()
+
+    return "<table class" + q("tbl") + ">"
+         + "<tr><th>Source</th><th>unified</th><th>ring file</th></tr>"
+         + "<tr><td>mac</td><td>" + esc(mac_n) + "</td><td>local</td></tr>"
+         + "<tr><td>ubu</td><td>" + esc(ubu_n) + "</td><td>" + esc(ubu_ring) + " lines</td></tr>"
+         + "<tr><td>ubu2</td><td>--</td><td>" + esc(ubu2_ring) + " lines</td></tr>"
+         + "<tr><td>htz</td><td>" + esc(htz_n) + "</td><td>" + esc(htz_ring) + " lines</td></tr>"
+         + "<tr><td><b>total</b></td><td><b>" + esc(total) + "</b></td><td></td></tr>"
+         + "</table>"
+}
+
+// ───────────────────────────────────────────────────────────
+//  Full HTML assembly
+// ───────────────────────────────────────────────────────────
+
+fn css() -> str {
+    return "
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#c9d1d9;padding:24px;max-width:960px;margin:0 auto}
+h1{font-size:1.4em;margin-bottom:4px;color:#58a6ff}
+.subtitle{color:#8b949e;font-size:0.85em;margin-bottom:20px}
+h2{font-size:1.1em;margin:20px 0 8px;color:#79c0ff;border-bottom:1px solid #21262d;padding-bottom:4px}
+.cards{display:flex;gap:12px;flex-wrap:wrap}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 16px;min-width:140px;flex:1}
+.card-title{font-weight:600;margin-bottom:6px;font-size:0.95em}
+.card-row{font-size:0.85em;color:#8b949e;margin:2px 0}
+.card-row b{color:#c9d1d9}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.green{background:#3fb950}
+.dot.gray{background:#484f58}
+.tbl{border-collapse:collapse;width:100%;font-size:0.85em;margin:6px 0}
+.tbl th,.tbl td{padding:6px 10px;border-bottom:1px solid #21262d;text-align:left}
+.tbl th{color:#8b949e;font-weight:500}
+.anomaly-tbl tr:hover{background:#161b22}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.8em;font-weight:600}
+.ag6-active{background:#1f6feb33;color:#58a6ff}
+.ag6-open{background:#23862533;color:#3fb950}
+.lbl-cpu{background:#da363333;color:#f85149}
+.lbl-mem{background:#9e6a0333;color:#d29922}
+.lbl-fork{background:#8b5cf633;color:#a78bfa}
+.lbl-io{background:#1f6feb33;color:#58a6ff}
+.lbl-gpu{background:#23862533;color:#3fb950}
+.lbl-default{background:#30363d;color:#8b949e}
+.throttle-box{padding:12px 16px;border-radius:8px;margin:6px 0;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.level-CALM{background:#23862522;border:1px solid #23862544}
+.level-WARM{background:#9e6a0322;border:1px solid #9e6a0344}
+.level-STRESS{background:#da363322;border:1px solid #da363344}
+.level-THROTTLE{background:#da363344;border:1px solid #da3633}
+.throttle-icon{font-size:1.4em}
+.throttle-level{font-weight:700;font-size:1.1em}
+.throttle-detail{color:#8b949e;font-size:0.85em;width:100%}
+.spark-row{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0}
+.spark-item{display:flex;align-items:center;gap:8px}
+.spark-label{font-size:0.8em;color:#8b949e;min-width:110px}
+.ts-note{font-size:0.75em;color:#484f58;margin-top:4px}
+"
+}
+
+fn build_dashboard() -> void {
+    let _ = exec("mkdir -p " + DQ + forge_dir() + DQ)
+    let now = ts_iso()
+
+    let mut html = "<!DOCTYPE html><html lang=" + DQ + "en" + DQ + "><head><meta charset=" + DQ + "utf-8" + DQ + ">"
+    html = html + "<meta name=" + DQ + "viewport" + DQ + " content=" + DQ + "width=device-width,initial-scale=1" + DQ + ">"
+    html = html + "<meta http-equiv=" + DQ + "refresh" + DQ + " content=" + DQ + "60" + DQ + ">"
+    html = html + "<title>Airgenome Dashboard</title>"
+    html = html + "<style>" + css() + "</style></head><body>"
+
+    html = html + "<h1>Airgenome Dashboard</h1>"
+    html = html + "<div class" + q("subtitle") + ">generated " + now + " — static snapshot, refresh to update</div>"
+
+    html = html + "<h2>Host Status</h2>"
+    html = html + section_host_cards()
+
+    html = html + "<h2>Dispatch Selection (AG7)</h2>"
+    html = html + section_dispatch()
+
+    html = html + "<h2>Mac Throttle (Predictive)</h2>"
+    html = html + section_throttle()
+    html = html + section_sparklines()
+
+    html = html + "<h2>Recent Anomalies (Top 10)</h2>"
+    html = html + section_anomaly_top10()
+
+    html = html + "<h2>Genome Ring Stats</h2>"
+    html = html + section_ring_stats()
+
+    html = html + "</body></html>"
+
+    // write via heredoc — avoids shell quoting issues with single/double quotes in HTML
+    let tmp = OUTPUT + ".tmp"
+    let _ = exec("cat > " + DQ + tmp + DQ + " <<'DASHEOF'\n" + html + "\nDASHEOF")
+    let _ = exec("mv " + DQ + tmp + DQ + " " + DQ + OUTPUT + DQ)
+    println("dashboard: wrote " + OUTPUT + " (" + to_string(len(html)) + " bytes)")
+}
+
+// ───────────────────────────────────────────────────────────
+//  Self-test
+// ───────────────────────────────────────────────────────────
+
+fn self_test() -> void {
+    let e1 = esc("<b>hi</b>")
+    if e1 != "&lt;b&gt;hi&lt;/b&gt;" { panic("self_test FAIL [esc]: " + e1) }
+
+    let s1 = svg_spark("", "#f00", 100, 20)
+    if len(s1) < 5 { panic("self_test FAIL [spark empty]") }
+
+    let s2 = svg_spark("10,20,30,40,50", "#f00", 100, 20)
+    if len(s2) < 30 { panic("self_test FAIL [spark normal len=" + to_string(len(s2)) + "]") }
+
+    let c = css()
+    if len(c) < 100 { panic("self_test FAIL [css too short]") }
+
+    let fd = forge_dir()
+    if fd == "" { panic("self_test FAIL [forge_dir empty]") }
+
+    // q helper
+    let q1 = q("cards")
+    if q1 != "=" + DQ + "cards" + DQ { panic("self_test FAIL [q]: " + q1) }
+
+    println("  dashboard self_test PASS")
+}
+
+fn main() -> void {
+    let a = args()
+    if len(a) >= 3 {
+        let sub = a[2]
+        if sub == "self-test" {
+            self_test()
+            return
+        }
+    }
+    build_dashboard()
+}
+
+main()

@@ -1,0 +1,12 @@
+[Unit]
+Description=airgenome forecast — Holt smoothing CPU/RAM prediction
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Dev/airgenome
+ExecStart=%h/Dev/hexa-lang/hexa run %h/Dev/airgenome/modules/forecast.hexa
+StandardOutput=append:%h/Dev/airgenome/forge/forecast.stdout.log
+StandardError=append:%h/Dev/airgenome/forge/forecast.stderr.log
+Nice=10
+IOSchedulingClass=idle

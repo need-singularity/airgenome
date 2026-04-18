@@ -1,0 +1,11 @@
+[Unit]
+Description=airgenome forecast 300s timer
+Requires=airgenome-forecast.service
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=300
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

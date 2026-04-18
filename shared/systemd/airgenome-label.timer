@@ -1,0 +1,11 @@
+[Unit]
+Description=airgenome label 300s timer
+Requires=airgenome-label.service
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=300
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target

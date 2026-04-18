@@ -1,0 +1,12 @@
+[Unit]
+Description=airgenome label — anomaly classification
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Dev/airgenome
+ExecStart=%h/Dev/hexa-lang/hexa run %h/Dev/airgenome/modules/label.hexa
+StandardOutput=append:%h/Dev/airgenome/forge/label.stdout.log
+StandardError=append:%h/Dev/airgenome/forge/label.stderr.log
+Nice=10
+IOSchedulingClass=idle

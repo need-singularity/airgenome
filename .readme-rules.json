@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "project": "airgenome",
+    "version": 1,
+    "inherit": false,
+    "description": "airgenome README 양식 — 공기 게놈/환경 센서 중심 독립 규약"
+  },
+  "scopes": {
+    "root": {
+      "sections": [
+        "What is Airgenome",
+        "Quick Start",
+        "Sensors",
+        "Core Algorithm",
+        "Calibration",
+        "Documentation",
+        "Dependencies"
+      ],
+      "require_codeblock": true,
+      "require_mdlink": false,
+      "require_sealed": true
+    },
+    "sensor-doc": {
+      "sections": ["Sensor", "Specs", "Calibration", "Output"],
+      "require_codeblock": false,
+      "require_mdlink": true,
+      "require_sealed": false
+    }
+  }
+}
