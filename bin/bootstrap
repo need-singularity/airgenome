@@ -1,57 +1,99 @@
 #!/bin/bash
-# bin/bootstrap — fresh Mac airgenome 일회성 설치기 (Phase 0, pre-hexa).
+# bin/bootstrap — fresh Mac airgenome 일회성 설치기 (Phase 0+all tiers).
 #
-# hexa-only 원칙 예외: hexa 가 없는 상태에서 hexa 를 세팅해야 하므로 Phase 0
-# 은 shell 이 유일한 선택. hexa 사용 가능해지면 Phase 1 부터는 install_agents.hexa
-# + deploy.hexa 로 위임.
+# 설계 원칙:
+#   - 모든 단계 idempotent (재실행 시 이미 된 것 skip)
+#   - 실패 가능한 단계는 best-effort + 로그 (fail-fast 안 함)
+#   - 대화형 단계는 BOOTSTRAP_YES=1 로 non-interactive 전환 가능
+#   - Phase 0 (shell 만) → Phase 1 (hexa 가용 후 install_agents) 순
 #
 # Usage:
 #   # 새 Mac 에서 한 번만:
 #   git clone https://github.com/need-singularity/airgenome ~/Dev/airgenome
 #   ~/Dev/airgenome/bin/bootstrap
 #
-#   # 또는 curl one-liner (public 인 경우):
+#   # curl one-liner:
 #   curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/bin/bootstrap | bash
 #
-# 모든 단계 idempotent — 재실행 시 이미 설치된 건 skip.
+#   # 특정 tier 만:
+#   BOOTSTRAP_ONLY="1,2,3" ~/Dev/airgenome/bin/bootstrap
 
-set -eu
+set -u  # strict undefined, 하지만 fail-fast 는 피함 (tier 별 독립)
 
 MARKER="# --- airgenome bootstrap (managed block) ---"
 DEV="$HOME/Dev"
 GH_ORG="need-singularity"
+AIRGENOME="$DEV/airgenome"
+NEXUS="$DEV/nexus"
 
 log()  { printf '[bootstrap %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+info() { printf '[bootstrap   INFO] %s\n' "$*" >&2; }
+warn() { printf '[bootstrap   WARN] %s\n' "$*" >&2; }
 have() { command -v "$1" >/dev/null 2>&1; }
+ask()  {
+    # ask "prompt" "default_y_or_n" → returns 0 if yes, 1 if no
+    local prompt="$1" default="${2:-y}" ans=""
+    [ "${BOOTSTRAP_YES:-0}" = "1" ] && { [ "$default" = "y" ] && return 0 || return 1; }
+    if [ ! -t 0 ]; then [ "$default" = "y" ] && return 0 || return 1; fi
+    local hint="[Y/n]"; [ "$default" = "n" ] && hint="[y/N]"
+    printf '%s %s ' "$prompt" "$hint" >&2
+    read -r ans
+    ans="${ans:-$default}"
+    case "$ans" in [yY]*) return 0 ;; *) return 1 ;; esac
+}
+tier_enabled() {
+    # BOOTSTRAP_ONLY=1,3,5 이면 해당 tier 만
+    local t="$1"
+    [ -z "${BOOTSTRAP_ONLY:-}" ] && return 0
+    case ",${BOOTSTRAP_ONLY}," in *",${t},"*) return 0 ;; esac
+    return 1
+}
 
-# ─ 1. Homebrew ────────────────────────────────────────────────────────
+tier_enabled 1 && {
+# ═══ Tier 1 — Homebrew + Xcode CLT ══════════════════════════════════════
+log "Tier 1: Homebrew"
 if ! have brew; then
-    log "Homebrew 설치 (admin pw 프롬프트 발생)"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if ! xcode-select -p >/dev/null 2>&1; then
+        info "Xcode Command Line Tools 설치 (팝업 확인 후 대기)"
+        xcode-select --install 2>/dev/null || true
+        info "CLT 설치 완료 후 엔터를 눌러 계속"
+        [ "${BOOTSTRAP_YES:-0}" = "1" ] || read -r _
+    fi
+    log "Homebrew 설치 (admin pw 프롬프트)"
+    NONINTERACTIVE="${BOOTSTRAP_YES:-0}" /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 fi
 if [ -x /opt/homebrew/bin/brew ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
 elif [ -x /usr/local/bin/brew ]; then
     eval "$(/usr/local/bin/brew shellenv)"
 fi
+}
 
-# ─ 2. 패키지 (필수 + 선택) ─────────────────────────────────────────────
-REQUIRED="jq rsync git"
+tier_enabled 2 && {
+# ═══ Tier 2 — brew packages ════════════════════════════════════════════
+log "Tier 2: brew packages"
+REQUIRED="jq rsync git gh"
 OPTIONAL="sshfs cpulimit"
+CASKS="tailscale"
 for pkg in $REQUIRED; do
     brew list "$pkg" >/dev/null 2>&1 || { log "brew install $pkg"; brew install "$pkg"; }
 done
 for pkg in $OPTIONAL; do
-    brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg" 2>/dev/null || log "  (optional skip: $pkg — macFUSE 등 수동 설치 필요할 수 있음)"
+    brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg" 2>/dev/null || warn "optional skip: $pkg"
 done
+for cask in $CASKS; do
+    brew list --cask "$cask" >/dev/null 2>&1 || brew install --cask "$cask" 2>/dev/null || warn "cask skip: $cask"
+done
+}
 
-# ─ 3. 3-repo clone (airgenome / nexus / hexa-lang) ─────────────────────
+tier_enabled 3 && {
+# ═══ Tier 3 — 3-repo clone (airgenome / nexus / hexa-lang) ═════════════
+log "Tier 3: repo clone"
 mkdir -p "$DEV"
 clone_if_missing() {
-    local repo="$1"
-    local dir="$DEV/$repo"
+    local repo="$1" dir="$DEV/$1"
     if [ -d "$dir/.git" ]; then
-        log "$repo: 이미 clone 됨"
+        info "$repo: 이미 clone 됨"
     else
         log "clone: $GH_ORG/$repo → $dir"
         git clone "https://github.com/$GH_ORG/$repo.git" "$dir"
@@ -60,64 +102,299 @@ clone_if_missing() {
 clone_if_missing airgenome
 clone_if_missing nexus
 clone_if_missing hexa-lang
+}
 
-# ─ 4. ~/.zshrc managed block (idempotent) ──────────────────────────────
+tier_enabled 4 && {
+# ═══ Tier 4 — ~/.zshrc managed block ═══════════════════════════════════
+log "Tier 4: ~/.zshrc managed block"
 ZSHRC="$HOME/.zshrc"
 if ! grep -qF "$MARKER" "$ZSHRC" 2>/dev/null; then
-    log "~/.zshrc 에 airgenome 블록 추가"
     cat >> "$ZSHRC" <<EOF
 
 $MARKER
 export NEXUS="\$HOME/Dev/nexus"
 export HEXA_LANG="\$HOME/Dev/hexa-lang"
-export PATH="\$HOME/Dev/nexus/shared/bin:\$HOME/Dev/airgenome/bin:\$PATH"
+export PATH="\$HOME/.local/bin:\$HOME/Dev/nexus/shared/bin:\$HOME/Dev/airgenome/bin:\$PATH"
 export CLAUDE_EXEC="\$HOME/Dev/airgenome/bin/cx"
 # --- /airgenome bootstrap ---
 EOF
 else
-    log "~/.zshrc managed block 존재 — skip"
+    info "~/.zshrc managed block 존재 — skip"
 fi
-# 현 shell 에 즉시 반영 (후속 단계용)
 export NEXUS="$DEV/nexus"
 export HEXA_LANG="$DEV/hexa-lang"
-export PATH="$DEV/nexus/shared/bin:$DEV/airgenome/bin:$PATH"
+export PATH="$HOME/.local/bin:$DEV/nexus/shared/bin:$DEV/airgenome/bin:$PATH"
+export CLAUDE_EXEC="$DEV/airgenome/bin/cx"
+}
 
-# ─ 5. hexa-lang 빌드 ───────────────────────────────────────────────────
-# hexa-lang 은 install.hexa 로 자가 설치. 이미 있으면 skip.
+tier_enabled 5 && {
+# ═══ Tier 5 — Claude Code CLI binary ═══════════════════════════════════
+# native installer 위치 최신 버전은 claude.ai/install.sh. 수동 경로 설치도 지원.
+log "Tier 5: Claude Code CLI"
+if have claude; then
+    info "claude $(claude --version 2>/dev/null | head -1) 이미 설치됨"
+else
+    if ask "Claude Code CLI 를 설치하시겠습니까?" y; then
+        curl -fsSL https://claude.ai/install.sh 2>/dev/null | bash 2>&1 | sed 's/^/  /' || \
+            warn "claude 설치 실패 — 수동 설치: https://docs.claude.com/en/docs/claude-code"
+    fi
+fi
+}
+
+tier_enabled 6 && {
+# ═══ Tier 6 — SSH 키 생성 + config 렌더 ═════════════════════════════════
+log "Tier 6: SSH 키 + config"
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+    log "ed25519 키 생성"
+    ssh-keygen -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" -C "$(whoami)@$(hostname -s)"
+fi
+
+SSH_CONFIG="$HOME/.ssh/config"
+touch "$SSH_CONFIG"; chmod 600 "$SSH_CONFIG"
+BLOCK_START="# --- airgenome hosts (managed) ---"
+BLOCK_END="# --- /airgenome hosts ---"
+if ! grep -qF "$BLOCK_START" "$SSH_CONFIG"; then
+    info "~/.ssh/config 에 hosts.json 기반 엔트리 추가"
+    # hosts.json → ssh config 블록 생성.
+    # 실제 HostName 은 per-Mac (LAN/tailscale/hetzner IP 상이) → placeholder 삽입 후 사용자 편집 유도.
+    {
+        echo ""
+        echo "$BLOCK_START"
+        jq -r '.hosts | to_entries[] | select(.value.enabled==true and .value.kind!="self") |
+            "Host \(.value.ssh_alias)\n    # HostName <FILL ME — LAN IP or tailscale 100.x>\n    User \(if .key==\"ubu2\" then \"summer\" else \"aiden\" end)\n    ControlMaster auto\n    ControlPath ~/.ssh/ctl-%r@%h:%p\n    ControlPersist 10m\n    ServerAliveInterval 60\n    ServerAliveCountMax 3\n"' \
+            "$AIRGENOME/shared/config/hosts.json"
+        echo "$BLOCK_END"
+    } >> "$SSH_CONFIG"
+    warn "~/.ssh/config 의 <FILL ME> HostName 을 각 호스트 IP 로 채워주세요"
+else
+    info "~/.ssh/config managed block 존재 — skip"
+fi
+}
+
+tier_enabled 7 && {
+# ═══ Tier 7 — Mac Remote Login 활성화 ══════════════════════════════════
+log "Tier 7: Mac Remote Login (sshd)"
+if systemsetup -getremotelogin 2>/dev/null | grep -qi 'on'; then
+    info "Remote Login: 이미 On"
+else
+    if ask "Remote Login 을 활성화하시겠습니까 (sudo 필요, 원격 → Mac sshfs mount 에 필수)?" y; then
+        sudo systemsetup -setremotelogin on 2>&1 | sed 's/^/  /' || warn "Remote Login 활성화 실패 — 시스템 설정 > 일반 > 공유 > 원격 로그인 수동 on"
+    fi
+fi
+}
+
+tier_enabled 8 && {
+# ═══ Tier 8 — Tailscale up ═════════════════════════════════════════════
+log "Tier 8: Tailscale"
+if have tailscale; then
+    if tailscale status >/dev/null 2>&1; then
+        info "Tailscale: 이미 연결됨 ($(tailscale ip -4 2>/dev/null | head -1))"
+    else
+        if ask "Tailscale 연결하시겠습니까 (브라우저 OAuth)?" y; then
+            tailscale up 2>&1 | sed 's/^/  /' || warn "tailscale up 실패"
+        fi
+    fi
+else
+    warn "tailscale 바이너리 없음 — brew install --cask tailscale 수동"
+fi
+}
+
+tier_enabled 9 && {
+# ═══ Tier 9 — git identity + GitHub PAT ════════════════════════════════
+log "Tier 9: git identity + gh auth"
+if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
+    if [ "${BOOTSTRAP_YES:-0}" != "1" ] && [ -t 0 ]; then
+        printf '[bootstrap] git user.name: ' >&2; read -r _gname
+        printf '[bootstrap] git user.email: ' >&2; read -r _gmail
+        [ -n "$_gname" ] && git config --global user.name "$_gname"
+        [ -n "$_gmail" ] && git config --global user.email "$_gmail"
+    else
+        warn "git user.name/email 미설정 — git config --global 로 수동"
+    fi
+else
+    info "git identity: $(git config --global user.name) <$(git config --global user.email)>"
+fi
+
+if have gh; then
+    if gh auth status >/dev/null 2>&1; then
+        info "gh 이미 로그인됨"
+    else
+        if ask "gh auth login 실행 (GitHub PAT 저장)?" y; then
+            gh auth login -h github.com -p https -w 2>&1 | sed 's/^/  /' || warn "gh auth login 실패"
+        fi
+    fi
+    # gh 로그인 성공 시 git credential helper 설정 (PAT 를 .git-credentials 로 저장)
+    if gh auth status >/dev/null 2>&1 && [ ! -f "$HOME/.git-credentials" ]; then
+        gh auth setup-git 2>&1 | sed 's/^/  /' || warn "gh auth setup-git 실패"
+    fi
+fi
+}
+
+tier_enabled 10 && {
+# ═══ Tier 10 — ssh-copy-id (enabled remote 호스트) ═════════════════════
+log "Tier 10: ssh-copy-id (initial key 배포)"
+for alias in $(jq -r '.hosts | to_entries[] | select(.value.enabled==true and .value.kind!="self") | .value.ssh_alias' "$AIRGENOME/shared/config/hosts.json" 2>/dev/null); do
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$alias" true 2>/dev/null; then
+        info "$alias: 이미 key-auth 가능 — skip"
+    else
+        if ask "$alias 에 ssh 키 배포 (password 1회 필요)?" y; then
+            ssh-copy-id -i "$HOME/.ssh/id_ed25519.pub" "$alias" 2>&1 | sed 's/^/  /' || warn "$alias: ssh-copy-id 실패 (config HostName 확인)"
+        fi
+    fi
+done
+}
+
+tier_enabled 11 && {
+# ═══ Tier 11 — hexa-lang 빌드 (hint) ═══════════════════════════════════
+log "Tier 11: hexa-lang"
 if [ ! -x "$HEXA_LANG/hexa" ] && [ ! -x "$HEXA_LANG/build/hexa_stage0" ]; then
-    log "hexa-lang 빌드 필요 — hexa-lang/install.hexa 또는 수동 build 후 재실행"
-    log "  cd $HEXA_LANG && cat README.md 참조"
-    # 빌드 자체는 hexa-lang 리포의 책임. 여기선 존재만 확인.
+    warn "hexa-lang 빌드 필요 — cd $HEXA_LANG && cat README.md"
+    warn "(hexa 없이도 본 bootstrap 는 tier 1-10, 12-14 완료 가능. tier 15 LaunchAgents 는 hexa 필요)"
 else
-    log "hexa-lang 빌드 이미 있음"
+    info "hexa-lang 빌드 이미 있음"
 fi
+}
 
-# ─ 6. LaunchAgents (Phase 1 — hexa 사용 가능할 때) ─────────────────────
+tier_enabled 12 && {
+# ═══ Tier 12 — sync_git_creds (원격 .git-credentials 전파) ═════════════
+log "Tier 12: sync_git_creds"
+if [ -f "$HOME/.git-credentials" ] && [ -x "$AIRGENOME/bin/sync_git_creds" ]; then
+    "$AIRGENOME/bin/sync_git_creds" 2>&1 | sed 's/^/  /' || warn "sync_git_creds 실패 (ssh 미구성?)"
+else
+    warn ".git-credentials 또는 sync_git_creds 없음 — skip"
+fi
+}
+
+tier_enabled 13 && {
+# ═══ Tier 13 — loop skill 설치 ═════════════════════════════════════════
+log "Tier 13: ~/.claude/skills/loop"
+mkdir -p "$HOME/.claude/skills/loop"
+if [ ! -f "$HOME/.claude/skills/loop/SKILL.md" ]; then
+    cat > "$HOME/.claude/skills/loop/SKILL.md" <<'SKILL_EOF'
+---
+name: loop
+description: NEXUS-6 7프로젝트 공용 루프 진입점. cwd 프로젝트 감지 → roadmap phase × 3 tracks × gate 자동 실행 → commit/push → NEXT_AFTER 다음 로드맵 항목 표시. 하네스 강제(H-LOOP-REPORT).
+user-invocable: true
+disable-model-invocation: false
+argument-hint: "[list|all|add <텍스트>|dry|only <phase>]"
+---
+
+# NEXUS-6 Loop — HARNESS 위임 (얇은 SKILL)
+
+이 SKILL 은 얇은 shim 입니다. 모든 로직/강제는 하네스 SSOT 에 있습니다:
+
+| 역할 | 위치 |
+|------|------|
+| 엔진 | `$NEXUS/shared/harness/loop` (bash+jq) |
+| NEXT_AFTER emitter | 같은 엔진의 `emit_next_after()` |
+| 강제 플래그/검증 | `$NEXUS/shared/harness/loop_report` (bash) |
+| post_bash 감지 | `$NEXUS/shared/harness/post_bash.hexa` (H-LOOP-REPORT 섹션) |
+| prompt_scan verify | `$NEXUS/shared/harness/prompt_scan.hexa` (H-LOOP-REPORT 섹션) |
+| mistakes 기록 | `$NEXUS/shared/harness/mistakes.jsonl` (rule=H-LOOP-REPORT) |
+
+실행:
+  bash "$NEXUS/shared/harness/loop" "$@"
+SKILL_EOF
+    info "loop SKILL.md 생성"
+else
+    info "loop skill 이미 존재"
+fi
+}
+
+tier_enabled 14 && {
+# ═══ Tier 14 — cl-refresh launchd 등록 ═════════════════════════════════
+log "Tier 14: cl-refresh launchd"
+if [ -x "$NEXUS/shared/bin/cl-refresh-launchd" ]; then
+    if launchctl print "gui/$(id -u)/com.nexus.cl-refresh" >/dev/null 2>&1; then
+        info "cl-refresh launchd: 이미 등록됨"
+    else
+        "$NEXUS/shared/bin/cl-refresh-launchd" install 2>&1 | sed 's/^/  /' || warn "cl-refresh install 실패"
+    fi
+else
+    warn "cl-refresh-launchd 스크립트 없음 (nexus clone 확인)"
+fi
+}
+
+tier_enabled 15 && {
+# ═══ Tier 15 — airgenome LaunchAgents (install_agents.hexa) ════════════
+log "Tier 15: airgenome LaunchAgents"
 if have hexa; then
-    log "LaunchAgents 설치 (install_agents.hexa sync-ssot → install → doctor)"
-    cd "$DEV/airgenome"
-    HEXA_LOCAL=1 hexa run bin/install_agents.hexa sync-ssot || log "  sync-ssot 실패 (hexa 빌드 확인 필요)"
-    HEXA_LOCAL=1 hexa run bin/install_agents.hexa          || log "  install 실패"
-    HEXA_LOCAL=1 hexa run bin/install_agents.hexa doctor   || log "  doctor 실패"
+    cd "$AIRGENOME"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa sync-ssot 2>&1 | sed 's/^/  /' || warn "sync-ssot 실패"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa          2>&1 | sed 's/^/  /' || warn "install 실패"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa doctor   2>&1 | sed 's/^/  /' || warn "doctor 실패"
 else
-    log "hexa 없음 — LaunchAgents 설치 스킵. hexa-lang 빌드 후 수동 실행:"
-    log "  cd ~/Dev/airgenome && hexa run bin/install_agents.hexa"
+    warn "hexa 없음 — tier 15 skip. hexa-lang 빌드 후 다음 실행:"
+    warn "  cd $AIRGENOME && hexa run bin/install_agents.hexa"
 fi
+}
 
-# ─ 7. ssh config 힌트 ──────────────────────────────────────────────────
-if [ ! -f "$HOME/.ssh/config" ] || ! grep -q "Host ubu" "$HOME/.ssh/config" 2>/dev/null; then
-    log "~/.ssh/config 에 ubu/ubu2/hetzner 엔트리 수동 추가 필요 (hosts.json 참고):"
-    log "  jq -r '.hosts | to_entries[] | .key' $DEV/airgenome/shared/config/hosts.json"
-fi
-
-# ─ 8. git credentials 원격 동기화 ─────────────────────────────────────
-# Mac 의 ~/.git-credentials 를 enabled 원격에 전파 → 각 원격에서 직접 git push 가능.
-# ssh config 가 이미 있고 Mac 에서 git 한 번 push 한 상태여야 작동.
-if [ -f "$HOME/.git-credentials" ] && [ -f "$DEV/airgenome/bin/sync_git_creds" ]; then
-    log "원격 git credentials 동기화..."
-    "$DEV/airgenome/bin/sync_git_creds" 2>&1 | sed 's/^/  /' || log "  (ssh config 설정 후 수동 실행: bin/sync_git_creds)"
+tier_enabled 16 && {
+# ═══ Tier 16 — Claude 계정 로그인 가이드 + keychain_map 자동 스캔 ══════
+log "Tier 16: Claude 계정 로그인 + keychain_map"
+# 로그인된 ~/.claude-claude*/ 디렉토리 스캔
+LOGGED_IN=()
+for d in "$HOME"/.claude-claude*; do
+    [ -d "$d" ] && [ -f "$d/.claude.json" ] && LOGGED_IN+=("$(basename "$d" | sed 's/^\.//')")
+done
+if [ ${#LOGGED_IN[@]} -eq 0 ]; then
+    warn "로그인된 Claude 계정 0개 — 아래 명령으로 계정별 로그인:"
+    warn "  for i in 1 2 3 4 5; do CLAUDE_CONFIG_DIR=\$HOME/.claude-claude\$i claude /login; done"
 else
-    log "~/.git-credentials 없음 — Mac 에서 git push 한 번 후 bin/sync_git_creds 재실행"
-fi
+    info "로그인된 계정: ${LOGGED_IN[*]}"
 
-log "bootstrap 완료. 새 terminal 열거나 'exec zsh' 로 shell 환경 재로드."
+    # keychain_map.json 자동 스캔
+    KEYMAP="$NEXUS/shared/config/claude_keychain_map.json"
+    if [ -f "$KEYMAP" ]; then
+        # 현재 Mac 의 keychain Claude Code-credentials-* 항목 전수
+        KC_ENTRIES=$(security dump-keychain 2>/dev/null | grep -oE '"Claude Code-credentials-[a-f0-9]{8}"' | sort -u | sed 's/"//g;s/^Claude Code-credentials-//')
+        if [ -n "$KC_ENTRIES" ]; then
+            info "keychain 엔트리 $(echo "$KC_ENTRIES" | wc -l | tr -d ' ')개 발견"
+            # 계정별 .claude.json 의 accountUuid 첫 8자를 hex8 후보로 추출
+            # 각 계정 UUID 첫 8자 ↔ keychain hex8 매칭
+            NEW_MAP='{}'
+            for name in "${LOGGED_IN[@]}"; do
+                uuid=$(grep -oE '"accountUuid" *: *"[a-f0-9-]+"' "$HOME/.claude-$name/.claude.json" 2>/dev/null | head -1 | sed 's/.*"\([a-f0-9-]*\)"$/\1/')
+                hex8="${uuid:0:8}"
+                if [ -n "$hex8" ] && echo "$KC_ENTRIES" | grep -qx "$hex8"; then
+                    NEW_MAP=$(echo "$NEW_MAP" | jq --arg k "$name" --arg v "$hex8" '. + {($k): $v}')
+                fi
+            done
+            # 기존 파일 백업 후 map 필드만 교체
+            if [ "$NEW_MAP" != '{}' ]; then
+                cp "$KEYMAP" "$KEYMAP.bak.$(date +%Y%m%d-%H%M%S)"
+                jq --argjson nm "$NEW_MAP" '.map = $nm | .migrated_at = (now | strftime("%Y-%m-%d"))' "$KEYMAP" > "$KEYMAP.tmp" \
+                    && mv "$KEYMAP.tmp" "$KEYMAP" \
+                    && info "keychain_map.json 자동 갱신 ($(echo "$NEW_MAP" | jq -r 'keys | length')개 계정)"
+            else
+                warn "계정 UUID ↔ keychain hex8 매칭 0건 — 수동 확인 필요"
+            fi
+        else
+            warn "keychain 에 Claude Code-credentials-* 엔트리 없음 (로그인 미완료?)"
+        fi
+    fi
+fi
+}
+
+tier_enabled 17 && {
+# ═══ Tier 17 — accounts.json 초기화 (cl 내장) ══════════════════════════
+log "Tier 17: accounts.json"
+if have cl; then
+    # cl u 1회 호출로 bootstrap_accounts 자동 실행 (로그인된 계정만 등록)
+    cl u 2>&1 | head -20 | sed 's/^/  /' || warn "cl u 실패"
+else
+    warn "cl 명령 없음 — exec zsh 후 재시도 필요"
+fi
+}
+
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log "bootstrap 완료. 다음 단계:"
+log "  1. 새 terminal 또는 'exec zsh' 로 shell 재로드"
+log "  2. ~/.ssh/config 의 <FILL ME> HostName 채우기"
+log "  3. 미로그인 Claude 계정 /login:"
+log "     CLAUDE_CONFIG_DIR=\$HOME/.claude-claude1 claude /login"
+log "  4. 로그인 후 bootstrap 재실행 → tier 16/17 로 keychain_map + accounts.json 완성"
+log "  5. 원격 호스트 bootstrap (별도): ssh <alias> 'bash -s' < bin/remote_bootstrap"
+log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
