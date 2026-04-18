@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# stability_monitor — Mac 안정화 tick-based 감시자 (claude 절대 보호)
+#
+# 설계 원칙 (위반 금지):
+#   1. claude 프로세스 절대 kill/STOP/renice/cpulimit 금지. 모든 grep 경로에서 claude 제외.
+#   2. 타깃 화이트리스트: hexa_stage0 / hexa_stage0.real / hexa_v2 만. 그 외 관찰만.
+#   3. 기본은 alert + 로그. kill 은 수동 승인만 (TERM_CANDIDATE 파일에 flag 만 쓴다).
+#   4. 매 tick 최대 1개 프로세스만 건드림 (renice / cpulimit). 나머지는 다음 tick.
+#   5. 본 스크립트는 bash + ps + vm_stat + sysctl 만 사용. hexa/python 호출 금지.
+#
+# 이전 사고 (2026-04-18): /tmp/mac_monitor_loop.txt 가 claude 매칭 후 SIGTERM → 사용자 세션 3개 살해.
+# 이 스크립트는 claude 문자열이 pkill/kill 과 같은 행에 **절대** 나타나지 않도록 구조적으로 분리.
+#
+# Invoked by launchd (com.airgenome.stability) StartInterval=60.
+
+set -u
+export LANG=en_US.UTF-8
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+RUNDIR="${HOME}/.airgenome"
+mkdir -p "$RUNDIR"
+STATE_FILE="$RUNDIR/stability_state.json"
+JSONL="$RUNDIR/stability.jsonl"
+ALERTS="$RUNDIR/stability.alerts"
+TERM_CAND="$RUNDIR/stability.term_candidates"
+
+NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+NOW_EPOCH="$(date +%s)"
+
+# --- [1] snapshot: free_gb, comp_gb, load_1m, claude_count, hexa_stage0_count ---
+
+# vm_stat page size 16384 on Apple Silicon
+PAGE_SIZE="$(vm_stat 2>/dev/null | awk '/page size of/{print $8}')"
+: "${PAGE_SIZE:=16384}"
+
+vm="$(vm_stat 2>/dev/null)"
+free_pages="$(awk '/Pages free:/{gsub(/\./,"",$3); print $3}' <<<"$vm")"
+spec_pages="$(awk '/Pages speculative:/{gsub(/\./,"",$3); print $3}' <<<"$vm")"
+comp_pages="$(awk '/Pages occupied by compressor:/{gsub(/\./,"",$5); print $5}' <<<"$vm")"
+: "${free_pages:=0}"; : "${spec_pages:=0}"; : "${comp_pages:=0}"
+
+# bytes -> GB (integer)
+free_gb=$(( (free_pages + spec_pages) * PAGE_SIZE / 1073741824 ))
+comp_gb=$(( comp_pages * PAGE_SIZE / 1073741824 ))
+
+load_1m="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
+: "${load_1m:=0}"
+
+# --- [2] process enumeration — claude 는 집계만 (count + top cpu), 절대 건드리지 않음 ---
+# ps 포맷: pid,ppid,%cpu,rss(kb),etime,command (전체 경로)
+# claude 카운트 전용 라인 (이 변수는 kill/renice 에 절대 사용하지 않음)
+claude_count="$(ps -Ao comm= 2>/dev/null | grep -c -E '(^| )claude( |$)' || true)"
+: "${claude_count:=0}"
+
+# hexa_stage0.real 실제 바이너리만 (wrapper 'hexa_stage0' 셸 스크립트와 구분)
+# ps -Ao pid=,rss=,etime=,comm= 로 받음 → comm 이 hexa_stage0.real 로 끝나는 것만
+stage0_lines="$(ps -Ao pid=,rss=,etime=,comm= 2>/dev/null | awk '$NF ~ /hexa_stage0\.real$/ {print}')"
+stage0_count="$(printf '%s\n' "$stage0_lines" | grep -c . || true)"
+: "${stage0_count:=0}"
+
+hexa_v2_lines="$(ps -Ao pid=,rss=,etime=,comm= 2>/dev/null | awk '$NF ~ /hexa_v2$/ {print}')"
+hexa_v2_count="$(printf '%s\n' "$hexa_v2_lines" | grep -c . || true)"
+: "${hexa_v2_count:=0}"
+
+# RSS desc 정렬 (RSS in KB). top-1 pid/rss_kb/etime 추출.
+top_line="$(printf '%s\n' "$stage0_lines" | awk 'NF' | sort -k2 -n -r | head -1)"
+top_pid=""; top_rss_kb=0; top_etime=""
+if [ -n "$top_line" ]; then
+    top_pid="$(awk '{print $1}' <<<"$top_line")"
+    top_rss_kb="$(awk '{print $2}' <<<"$top_line")"
+    top_etime="$(awk '{print $3}' <<<"$top_line")"
+fi
+top_rss_gb=$(( top_rss_kb / 1048576 ))
+
+# etime → seconds (지원: MM:SS / HH:MM:SS / DD-HH:MM:SS)
+etime_to_sec() {
+    local t="$1"
+    local d=0 h=0 m=0 s=0
+    if [[ "$t" == *-* ]]; then
+        d="${t%%-*}"; t="${t#*-}"
+    fi
+    local IFS=:
+    local parts=($t)
+    local n=${#parts[@]}
+    if [ $n -eq 3 ]; then h=${parts[0]}; m=${parts[1]}; s=${parts[2]}
+    elif [ $n -eq 2 ]; then m=${parts[0]}; s=${parts[1]}
+    elif [ $n -eq 1 ]; then s=${parts[0]}
+    fi
+    echo $(( 10#$d*86400 + 10#$h*3600 + 10#$m*60 + 10#$s ))
+}
+top_etime_sec=0
+if [ -n "$top_etime" ]; then
+    top_etime_sec="$(etime_to_sec "$top_etime")"
+fi
+
+# --- [3] 경고 조건 ---
+level="OK"
+if [ "$comp_gb" -gt 8 ]; then level="WARN"; fi
+if [ "$free_gb" -lt 1 ] || [ "$comp_gb" -gt 12 ]; then level="CRITICAL"; fi
+
+# --- [4] 이전 tick state 로드 — 3-tick CRITICAL 카운터용 ---
+prev_crit_streak=0
+prev_top_pid=""
+if [ -f "$STATE_FILE" ]; then
+    prev_crit_streak="$(awk -F'"crit_streak":' 'NF>1{split($2,a,","); gsub(/[^0-9]/,"",a[1]); print a[1]; exit}' "$STATE_FILE" 2>/dev/null)"
+    prev_top_pid="$(awk -F'"last_top_pid":"' 'NF>1{split($2,a,"\""); print a[1]; exit}' "$STATE_FILE" 2>/dev/null)"
+fi
+: "${prev_crit_streak:=0}"
+: "${prev_top_pid:=}"
+
+crit_streak=0
+if [ "$level" = "CRITICAL" ]; then
+    # 같은 PID 이어야 streak 유지 (다른 PID 면 1부터)
+    if [ -n "$top_pid" ] && [ "$top_pid" = "$prev_top_pid" ]; then
+        crit_streak=$(( prev_crit_streak + 1 ))
+    else
+        crit_streak=1
+    fi
+fi
+
+# --- [5] 액션 (CRITICAL 시만, tick 당 1개) ---
+#   - 타깃: top_pid (hexa_stage0.real), RSS>3GB, etime>60s
+#   - renice 20 매번
+#   - cpulimit 10 (설치돼 있고 아직 해당 PID 에 안 붙어 있으면)
+#   - 3 tick 연속 CRITICAL + 같은 PID > 3GB → TERM_CAND 에 기록 (kill 은 사용자 승인)
+action="none"
+action_detail=""
+
+if [ "$level" = "CRITICAL" ] && [ -n "$top_pid" ] && [ "$top_rss_gb" -gt 3 ] && [ "$top_etime_sec" -gt 60 ]; then
+    # SAFETY: top_pid 는 hexa_stage0.real 에서만 왔음. 다시 한 번 comm 확인 (claude 가 아님을 확정).
+    top_comm="$(ps -o comm= -p "$top_pid" 2>/dev/null || true)"
+    case "$top_comm" in
+        *hexa_stage0.real|*hexa_stage0|*hexa_v2)
+            # renice (멱등)
+            renice 20 -p "$top_pid" >/dev/null 2>&1 || true
+            action="renice"
+            action_detail="pid=$top_pid rss_gb=$top_rss_gb etime_s=$top_etime_sec"
+
+            # cpulimit (설치돼 있을 때만, 이 PID 에 대한 cpulimit 이 아직 없으면 fire-and-forget)
+            if command -v cpulimit >/dev/null 2>&1; then
+                # 같은 PID 에 이미 cpulimit 이 붙어 있으면 skip
+                if ! pgrep -f "cpulimit -p $top_pid( |$)" >/dev/null 2>&1; then
+                    nohup cpulimit -p "$top_pid" -l 10 -z >/dev/null 2>&1 &
+                    action="renice+cpulimit"
+                fi
+            fi
+
+            # 3 연속 CRITICAL → TERM 후보 flag
+            if [ "$crit_streak" -ge 3 ]; then
+                printf '%s pid=%s rss_gb=%s etime_s=%s comm=%s streak=%s (manual kill only)\n' \
+                    "$NOW_ISO" "$top_pid" "$top_rss_gb" "$top_etime_sec" "$top_comm" "$crit_streak" \
+                    >> "$TERM_CAND"
+                action_detail="$action_detail term_candidate=1"
+            fi
+            ;;
+        *)
+            # 화이트리스트 밖이면 절대 손대지 않음
+            action="skip_not_whitelisted"
+            action_detail="pid=$top_pid comm=$top_comm"
+            ;;
+    esac
+fi
+
+# --- [6] 로그 기록 ---
+# stability.jsonl — 매 tick
+printf '{"ts":"%s","level":"%s","free_gb":%s,"comp_gb":%s,"load_1m":"%s","claude_count":%s,"stage0_count":%s,"hexa_v2_count":%s,"top_pid":"%s","top_rss_gb":%s,"top_etime_s":%s,"crit_streak":%s,"action":"%s","detail":"%s"}\n' \
+    "$NOW_ISO" "$level" "$free_gb" "$comp_gb" "$load_1m" "$claude_count" "$stage0_count" "$hexa_v2_count" \
+    "${top_pid:-}" "$top_rss_gb" "$top_etime_sec" "$crit_streak" "$action" "$action_detail" \
+    >> "$JSONL"
+
+# WARN/CRITICAL 만 alerts
+if [ "$level" != "OK" ]; then
+    printf '%s %s free_gb=%s comp_gb=%s load=%s claude=%s stage0=%s top=%s(%sGB,%ss) streak=%s action=%s\n' \
+        "$NOW_ISO" "$level" "$free_gb" "$comp_gb" "$load_1m" "$claude_count" "$stage0_count" \
+        "${top_pid:-none}" "$top_rss_gb" "$top_etime_sec" "$crit_streak" "$action" \
+        >> "$ALERTS"
+fi
+
+# state write (다음 tick 용)
+printf '{"ts":"%s","crit_streak":%s,"last_top_pid":"%s","last_level":"%s"}\n' \
+    "$NOW_ISO" "$crit_streak" "${top_pid:-}" "$level" \
+    > "$STATE_FILE"
+
+# rotate: jsonl > 5MB 면 tail 2000 유지
+if [ -f "$JSONL" ]; then
+    sz=$(wc -c <"$JSONL" 2>/dev/null | tr -d ' ')
+    : "${sz:=0}"
+    if [ "$sz" -gt 5242880 ]; then
+        tail -n 2000 "$JSONL" > "$JSONL.tmp" && mv "$JSONL.tmp" "$JSONL"
+    fi
+fi
+
+exit 0
