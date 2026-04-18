@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# shared/claudx/loadgate — system_load 체크 (M13d · v1 sampler EMA 간소화)
+#
+# claudx 진입부에서 `source .../loadgate` 또는 `$(.../loadgate)` 로 호출.
+# 반환 코드 0 = ok, 1 = warn (진행 OK), 2 = danger (hold 권유), 3 = critical (abort).
+# stdout 에 level 이름 출력.
+#
+# 환경:
+#   CLAUDX_LOADGATE_OFF=1 → 체크 생략 (모든 것 ok)
+#   CLAUDX_LOAD_WARN      warn 배수 (default ncpu × 2)
+#   CLAUDX_LOAD_DANGER    danger 배수 (default ncpu × 4)
+#   CLAUDX_LOAD_CRITICAL  critical 배수 (default ncpu × 6)
+
+set -u
+
+if [ "${CLAUDX_LOADGATE_OFF:-0}" = "1" ]; then
+    echo "ok"
+    exit 0
+fi
+
+ncpu=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+warn="${CLAUDX_LOAD_WARN:-$((ncpu * 2))}"
+danger="${CLAUDX_LOAD_DANGER:-$((ncpu * 4))}"
+critical="${CLAUDX_LOAD_CRITICAL:-$((ncpu * 6))}"
+
+# 1분 load avg
+if [ -r /proc/loadavg ]; then
+    load=$(awk '{print $1}' /proc/loadavg)
+else
+    # macOS: sysctl vm.loadavg → { 1.23 4.56 7.89 }
+    load=$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')
+fi
+load="${load:-0}"
+# int 비교용 정수화 (×100 해서 소수점 버림)
+li=$(awk -v L="$load" 'BEGIN{printf "%d", L*100}')
+wi=$((warn * 100))
+di=$((danger * 100))
+ci=$((critical * 100))
+
+if [ "$li" -ge "$ci" ]; then echo "critical"; exit 3
+elif [ "$li" -ge "$di" ]; then echo "danger"; exit 2
+elif [ "$li" -ge "$wi" ]; then echo "warn"; exit 1
+else echo "ok"; exit 0
+fi

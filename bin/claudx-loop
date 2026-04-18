@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# bin/claudx-loop — autonomous watchdog for claudx (airgenome M13, 2026-04-19)
+#
+# 목적: 야간 자율모드 풀림 방지. claudx 자식 프로세스가 죽거나 disconnect 되면
+# 자동 재시작. 모든 계정이 exhausted 면 가장 이른 reset_at 까지 sleep 후 재시작.
+# SIGTERM/SIGINT 받으면 graceful 종료.
+#
+# usage:
+#   claudx-loop [claudx args...]
+#
+# env:
+#   CLAUDX_LOOP_STOP      /path/to/stopfile — 파일 생성되면 loop 종료
+#   CLAUDX_LOOP_MAX_BURST 짧은 시간 연속 실패 cap (default 10 — 이후 5분 cooldown)
+#   CLAUDX_LOOP_BURST_SEC burst window seconds (default 60)
+#   CLAUDX_LOOP_LOG       iteration log path (default $CLAUDX_STATE/loop.jsonl)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLAUDX="$CX_ROOT/bin/claudx"
+POOL_JS="$CX_ROOT/shared/claudx/pool.js"
+
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+: "${CLAUDX_POOL:=$HOME/Dev/nexus/shared/.runtime/accounts/accounts.json}"
+: "${CLAUDX_USAGE:=$HOME/Dev/nexus/shared/.runtime/accounts/usage-cache.json}"
+: "${CLAUDX_LOOP_STOP:=$CLAUDX_STATE/loop.stop}"
+: "${CLAUDX_LOOP_MAX_BURST:=10}"
+: "${CLAUDX_LOOP_BURST_SEC:=60}"
+: "${CLAUDX_LOOP_LOG:=$CLAUDX_STATE/loop.jsonl}"
+export CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE
+
+mkdir -p "$CLAUDX_STATE"
+[ -f "$CLAUDX_LOOP_STOP" ] && rm -f "$CLAUDX_LOOP_STOP"
+
+log_evt() {
+    local line
+    line=$(jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pid "$$" "$@")
+    echo "$line" >> "$CLAUDX_LOOP_LOG"
+}
+
+# graceful stop
+RUNNING_PID=0
+stop_requested=false
+on_sig() {
+    stop_requested=true
+    log_evt '{ts:$ts,pid:$pid,event:"signal_received",sig:"term"}'
+    if [ "$RUNNING_PID" -gt 0 ]; then
+        kill -TERM "$RUNNING_PID" 2>/dev/null || true
+    fi
+}
+trap on_sig TERM INT HUP
+
+iter=0
+burst_t0=$(date +%s)
+burst_count=0
+
+log_evt '{ts:$ts,pid:$pid,event:"loop_start",args:$args}' --arg args "$*"
+
+while true; do
+    if [ -f "$CLAUDX_LOOP_STOP" ]; then
+        log_evt '{ts:$ts,pid:$pid,event:"stopfile_seen"}'
+        break
+    fi
+    if [ "$stop_requested" = true ]; then
+        log_evt '{ts:$ts,pid:$pid,event:"loop_stopping"}'
+        break
+    fi
+
+    iter=$((iter + 1))
+    t0=$(date +%s)
+    log_evt '{ts:$ts,pid:$pid,event:"spawn",iter:($i|tonumber)}' --arg i "$iter"
+
+    "$CLAUDX" "$@" &
+    RUNNING_PID=$!
+    wait "$RUNNING_PID" 2>/dev/null
+    rc=$?
+    RUNNING_PID=0
+    t1=$(date +%s)
+    dur=$((t1 - t0))
+
+    log_evt '{ts:$ts,pid:$pid,event:"exit",iter:($i|tonumber),rc:($rc|tonumber),duration_s:($d|tonumber)}' \
+        --arg i "$iter" --arg rc "$rc" --arg d "$dur"
+
+    # stop conditions
+    if [ "$rc" = "0" ] && [ "$dur" -ge 10 ]; then
+        # long clean exit — assume user quit intentionally
+        log_evt '{ts:$ts,pid:$pid,event:"clean_exit_break"}'
+        break
+    fi
+    if [ "$stop_requested" = true ]; then break; fi
+
+    # burst throttling
+    burst_window=$((t1 - burst_t0))
+    if [ "$burst_window" -lt "$CLAUDX_LOOP_BURST_SEC" ]; then
+        burst_count=$((burst_count + 1))
+    else
+        burst_t0=$t1
+        burst_count=1
+    fi
+
+    # if all exhausted, sleep until earliest reset
+    pool_check=$(node "$POOL_JS" pick 2>/dev/null)
+    if [ -z "$pool_check" ]; then
+        # compute earliest reset from usage-cache + exhausted
+        now_s=$(date +%s)
+        earliest=$(jq -r --arg now "$now_s" '
+            [ (to_entries[] | .value._retry_at // 0) ] +
+            [ (to_entries[] | .value.week_resets // "" | if . == "" then 0 else (. | fromdateiso8601) end) ] |
+            map(select(. > ($now | tonumber))) | sort | .[0] // ""
+        ' "$CLAUDX_USAGE" 2>/dev/null)
+        # also include exhausted.json
+        local_earliest=$(jq -r --arg now "$now_s" '[ to_entries[] | .value.until // 0 ] | map(select(. > ($now | tonumber))) | sort | .[0] // ""' "$CLAUDX_STATE/exhausted.json" 2>/dev/null)
+        if [ -n "$local_earliest" ] && { [ -z "$earliest" ] || [ "$local_earliest" -lt "$earliest" ]; }; then
+            earliest="$local_earliest"
+        fi
+        if [ -n "$earliest" ] && [ "$earliest" != "null" ]; then
+            wait_s=$((earliest - now_s + 30))
+            [ "$wait_s" -lt 30 ] && wait_s=30
+            [ "$wait_s" -gt 7200 ] && wait_s=7200
+            log_evt '{ts:$ts,pid:$pid,event:"all_exhausted_sleep",wait_s:($w|tonumber),until:($u|tonumber)}' --arg w "$wait_s" --arg u "$earliest"
+            # interruptible sleep
+            end=$((now_s + wait_s))
+            while [ "$(date +%s)" -lt "$end" ] && [ "$stop_requested" != true ] && [ ! -f "$CLAUDX_LOOP_STOP" ]; do
+                sleep 15
+            done
+            continue
+        else
+            # no reset info — back off 5 minutes
+            log_evt '{ts:$ts,pid:$pid,event:"no_reset_backoff"}'
+            sleep 300
+            continue
+        fi
+    fi
+
+    if [ "$burst_count" -ge "$CLAUDX_LOOP_MAX_BURST" ]; then
+        log_evt '{ts:$ts,pid:$pid,event:"burst_cap_hit",cooldown_s:300}'
+        sleep 300
+        burst_t0=$(date +%s)
+        burst_count=0
+        continue
+    fi
+
+    # normal crash — brief backoff with jitter
+    sleep_s=$((2 + RANDOM % 5))
+    log_evt '{ts:$ts,pid:$pid,event:"restart_backoff",sleep_s:($s|tonumber)}' --arg s "$sleep_s"
+    sleep "$sleep_s"
+done
+
+log_evt '{ts:$ts,pid:$pid,event:"loop_end",iters:($i|tonumber)}' --arg i "$iter"

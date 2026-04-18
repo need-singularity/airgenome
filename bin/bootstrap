@@ -105,9 +105,10 @@ clone_if_missing hexa-lang
 }
 
 tier_enabled 4 && {
-# ═══ Tier 4 — ~/.zshrc managed block ═══════════════════════════════════
+# ═══ Tier 4 — ~/.zshrc managed block (M13 claudx 포함) ════════════════
 log "Tier 4: ~/.zshrc managed block"
 ZSHRC="$HOME/.zshrc"
+touch "$ZSHRC"
 if ! grep -qF "$MARKER" "$ZSHRC" 2>/dev/null; then
     cat >> "$ZSHRC" <<EOF
 
@@ -115,16 +116,57 @@ $MARKER
 export NEXUS="\$HOME/Dev/nexus"
 export HEXA_LANG="\$HOME/Dev/hexa-lang"
 export PATH="\$HOME/.local/bin:\$HOME/Dev/nexus/shared/bin:\$HOME/Dev/airgenome/bin:\$PATH"
-export CLAUDE_EXEC="\$HOME/Dev/airgenome/bin/cx"
+export CLAUDE_EXEC="\$HOME/Dev/airgenome/bin/claudx"
+# M13 claudx: TUI → loop (watchdog), -p → per-call rotation, command claude → raw
+claude() {
+  [[ -z "\$ITERM_TAB_TITLE" ]] && echo -ne "\\033]0;\${PWD##*/}\\007"
+  if [[ -n "\$NO_CLAUDX" ]] || ! command -v claudx >/dev/null 2>&1; then
+    command claude "\$@"
+    return
+  fi
+  local _p=0
+  for _a in "\$@"; do case "\$_a" in -p|--print) _p=1; break;; esac; done
+  if (( _p )); then claudx "\$@"; else claudx-loop "\$@"; fi
+}
 # --- /airgenome bootstrap ---
 EOF
 else
-    info "~/.zshrc managed block 존재 — skip"
+    # idempotent migration: 기존 managed block 에서 CLAUDE_EXEC=cx → claudx 만 치환
+    if grep -qF 'CLAUDE_EXEC="$HOME/Dev/airgenome/bin/cx"' "$ZSHRC"; then
+        info "~/.zshrc: CLAUDE_EXEC cx → claudx 마이그레이션"
+        sed -i.bak 's#bin/cx"$#bin/claudx"#' "$ZSHRC"
+        rm -f "$ZSHRC.bak"
+    fi
+    # claude() 함수 주입 (없을 때만). 중복 안전 — 내부 marker 사용.
+    if ! grep -q "^# M13 claudx:" "$ZSHRC"; then
+        info "~/.zshrc: M13 claude() 함수 주입"
+        # managed block 의 닫는 태그 바로 앞에 삽입 (awk — macOS/BSD 호환)
+        tmp="$ZSHRC.m13.tmp.$$"
+        awk '
+          /^# --- \/airgenome bootstrap ---/ && !done {
+            print "# M13 claudx: TUI → loop (watchdog), -p → per-call rotation, command claude → raw"
+            print "claude() {"
+            print "  [[ -z \"$ITERM_TAB_TITLE\" ]] && echo -ne \"\\033]0;${PWD##*/}\\007\""
+            print "  if [[ -n \"$NO_CLAUDX\" ]] || ! command -v claudx >/dev/null 2>&1; then"
+            print "    command claude \"$@\""
+            print "    return"
+            print "  fi"
+            print "  local _p=0"
+            print "  for _a in \"$@\"; do case \"$_a\" in -p|--print) _p=1; break;; esac; done"
+            print "  if (( _p )); then claudx \"$@\"; else claudx-loop \"$@\"; fi"
+            print "}"
+            done=1
+          }
+          { print }
+        ' "$ZSHRC" > "$tmp" && mv "$tmp" "$ZSHRC"
+    else
+        info "~/.zshrc M13 claude() 함수 이미 존재 — skip"
+    fi
 fi
 export NEXUS="$DEV/nexus"
 export HEXA_LANG="$DEV/hexa-lang"
 export PATH="$HOME/.local/bin:$DEV/nexus/shared/bin:$DEV/airgenome/bin:$PATH"
-export CLAUDE_EXEC="$DEV/airgenome/bin/cx"
+export CLAUDE_EXEC="$DEV/airgenome/bin/claudx"
 }
 
 tier_enabled 5 && {

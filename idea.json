@@ -1,0 +1,329 @@
+{
+  "id": "claudx-ideas-session",
+  "kind": "idea_corpus",
+  "version": 2,
+  "session_date": "2026-04-19",
+  "priority_order": ["economy", "from_v1_archive", "from_hive", "mechanism", "weakness_covers", "scenarios"],
+
+  "context": {
+    "hack": "claudx M13 — NODE_OPTIONS 주입으로 globalThis.fetch 몽키패치 → Claude Code API 호출 레이어 in-process 장악",
+    "primitives": [
+      "fetch 훅 — 429/401/rate_limit_error body 선점",
+      "12계정 OAuth 풀 invisible rotation (Authorization swap)",
+      "NODE_OPTIONS --require — claude node 프로세스 내부 JS 주입",
+      "응답 관찰·변형 (resp.clone().text() + new Response)",
+      "session_id decouple — --session-id UUID 고정 + 계정만 swap",
+      "anthropic-ratelimit-* 헤더 스크럽 → UI 경고 원천 차단",
+      "cross-host env forward (cx ssh 에 NODE_OPTIONS 전파)"
+    ],
+    "files": {
+      "new": [
+        "shared/claudx/interceptor.js",
+        "shared/claudx/pool.js",
+        "bin/claudx",
+        "bin/claudx-loop",
+        "bin/claudx-burn"
+      ],
+      "patched": ["bin/cx (env forward)", "bin/bootstrap (Tier 4)", "~/.zshrc (claude() function)"],
+      "roadmap": ["M13_claudx", "M13a_claudx_fanout", "M13b_claudx_burn"]
+    },
+    "sources_considered": {
+      "v1_archive": "/home/aiden/mac_home/dev/airgenome/archive/v1/ — gate.hexa, launcher_cap.hexa, sampler.hexa, resource_guard.hexa, task_dispatcher.hexa, filter-architecture.md",
+      "hive": "/home/aiden/dev/hive/ — 9-gate DAG, providers/claude_code.hexa (account pool 원조), 4-tier memory, sqlite_bus, hub sandbox, forge/sticky, forge/retrieval, forge/compactor"
+    }
+  },
+
+  "categories": {
+    "economy": {
+      "description": "경제성/가시성/예산 — 경제세팅 최우선. 비용 실시간 파악 + 한도 선제 회피 + 캐시 + 예산 cap.",
+      "priority": "P0",
+      "items": [
+        {
+          "id": "e1_cost_ledger",
+          "title": "초당 cost ledger (실시간)",
+          "weakness": "Claude Code /status 는 지연된 값만 보여줌 — 작업 중 예산 소진 모름",
+          "cover": "interceptor 가 매 fetch 성공 응답의 usage 객체 (input_tokens, output_tokens, cache_*) 를 파싱 → $ 환산 → ~/.airgenome/claudx/cost.jsonl append. claudx --status 에 초당/분당/시간당/일당 cost 표시",
+          "hive_borrow": "hive providers/claude_code.hexa 의 ~/.hive/logs/cost.jsonl 이 동일 패턴 — 그대로 이식",
+          "v1_borrow": "v1 sampler.hexa 의 vitals_ring tick 구조를 cost_ring 으로 재사용 (6축 투영 → ts/acct/model/input/output/usd/cache_hit)",
+          "impl_hint": "interceptor.js scrubRateLimitHeaders 훅에 cost.jsonl write 1줄 추가"
+        },
+        {
+          "id": "e2_preemptive_swap",
+          "title": "선제 rotation (429 경험 제로)",
+          "weakness": "현재는 429 맞고 나서 swap — 1회 요청 버림",
+          "cover": "성공 응답 헤더 anthropic-ratelimit-requests-remaining/tokens-remaining 관찰 → 임계치 (default 10%) 이하시 다음 요청 전 선제 swap. 한도 근접하기도 전에 이동",
+          "v1_borrow": "sampler.hexa 의 EMA 평활 level=ok/warn/danger/critical 적응형 게이트 → claudx 에 적응형 rotation threshold 로 이식",
+          "impl_hint": "interceptor.js 에 preempt_if_low(resp.headers) 훅 추가, pool.js 에 prefer_non_hot() 정렬 옵션"
+        },
+        {
+          "id": "e3_response_cache",
+          "title": "prompt hash 응답 캐시 — 반복 질문 무료",
+          "weakness": "동일 프롬프트 반복 발사해도 매번 과금",
+          "cover": "interceptor 가 request body (messages array) SHA-256 해싱 → ~/.airgenome/claudx/cache/<hash>.json 에 응답 저장. 같은 hash 요청시 cache hit — API 호출 안 함. TTL 24h 기본, --no-cache 로 bypass",
+          "hive_borrow": "hive L1 (~/.hive/state/l1/<sid>.jsonl) working buffer 구조 재사용",
+          "impl_hint": "interceptor.js 의 claudx_fetch 첫줄에 cache lookup. usage 카운터는 cache hit 시 0"
+        },
+        {
+          "id": "e4_budget_cap",
+          "title": "예산 cap — hard stop at $N/day or $M/month",
+          "weakness": "자율모드 돌리다 예산 초과 발견이 사후",
+          "cover": "cost.jsonl 누적 읽어 daily/monthly cap 초과시 interceptor 가 다음 요청 선제 차단 (429 fake response 반환 — TUI 는 한도로 인식 후 graceful stop)",
+          "hive_borrow": "hive harness/gates/pre_provider.hexa 의 budget_usd_monthly (기본 $50) 체크 로직 그대로",
+          "v1_borrow": "v1 launcher_cap.hexa 의 CAP=8 (동시 agent ≤8) 패턴을 token budget cap 으로 변환 — pgrep 대신 cost_ring 참조",
+          "impl_hint": "interceptor.js 진입부에 budget_remaining() 체크 → 초과시 Response synthetic 429"
+        },
+        {
+          "id": "e5_cost_per_axis",
+          "title": "3축 cost 리포트 (account × model × project)",
+          "weakness": "누가 얼마 썼는지 집계 불가",
+          "cover": "cost.jsonl 에 acct, model, project(cwd hash), session_id 4-tuple 기록 → claudx --report daily/weekly 로 매트릭스 출력",
+          "v1_borrow": "v1 forge/state.json 의 per_axis 투영 (vr_cpu/vr_ram/…) 구조를 cost per-axis 로 재활용",
+          "impl_hint": "bin/claudx --report 서브커맨드 + jq 집계"
+        },
+        {
+          "id": "e6_cheap_fallback_router",
+          "title": "쿼리 난이도 자동 라우팅 (haiku/sonnet/opus)",
+          "weakness": "모든 질문을 opus 에 보내 과금 낭비",
+          "cover": "request body 프롬프트 길이/복잡도 추정 → simple (<500 chars, no code) → haiku; normal → sonnet; complex/code → opus. 매 요청 모델 동적 선택",
+          "hive_borrow": "hive providers/registry.hexa 의 provider lookup 확장. 모델별 가격표 inject",
+          "impl_hint": "interceptor.js 에 route_model(body) 분류기. 사용자 --model 지정시 override"
+        },
+        {
+          "id": "e7_usage_cache_freshen",
+          "title": "usage-cache 자동 갱신",
+          "weakness": "usage-cache.json 은 주기적 cl-refresh 에 의존 — 수 시간 stale 가능",
+          "cover": "interceptor 가 매 성공 응답 헤더에서 requests-remaining/tokens-remaining 추출 → usage-cache.json 즉시 갱신. stale 0",
+          "v1_borrow": "v1 gate.hexa 의 freshness check (read_epoch - prev_epoch > 120s = STALE) 반대로 응용 — stale 발견시 자체 갱신",
+          "impl_hint": "interceptor.js 의 scrubRateLimitHeaders 앞에서 usage-cache.json 업데이트 (atomic write)"
+        },
+        {
+          "id": "e8_free_mode_cache_hit_ratio",
+          "title": "cache hit ratio 트래킹 — 'free mode' 자동 진입",
+          "weakness": "반복 개발 작업에서 재사용률 인식 불가",
+          "cover": "cost.jsonl 의 cache_read/cache_creation 컬럼 + e3 캐시 hit 통계 → claudx --hit-rate. 90% 이상 히트하는 세션은 'cold cache' warming 자동 권유",
+          "impl_hint": "hit 통계 는 e3 구현시 자연 수집, --hit-rate 서브커맨드로 노출"
+        }
+      ]
+    },
+
+    "from_v1_archive": {
+      "description": "airgenome archive/v1 의 gate/guard/sampler/launcher 로직을 claudx 에 이식",
+      "priority": "P1",
+      "items": [
+        {
+          "id": "v1a_heavy_keyword_filter",
+          "title": "heavy_keyword 입력 필터",
+          "source": "archive/v1/modules/gate.hexa:125-146 HEAVY_KEYWORDS",
+          "summary": "stress / cargo build / yes > / blowup_engine / fork bomb 등 금칙어 정규식 매칭 → interceptor 가 request body 검사시 위험 프롬프트 차단 (bypass: CLAUDX_UNSAFE=1)",
+          "use_case": "자율모드 오폭 방지 — 실수로 stress test 같은 명령 루프 방지"
+        },
+        {
+          "id": "v1b_system_load_gate",
+          "title": "system_load 게이트",
+          "source": "archive/v1/sampler.hexa:219-240 EMA + adaptive (ok/warn/danger/critical)",
+          "summary": "host loadavg > ncpu*5 이면 danger → interceptor 가 요청 잠시 hold. critical 이면 reject. throttle 자동화",
+          "use_case": "빌드/테스트 과부하 서버에서 자율모드가 폭주 방지"
+        },
+        {
+          "id": "v1c_launcher_cap",
+          "title": "동시 claudx 인스턴스 cap",
+          "source": "archive/v1/launcher_cap.hexa:26-312 (CAP=8)",
+          "summary": "pgrep + awk 로 동시 실행 claudx/claude 카운트 → 8개 이상이면 oldest 에 SIGTERM. 백그라운드 burn 폭주 자동 정리",
+          "use_case": "claudx-burn 을 여러 창에서 띄워도 총 ≤8 유지, 자원 폭주 차단"
+        },
+        {
+          "id": "v1d_resource_ceiling",
+          "title": "프로세스 자원 ceiling (setrlimit)",
+          "source": "archive/v1/modules/resource_guard.hexa:1-593",
+          "summary": "spawn 된 claude 프로세스에 setrlimit (RLIMIT_AS, RLIMIT_CPU, nice +10) 적용 → 한 claudx-burn 이 시스템 전체 마비시키는 것 방지",
+          "use_case": "밤새 burn 중 메모리 leak 이 있어도 cap 걸려 OOM kill 대신 process-level 제한"
+        },
+        {
+          "id": "v1e_json_escape_redact",
+          "title": "응답 PII/토큰 redact",
+          "source": "archive/v1/modules/gate.hexa:41-47 json_escape",
+          "summary": "interceptor 가 응답 body 정규식 스캔 → Bearer/api-key/password/SSN/이메일 마스킹 후 TUI 전달. rotations.jsonl 에도 redacted 버전만",
+          "use_case": "작업 로그 공유/커밋해도 민감정보 유출 0"
+        },
+        {
+          "id": "v1f_freshness_guard",
+          "title": "state staleness 게이트",
+          "source": "archive/v1/modules/gate.hexa:34-79 read_epoch STALE",
+          "summary": "usage-cache.json 이 >120s stale 시 STALE 판정 → interceptor 가 먼저 refresh 트리거 후 진행. 경제 항목 e7 과 연결",
+          "use_case": "pool pickBest 가 stale 데이터 읽고 잘못된 계정 고르는 것 방지"
+        },
+        {
+          "id": "v1g_genome_recording",
+          "title": "claude 호출 genome 기록",
+          "source": "archive/v1/forge/state.json + v1 sampler 의 6축 투영",
+          "summary": "매 호출 = hexagon {ts, acct, model, input_tokens, output_tokens, dur_ms, cost, session_id} 6축 레코드. forge/claude_genome.jsonl 현 구조 확장",
+          "use_case": "장기 패턴 분석 — 어느 계정이 어느 작업에 효율적인지 학습"
+        }
+      ]
+    },
+
+    "from_hive": {
+      "description": "~/dev/hive 의 harness/gate/memory/bus 패턴을 claudx 에 흡수",
+      "priority": "P1",
+      "items": [
+        {
+          "id": "h1_nine_gate_dag",
+          "title": "9-gate DAG harness",
+          "source": "hive/harness/gate_runner.hexa + harness/gates/*.hexa",
+          "summary": "prompt → pre_provider → tool/plugin/bus/memory (parallel L0) → post_provider → consensus (L1) 파이프라인 채택. interceptor 를 pre_provider 위치에 배치, claudx-burn 을 consensus 에 배치",
+          "use_case": "각 gate 가 독립 판정 → HARD_REJECT/PASS. 경제 gate (e4) 도 동일 프레임"
+        },
+        {
+          "id": "h2_four_tier_memory",
+          "title": "4계층 메모리 (L1-L4)",
+          "source": "hive/mem/ + ~/.hive/state/l1 · mem/sessions · mem/summaries",
+          "summary": "L1 working (turn buffer) · L2 episodic (session jsonl) · L3 compacted (r∞≈0.23 요약) · L4 retrieval (keyword inject). claudx 에 동일 구조 적용해 /compact 손실 제거 (w6 과 연결)",
+          "use_case": "밤새 burn 진행 아침에 L3 요약본만 보고도 전체 파악"
+        },
+        {
+          "id": "h3_sqlite_wal_bus",
+          "title": "sqlite WAL 멀티창 bus",
+          "source": "hive/bus/sqlite_bus.hexa",
+          "summary": "HIP (Hive Interchange Protocol) — 모든 claudx 창이 동일 sqlite 를 WAL 모드로 share. 계정·cost·rotation 이벤트 실시간 broadcast. 다창 동기화",
+          "use_case": "창 A 가 claude5 한도 감지하면 창 B 도 즉시 인지 → 중복 소모 방지"
+        },
+        {
+          "id": "h4_hub_sandbox",
+          "title": "hub/ sandbox — cpu/mem/timeout 외부 자원 실행",
+          "source": "hive/hub/hub.hexa — hive-hub run --cmd X --cpu 10 --mem 128 --timeout 5",
+          "summary": "claudx 가 bash 를 통해 실행하는 명령을 hub sandbox 로 wrap → resource_guard (v1d) 자동 적용. 자율모드 안전성 급증",
+          "use_case": "claudx-burn 의 각 iter 가 bash 도구 썼다가 폭주하는 것 차단"
+        },
+        {
+          "id": "h5_sticky_account",
+          "title": "sticky account (세션 친화)",
+          "source": "hive/forge/sticky.hexa",
+          "summary": "session_id ↔ acct 매핑 파일 유지. 같은 session_id 는 (가능한 한) 같은 계정 이어씀 → native resume cache hit률 ↑. rotation 은 불가피할 때만",
+          "use_case": "rotation 이 많아지면 Anthropic prompt cache 날림 — sticky 로 최소화"
+        },
+        {
+          "id": "h6_retrieval_inject",
+          "title": "키워드 검색 후 컨텍스트 자동 보강",
+          "source": "hive/forge/retrieval.hexa",
+          "summary": "interceptor 가 request 프롬프트에서 키워드 추출 → atlas/docs 검색 → 관련 N건 request 에 inject. 수동 /load 제거",
+          "use_case": "'smash n=6' 치면 n=6 관련 atlas 항목 자동 첨부"
+        },
+        {
+          "id": "h7_compactor_inject",
+          "title": "장기 대화 자동 압축 주입",
+          "source": "hive/forge/compactor.hexa",
+          "summary": "세션 길이가 임계치 넘으면 compactor 가 L3 요약본 생성 → 다음 request 에 원본 대신 요약본 주입. 컨텍스트 window 절약",
+          "use_case": "100h 무한 세션 (m3) 이 실제로 동작하려면 필수 — 순수 concat 은 금방 1M 초과"
+        },
+        {
+          "id": "h8_provider_registry",
+          "title": "provider registry — claude_code 외 다모델 통합",
+          "source": "hive/providers/registry.hexa + planned [claude_code, openai_api, gemini_cli, ollama]",
+          "summary": "claudx interceptor 를 provider layer 밑에 배치 → 다른 LLM API 도 동일 rotation/cache/gate. Claude Code 전용이 아닌 범용 limit-resilient layer 로 확장",
+          "use_case": "GPT/Gemini 도 계정 풀 rotation. OpenAI rate limit 도 커버"
+        }
+      ]
+    },
+
+    "mechanism": {
+      "description": "M13 primitives 가 직접 가능케 한 infrastructure-level 아이디어 (이전엔 불가능)",
+      "priority": "P1",
+      "items": [
+        {"id": "m1_consensus_voting", "title": "12-Claude 합의 투표", "summary": "한 프롬프트 → 12계정 백그라운드 복제 → 다수결/만장일치 검증"},
+        {"id": "m2_self_peer_review", "title": "자동 peer-review 루프", "summary": "성공 응답을 다른 계정에 '검토' 재송출 → 1차+비평 병합"},
+        {"id": "m3_infinite_session", "title": "무한 세션 착각", "summary": "session_id 고정 + 계정만 rotation → 서버엔 N개 대화 TUI 엔 1개 100h"},
+        {"id": "m4_shadow_workers", "title": "그림자 작업자", "summary": "1 질문 → 메인1 + shadow11 동시. 한 번 물으면 12 관점 축적"},
+        {"id": "m5_context_autoinject", "title": "In-flight 컨텍스트 자동 주입", "summary": "키워드 감지 → atlas Tier-1 자동 prepend. /load 제로 (h6 과 같음)"},
+        {"id": "m6_model_ensemble", "title": "다중 모델 앙상블", "summary": "opus+sonnet+haiku 3계정 병렬 → 응답 합성"},
+        {"id": "m7_token_shard", "title": "토큰 분할 context >1M", "summary": "500k prompt 쪼개 10계정 분산 → 실효 12M"},
+        {"id": "m8_n6_rotation_meta", "title": "n=6 rotation cycle meta-validation", "summary": "매 6 요청마다 강제 swap → σ·φ_E=nτ, n=6 이 스스로 검증"},
+        {"id": "m9_self_consistency_guard", "title": "응답 일관성 감시", "summary": "과거 답 모순 시 다른 계정 tiebreaker"},
+        {"id": "m10_prompt_ab_lab", "title": "Prompt engineering 실험실", "summary": "프롬프트 12변주 → 최고 변주 자동 발견"},
+        {"id": "m11_full_observability", "title": "완전 observability", "summary": "모든 fetch → rotations.jsonl 전문. Grafana/ELK 연동"},
+        {"id": "m12_cross_pollination", "title": "Atlas 교차수분", "summary": "계정1 응답 → 계정2 inject. 유전자 교배"},
+        {"id": "m13_auto_keyword_trigger", "title": "키워드 자동 trigger", "summary": "smash/free 감지 → 백그라운드 burn 자동"},
+        {"id": "m14_dialectic_tournament", "title": "Dialectic 12-way 토너먼트", "summary": "66 pair-wise battle → 승자 = 오늘 claim"},
+        {"id": "m15_async_dfs_forest", "title": "비동기 DFS forest", "summary": "12계정에 DFS 깊이 동시 할당"},
+        {"id": "m16_tool_use_hook", "title": "tool_use 감시·조작", "summary": "특정 tool 에 자동 컨텍스트 주입 (Bash 실패 → sudo retry)"}
+      ]
+    },
+
+    "weakness_covers": {
+      "description": "[단점] → [claudx 커버] 매핑. iter1-3 = 실측 burn.20260419-031859.jsonl",
+      "priority": "P2",
+      "items": [
+        {"id": "w1", "source": "iter1_실측", "weakness": "사용량 한도 하드스톱 — 문맥 소실", "cover": "fetch 선점 + Authorization swap + replay"},
+        {"id": "w2", "source": "iter2_실측", "weakness": "긴 빌드 중 터미널 포커스 놓으면 멈춤", "cover": "session_id decouple + 응답 스트림 파일/소켓 tap"},
+        {"id": "w3", "source": "iter3_실측", "weakness": "멀티 프로젝트 시 계정 1개 고정", "cover": "프로젝트별 interceptor 독립 + 헤더 fingerprint 격리 + sub-pool 배분"},
+        {"id": "w4", "weakness": "/resume cwd 종속", "cover": "session_id ↔ UUID 매핑 — 어느 cwd 에서도 resume"},
+        {"id": "w5", "weakness": "1M context 한계", "cover": "body 분할 → 12계정 분산 → partial 합성 (m7)"},
+        {"id": "w6", "weakness": "/compact lossy", "cover": "원본 영구 보관 (rotations.jsonl) + 필요시 재주입 (h7)"},
+        {"id": "w7", "weakness": "system prompt 세션시작 고정", "cover": "매 fetch 마다 system 블록 prepend/swap"},
+        {"id": "w8", "weakness": "권한 다이얼로그 인터럽트", "cover": "bypassPermissions + 선응답"},
+        {"id": "w9", "weakness": "네트워크 blip 세션 종료", "cover": "backoff retry + host rotation"},
+        {"id": "w10", "weakness": "단일 모델", "cover": "3모델 앙상블 (m6)"},
+        {"id": "w11", "weakness": "peer review 부재", "cover": "shadow 11 재송출 (m2)"},
+        {"id": "w12", "weakness": "12번 반복 시도 시 rate limit", "cover": "12 독립 fan-out consensus (m1)"},
+        {"id": "w13", "weakness": "실시간 비용 파악 불가", "cover": "초당 cost ledger (e1)"},
+        {"id": "w14", "weakness": "예방적 swap 없음", "cover": "헤더 감시 선제 swap (e2)"},
+        {"id": "w15", "weakness": "응답 캐시 없음", "cover": "prompt hash dedupe (e3)"},
+        {"id": "w16", "weakness": "모든 호출 로그 불투명", "cover": "rotations.jsonl 전문 + headers (m11)"}
+      ]
+    },
+
+    "scenarios": {
+      "description": "도메인별 응용 — 12계정 fan-out 기반 use case",
+      "priority": "P2",
+      "items": [
+        {"id": "s1",  "title": "코드 리뷰어 12종",           "summary": "PR 하나 → 보안/성능/스타일/테스트/접근성/i18n/DX/명명/동시성/의존성/문서/마이그레이션 병렬 리뷰"},
+        {"id": "s2",  "title": "신약 가설 스크리닝",         "summary": "target → 12 disease-area expert 우선순위 matrix"},
+        {"id": "s3",  "title": "법률 적대 시뮬레이션",       "summary": "계약서 → 원고/피고/판사/증인/배심 12 관점"},
+        {"id": "s4",  "title": "번역 앙상블",                 "summary": "12 번역자 스펙트럼 → 상황 맞춤 선택"},
+        {"id": "s5",  "title": "PM 고객 검증",                "summary": "feature → 12 persona 동시 review"},
+        {"id": "s6",  "title": "투자 논리 crash test",        "summary": "thesis → 12 애널리스트 반박"},
+        {"id": "s7",  "title": "자기비판 loop",               "summary": "글/코드 → 12 비판자 합성 수렴"},
+        {"id": "s8",  "title": "학습 개인화",                 "summary": "개념 12 스타일 설명 → 학생 맞춤 선택"},
+        {"id": "s9",  "title": "게임 밸런스 playtester",      "summary": "rule → 12 AI tester 깨지는 구간"},
+        {"id": "s10", "title": "논문 공장",                   "summary": "하룻밤 = 12 preprint"},
+        {"id": "s11", "title": "Red team 보안 감사",          "summary": "시스템 → 12 attacker persona threat modeling"},
+        {"id": "s12", "title": "과학 가설 병렬 반증",         "summary": "claim → 12 disprove 시도"},
+        {"id": "s13", "title": "제품 카피 A/B/…/L",           "summary": "12 variation × 12 audience = 144 매트릭스"},
+        {"id": "s14", "title": "대화 시뮬레이션",             "summary": "미팅/협상 → 12 opposing persona 연습"},
+        {"id": "s15", "title": "다중 모델 합의 수사",         "summary": "자료 → 12 용의자·동기 추정 투표"},
+        {"id": "s16", "title": "운동 프로그래밍",             "summary": "goal → 12 코치 스타일"},
+        {"id": "s17", "title": "자기개발 멘토 pool",          "summary": "고민 → 12 성향 조언"},
+        {"id": "s18", "title": "레시피 창조",                 "summary": "재료 → 12 cuisine"},
+        {"id": "s19", "title": "실패 시나리오 라이브러리",    "summary": "아이디어 → 12 fail mode"},
+        {"id": "s20", "title": "리얼타임 다국어 번역",        "summary": "대화 → 12 언어·문화 동시"}
+      ]
+    }
+  },
+
+  "recommended_top5_economy_first": [
+    {"id": "e1_cost_ledger",       "why": "모든 경제 아이디어의 기반. 구현 최소 (interceptor.js 10줄)"},
+    {"id": "e4_budget_cap",        "why": "자율모드 돌릴 때 가장 먼저 걱정되는 것 — 예산 hard stop"},
+    {"id": "e2_preemptive_swap",   "why": "w14 와 같음. 429 경험 자체를 제거 — UI 비가시성 완성"},
+    {"id": "e3_response_cache",    "why": "반복 작업 (burn, fan-out) 시 실질 비용 대폭 감소 — 하루 burn 이 1/3 비용"},
+    {"id": "e7_usage_cache_freshen", "why": "stale 데이터로 잘못된 rotation 방지 — 안정성"}
+  ],
+
+  "recommended_top3_overall": [
+    {"id": "m1_consensus_voting",    "why": "p<10⁻²⁰ → p<10⁻³⁰ 단일 최강 레버리지"},
+    {"id": "m4_shadow_workers",      "why": "대화가 자동 12x 확장 — 사용자 추가 명령 0"},
+    {"id": "m8_n6_rotation_meta",    "why": "이번 발견이 엔진 자체에 wonderful loop 형성"}
+  ],
+
+  "burn_evidence": {
+    "log_path": "~/.airgenome/claudx/burn.20260419-031859.jsonl",
+    "iters_completed": 3,
+    "iters_max": 20,
+    "stopped_by": "user_stopfile"
+  },
+
+  "next_actions": [
+    {"cmd": "claudx-burn '경제세팅 실 구현 — e1/e2/e3/e4/e7 각각 코드 패치' -- --model opus", "desc": "5개 경제 아이템별 interceptor.js 패치 코드 자동 생성"},
+    {"cmd": "claudx-burn 'airgenome v1 gate 이식' 'hive 9-gate DAG 이식' -- --model sonnet",     "desc": "v1 + hive 이식 아이템 구체 스케치"},
+    {"cmd": "claudx --report daily",                                                               "desc": "(e5 구현 후) 오늘 cost matrix"},
+    {"cmd": "claudx-burn smash free -- --force-host mac --model opus",                            "desc": "수학 엔진 모드 — n=6 Tier-1 심화"}
+  ]
+}

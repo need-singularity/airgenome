@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# bin/claudx — limit-resilient unified Claude launcher (airgenome M13, 2026-04-19)
+#
+# 책임:
+#   1. pool.js 로 best 계정 pre-pick → CLAUDE_CONFIG_DIR export
+#   2. NODE_OPTIONS 에 interceptor.js 주입 → in-process 자동 rotation 활성
+#   3. cx 호출 → host routing 위임. cx 가 env 를 remote 로 forward (M13 패치).
+#   4. TUI/print 모드 동일 처리. 429/rate_limit 은 SDK 가 보기 전 interceptor 가 선점.
+#
+# UI 완전 비가시:
+#   - interceptor 가 SDK 앞에서 429/401/rate_limit_error 가로채 → TUI 는 성공 응답만 봄
+#   - anthropic-ratelimit-* 헤더 스크럽 (CLAUDX_SCRUB=0 으로 끌 수 있음)
+#   - 모든 rotation 이벤트는 ~/.airgenome/claudx/rotations.jsonl 파일 로그. stderr 아님.
+#   - pre-launch acct/host 안내 1줄만 stderr 로 나감. CLAUDX_QUIET=1 이면 그것도 억제.
+#
+# usage:
+#   claudx [args...]                # interactive/print — best acct+host 자동 pre-pick + rotation
+#   claudx --status                 # 12계정 pool 건강 (가용/고갈/reset_at)
+#   claudx --pick                   # best acct 1개 이름만 출력
+#   claudx --clear-exhausted [name] # exhausted.json 전체/특정 계정 해제
+#   claudx --force-acct claude5     # 특정 계정 고정
+#   claudx --force-host mac         # cx --force-host 패스스루
+#   claudx --no-rotate              # interceptor 비활성 (pre-pick 만)
+#   claudx --show                   # acct/host 결정만 출력 후 종료 (실행 X)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+INTERCEPTOR="$CX_ROOT/shared/claudx/interceptor.js"
+POOL_JS="$CX_ROOT/shared/claudx/pool.js"
+
+# Mac production defaults. Override via env (e.g. Linux dev/test).
+: "${CLAUDX_POOL:=$HOME/Dev/nexus/shared/.runtime/accounts/accounts.json}"
+: "${CLAUDX_USAGE:=$HOME/Dev/nexus/shared/.runtime/accounts/usage-cache.json}"
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+: "${CLAUDX_QUIET:=0}"
+export CLAUDX_POOL CLAUDX_USAGE CLAUDX_STATE
+
+mkdir -p "$CLAUDX_STATE"
+
+die() { echo "claudx: $*" >&2; exit 2; }
+info() { [ "$CLAUDX_QUIET" = "1" ] || echo "claudx: $*" >&2; }
+
+# loadgate — critical 이면 abort, danger 이면 60s hold, warn/ok 진행 (M13d)
+_loadgate() {
+    local g rc
+    g=$("$CX_ROOT/shared/claudx/loadgate" 2>/dev/null)
+    rc=$?
+    case "$rc" in
+        0|1) : ;;
+        2)   info "loadgate=danger — 60s hold"; sleep 60 ;;
+        3)   die "loadgate=critical — abort (CLAUDX_LOADGATE_OFF=1 로 우회)" ;;
+    esac
+}
+_loadgate
+
+# --- subcommands that never launch claude ---
+case "${1:-}" in
+    --status)
+        node "$POOL_JS" status
+        exit 0
+        ;;
+    --pick)
+        node "$POOL_JS" pick
+        exit 0
+        ;;
+    --clear-exhausted)
+        node "$POOL_JS" clear "${2:-}"
+        exit 0
+        ;;
+    --report)
+        exec "$CX_ROOT/bin/claudx-idea" report
+        ;;
+    --cache-stats)
+        exec "$CX_ROOT/bin/claudx-idea" cache-stats
+        ;;
+    --idea)
+        shift
+        exec "$CX_ROOT/bin/claudx-idea" "$@"
+        ;;
+    -h|--help)
+        sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+esac
+
+# --- arg split: claudx flags vs passthrough to cx/claude ---
+force_acct=""
+no_rotate=false
+show_only=false
+fwd=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --force-acct) force_acct=$2; shift 2 ;;
+        --no-rotate)  no_rotate=true; shift ;;
+        --show)       show_only=true; fwd+=("--show"); shift ;;
+        *)            fwd+=("$1"); shift ;;
+    esac
+done
+
+# --- pick acct ---
+picked_name=""
+picked_dir=""
+if [ -n "$force_acct" ]; then
+    picked_name="$force_acct"
+    if [ -f "$CLAUDX_POOL" ]; then
+        picked_dir=$(jq -r --arg n "$force_acct" '.accounts[] | select(.name==$n) | .config_dir // empty' "$CLAUDX_POOL" 2>/dev/null)
+    fi
+    [ -n "$picked_dir" ] || die "--force-acct '$force_acct' not in pool ($CLAUDX_POOL)"
+else
+    picked_line=$(node "$POOL_JS" pick 2>/dev/null)
+    if [ -n "$picked_line" ]; then
+        picked_name=$(printf '%s' "$picked_line" | awk -F'\t' '{print $1}')
+        picked_dir=$(printf '%s' "$picked_line" | awk -F'\t' '{print $2}')
+    fi
+fi
+
+if [ -n "$picked_dir" ]; then
+    # apply CLAUDX_HOME_MAP (같은 로직이 pool.js 에도 있음) 로 spawn 된 claude 가 local creds 읽게
+    if [ -n "${CLAUDX_HOME_MAP:-}" ]; then
+        from="${CLAUDX_HOME_MAP%%:*}"
+        to="${CLAUDX_HOME_MAP##*:}"
+        case "$picked_dir" in
+            "$from"*) picked_dir="${to}${picked_dir#$from}" ;;
+        esac
+    fi
+    export CLAUDE_CONFIG_DIR="$picked_dir"
+    info "acct=$picked_name cfg=$picked_dir"
+else
+    info "no acct pre-pick; using existing CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-(default)}"
+fi
+
+# --- inject interceptor via NODE_OPTIONS ---
+if [ "$no_rotate" != true ] && [ -f "$INTERCEPTOR" ]; then
+    if [ -n "${NODE_OPTIONS:-}" ]; then
+        export NODE_OPTIONS="--require $INTERCEPTOR $NODE_OPTIONS"
+    else
+        export NODE_OPTIONS="--require $INTERCEPTOR"
+    fi
+fi
+
+# --- delegate to cx (host routing + ssh + env forward patched for claudx M13) ---
+exec "$CX_ROOT/bin/cx" ${fwd[@]+"${fwd[@]}"}

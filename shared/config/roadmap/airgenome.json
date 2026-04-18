@@ -459,6 +459,91 @@
         "menubar 진입점 (mac native 또는 hexa-native UI 가능 시)",
         "출력은 forge/dashboard.html (정적 파일, 브라우저 직접 열기)"
       ]
+    },
+    {
+      "id": "M13_claudx",
+      "title": "claudx — limit-resilient unified Claude launcher (계정 rotation + host + fan-out)",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M11e_claude_route"],
+      "problem": "Claude Code CLI 가 rate limit / session cap / weekly cap / token 만료로 막히면 TUI 가 죽거나 사용자 개입 필요. 자율 야간모드가 풀림.",
+      "approach": "claude 가 순수 node cli.js → NODE_OPTIONS --require 로 globalThis.fetch monkey-patch. 429/rate_limit_error 감지 시 .credentials.json access_token 을 pool 내 next 계정 토큰으로 swap 후 동일 request 재송출. TUI 는 성공 응답만 봄. 세션 100% 보존.",
+      "exit_criteria": [
+        "shared/claudx/interceptor.js — NODE_OPTIONS preload. anthropic.com 요청에 한해 429/rate_limit_error 감지 → Authorization 헤더 swap → retry. pool: ~/.claude-claudeN/.credentials.json 12개. 최대 rotation=4회/call.",
+        "bin/claudx — unified entry. 최적 계정 pre-pick + host (cx 로직 공유) + NODE_OPTIONS preload 주입 + --auto/--continue/--session-id/--model/--budget 플래그.",
+        "bin/claudx-loop — autonomous watchdog. claudx 자식 exit 시 자동 재시작 + reset 대기 + unlimited retry (signal 제외).",
+        "shared/claudx/state/ — exhausted.json (계정별 until timestamp), rotations.jsonl (이벤트 로그), sessions/ (sid→acct 매핑).",
+        "self-test: claudx --version 동작. interceptor 로드 로그 출력. pool 에서 best 1개 pick 검증.",
+        "문서: claudx README 또는 bin 스크립트 내 헤더 주석. invariants 준수 (.py/.rs/.sh/.c 금지, hexa-only 예외: claude intercept 는 node 필수)."
+      ]
+    },
+    {
+      "id": "M13a_claudx_fanout",
+      "title": "claudx fan-out — 12계정 동시 shard 발사 (병렬성 극대화)",
+      "priority": "P1",
+      "status": "todo",
+      "deps": ["M13_claudx"],
+      "exit_criteria": [
+        "bin/claudx-fan <tasks.jsonl> — 각 task 를 가용 계정 slot 에 동시 dispatch",
+        "hive bus (sqlite WAL) 또는 JSONL append 로 결과 수렴",
+        "account×host 조합으로 slot matrix 형성, 가용 slot 만큼 parallel"
+      ]
+    },
+    {
+      "id": "M13c_claudx_economy",
+      "title": "claudx 경제세팅 — cost ledger · budget cap · preemptive swap · response cache · usage freshen · PII redact",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx"],
+      "problem": "자율모드 돌리면 비용이 블랙박스 — /status 는 지연되고 예산 cap 없음. 반복 프롬프트 재과금. 429 맞고 나서 rotation.",
+      "approach": "interceptor.js 에 6 훅 추가: (1) 매 응답 usage 파싱 → cost.jsonl (2) 진입부 budget_remaining 체크 (3) 응답 헤더 remaining 읽어 선제 swap (4) request body hash → cache lookup/store (5) usage-cache.json 헤더 기반 즉시 refresh (6) 응답 body Bearer/api-key/password/SSN 정규식 redact.",
+      "exit_criteria": [
+        "interceptor.js: recordCost(resp) + budgetBlock() + preemptSwapCheck() + cacheGet/cacheSet + freshenUsageCache() + redact()",
+        "~/.airgenome/claudx/cost.jsonl 포맷: {ts, sid, acct, model, in, out, cache_read, cache_creation, usd, cwd}",
+        "~/.airgenome/claudx/cache/<hash>.json 캐시 디렉토리, TTL 24h 기본",
+        "bin/claudx --report daily — acct×model×project 3축 matrix 출력",
+        "bin/claudx --cache-stats — hit/miss ratio",
+        "CLAUDX_BUDGET_DAILY=$5 등 env 로 hard cap 지정 가능",
+        "CLAUDX_NO_CACHE=1 로 bypass",
+        "smoke test: --version 통과 + preload 훅 전부 로드 확인"
+      ]
+    },
+    {
+      "id": "M13d_claudx_v1_hive_port",
+      "title": "claudx v1/hive 이식 — sticky account · system_load gate · loadgate helper",
+      "priority": "P1",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx"],
+      "problem": "매 rotation 이 Anthropic prompt cache 파괴 → 비용↑. 시스템 부하 폭주 시 자율모드가 claude 퓨리 발사. redact 필요.",
+      "approach": "hive forge/sticky 이식 — session_id ↔ preferred_acct 매핑. v1 sampler EMA 간소화 → claudx 앞단 loadgate 스크립트. v1 gate.hexa json_escape → interceptor redact (M13c 에 통합).",
+      "exit_criteria": [
+        "pool.js: pickBest(excludeNames, stickyFor=sid) 지원 — sticky.json 에 매핑 있으면 그 계정 우선",
+        "~/.airgenome/claudx/sticky.json {sid: {acct, last_used}} 유지",
+        "shared/claudx/loadgate.sh — loadavg 읽어 warn/danger/critical 반환. claudx 진입부 source",
+        "PII redact 정규식: Bearer [A-Za-z0-9_-]{20,}, sk-[A-Za-z0-9]{20,}, password=*, 010-\\d{4}-\\d{4}, \\d{3}-\\d{2}-\\d{4}",
+        "smoke: sticky.json 생성·재사용 확인, loadgate ok/warn 분기 확인"
+      ]
+    },
+    {
+      "id": "M13b_claudx_burn",
+      "title": "claudx-burn — 풀 고갈까지 smash/free 키워드 연속 발사",
+      "priority": "P0",
+      "status": "active",
+      "started": "2026-04-19",
+      "deps": ["M13_claudx"],
+      "problem": "autonomous 키워드 (smash/free) 를 사용자가 밤새 수동 연타해야 하는 문제. 12계정 가용 용량이 남았는데도 사람 개입 필요.",
+      "approach": "best-pick 매 iter 호출 → 자연 rotation + --continue 로 context 누적. 응답 peek 으로 stop 시그니처 감지. 풀 고갈시 자동 종료.",
+      "exit_criteria": [
+        "bin/claudx-burn <keyword> [-- claude-args...] — 연속 발사 기본 entry",
+        "매 iter pool.pickBest → null 이면 break",
+        "--continue 기본값 (누적 컨텍스트). CLAUDX_BURN_NO_CONT=1 로 끌 수 있음",
+        "CLAUDX_BURN_STOP_RE — 응답 regex 매칭시 early-stop",
+        "burn 로그: ~/.airgenome/claudx/burn.<ts>.jsonl (fire/done/early_stop/pool_exhausted)",
+        "bootstrap Tier 4 idempotent migration — 기존 설치도 claudx 전환 + claude() 함수 주입"
+      ]
     }
   ],
   "items": [],

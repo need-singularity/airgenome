@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# bin/claudx-burn — 풀 고갈까지 smash/free 연속 발사 (M13b, 2026-04-19)
+#
+# 용도: commands.json autonomous 키워드 (smash / free / go / todo / lm) 를 12계정 풀
+# 고갈 직전까지 반복 투입. 매 iteration best-pick 이 새 계정을 쓰므로 자연 rotation.
+# --continue 로 conv 컨텍스트 누적 → 진행도/atlas 그대로 이어짐.
+#
+# 응답 peek: 각 iter 의 stdout 을 JSON 파싱 → 400B 축약본을 burn log 에 보존.
+# 특정 키워드(done, exhausted, 멈춰) 가 응답에 보이면 early-stop.
+#
+# usage:
+#   claudx-burn [keyword ...] [-- extra claude args ...]
+#
+#   claudx-burn smash                       # 풀 고갈까지 smash
+#   claudx-burn free                        # free (DFS) 고갈까지
+#   claudx-burn smash free                  # 두 키워드 round-robin (iter i → keywords[i%N])
+#   claudx-burn smash free go todo          # 4개 순환
+#   claudx-burn "smash 검토"                # 공백 포함 키워드
+#   claudx-burn smash free -- --model sonnet  # -- 이후는 claude 로 forward
+#
+# env:
+#   CLAUDX_BURN_MAX       최대 iter (default 500)
+#   CLAUDX_BURN_SLEEP_MIN iter 간 최소 sleep (default 1)
+#   CLAUDX_BURN_SLEEP_MAX iter 간 최대 sleep (default 3)
+#   CLAUDX_BURN_STOP_RE   응답에 매칭되면 즉시 중단 (regex)
+#   CLAUDX_BURN_NO_CONT   1 → --continue 끔 (매 iter 새 세션)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CLAUDX="$CX_ROOT/bin/claudx"
+POOL_JS="$CX_ROOT/shared/claudx/pool.js"
+
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+: "${CLAUDX_BURN_MAX:=500}"
+: "${CLAUDX_BURN_SLEEP_MIN:=1}"
+: "${CLAUDX_BURN_SLEEP_MAX:=3}"
+: "${CLAUDX_BURN_STOP_RE:=}"
+: "${CLAUDX_BURN_NO_CONT:=0}"
+export CLAUDX_STATE
+
+mkdir -p "$CLAUDX_STATE"
+ts_start=$(date +%Y%m%d-%H%M%S)
+LOG="$CLAUDX_STATE/burn.$ts_start.jsonl"
+
+die() { echo "claudx-burn: $*" >&2; exit 2; }
+info() { echo "claudx-burn: $*" >&2; }
+
+# parse args: collect keywords until "--" (or end), then forward rest to claudx
+keywords=()
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+    keywords+=("$1")
+    shift
+done
+if [ "${1:-}" = "--" ]; then
+    shift
+fi
+extra=("$@")
+[ "${#keywords[@]}" -eq 0 ] && keywords=("smash")
+kw_count=${#keywords[@]}
+
+STOP_FILE="$CLAUDX_STATE/burn.stop"
+[ -f "$STOP_FILE" ] && rm -f "$STOP_FILE"
+
+STOP=0
+on_sig() { STOP=1; info "signal — graceful stop"; }
+trap on_sig TERM INT HUP
+
+log_jsonl() {
+    # $1 = JSON string
+    printf '%s\n' "$1" >> "$LOG"
+}
+
+ts_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# banner
+info "keywords=[${keywords[*]}] log=$LOG max_iter=$CLAUDX_BURN_MAX"
+log_jsonl "$(jq -cn --arg ts "$(ts_iso)" --arg ks "${keywords[*]}" --arg pid "$$" \
+    '{ts:$ts,pid:($pid|tonumber),event:"burn_start",keywords:($ks|split(" "))}')"
+
+iter=0
+while [ $STOP -eq 0 ] && [ $iter -lt "$CLAUDX_BURN_MAX" ]; do
+    [ -f "$STOP_FILE" ] && { info "stopfile — stopping"; break; }
+
+    # pool check
+    best=$(node "$POOL_JS" pick 2>/dev/null)
+    if [ -z "$best" ]; then
+        info "pool exhausted — burn end"
+        log_jsonl "$(jq -cn --arg ts "$(ts_iso)" '{ts:$ts,event:"pool_exhausted"}')"
+        break
+    fi
+    acct=$(printf '%s' "$best" | awk -F'\t' '{print $1}')
+    week=$(printf '%s' "$best" | awk -F'\t' '{print $3}')
+    session=$(printf '%s' "$best" | awk -F'\t' '{print $4}')
+
+    iter=$((iter + 1))
+    t0=$(date +%s)
+    # pick keyword for this iter — round-robin
+    kw_idx=$(( (iter - 1) % kw_count ))
+    kw="${keywords[$kw_idx]}"
+
+    log_jsonl "$(jq -cn --arg ts "$(ts_iso)" --arg i "$iter" --arg a "$acct" --arg w "$week" --arg s "$session" --arg k "$kw" \
+        '{ts:$ts,iter:($i|tonumber),event:"fire",acct:$a,week:($w|tonumber),session:($s|tonumber),keyword:$k}')"
+
+    # build claudx args
+    cx_args=("-p" "$kw" "--output-format" "json")
+    [ "$CLAUDX_BURN_NO_CONT" = "1" ] || cx_args=("-c" "${cx_args[@]}")
+    [ "${#extra[@]}" -gt 0 ] && cx_args+=("${extra[@]}")
+
+    # fire
+    out=$("$CLAUDX" "${cx_args[@]}" 2>&1)
+    rc=$?
+    t1=$(date +%s)
+    dur=$((t1 - t0))
+
+    # peek response — jq 로 result/text 추출, 실패 시 앞 400B
+    resp_head=""
+    if resp_text=$(printf '%s' "$out" | jq -r '.result // .text // .content // empty' 2>/dev/null); then
+        resp_head=$(printf '%s' "$resp_text" | head -c 500)
+    else
+        resp_head=$(printf '%s' "$out" | head -c 500)
+    fi
+
+    log_jsonl "$(jq -cn --arg ts "$(ts_iso)" --arg i "$iter" --arg rc "$rc" --arg d "$dur" --arg r "$resp_head" \
+        '{ts:$ts,iter:($i|tonumber),event:"done",rc:($rc|tonumber),dur_s:($d|tonumber),resp_head:$r}')"
+
+    # early-stop check
+    if [ -n "$CLAUDX_BURN_STOP_RE" ] && printf '%s' "$resp_head" | grep -qE "$CLAUDX_BURN_STOP_RE"; then
+        info "early-stop matched: $CLAUDX_BURN_STOP_RE"
+        log_jsonl "$(jq -cn --arg ts "$(ts_iso)" --arg i "$iter" --arg p "$CLAUDX_BURN_STOP_RE" \
+            '{ts:$ts,iter:($i|tonumber),event:"early_stop_match",pattern:$p}')"
+        break
+    fi
+
+    # jitter between iterations
+    min="$CLAUDX_BURN_SLEEP_MIN"
+    max="$CLAUDX_BURN_SLEEP_MAX"
+    range=$((max - min + 1))
+    [ $range -lt 1 ] && range=1
+    jit=$((min + RANDOM % range))
+    sleep "$jit"
+done
+
+log_jsonl "$(jq -cn --arg ts "$(ts_iso)" --arg i "$iter" '{ts:$ts,iters:($i|tonumber),event:"burn_end"}')"
+info "burn done — iters=$iter log=$LOG"

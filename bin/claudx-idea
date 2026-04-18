@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# bin/claudx-idea — idea.json 탐색 래퍼 (M13c + M13d)
+#
+# usage:
+#   claudx-idea list                       # 전 카테고리 요약
+#   claudx-idea list economy               # 특정 카테고리
+#   claudx-idea show e1                    # id 로 상세
+#   claudx-idea search "rotation"          # 키워드 grep (title+summary+cover)
+#   claudx-idea top                        # 추천 Top 출력 (경제 + 전체)
+#   claudx-idea count                      # 카테고리별 개수
+#   claudx-idea impl e1                    # impl_hint 만 출력
+#   claudx-idea report                     # cost.jsonl 기반 daily/monthly 집계 (M13c e5)
+#   claudx-idea cache-stats                # 캐시 hit/miss ratio (M13c e8)
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CX_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+IDEA="$CX_ROOT/idea.json"
+: "${CLAUDX_STATE:=$HOME/.airgenome/claudx}"
+COST_LOG="$CLAUDX_STATE/cost.jsonl"
+CACHE_DIR="$CLAUDX_STATE/cache"
+
+[ -f "$IDEA" ] || { echo "claudx-idea: $IDEA not found" >&2; exit 2; }
+
+cmd="${1:-list}"; shift 2>/dev/null || true
+
+case "$cmd" in
+    list)
+        cat_filter="${1:-}"
+        if [ -z "$cat_filter" ]; then
+            jq -r '.categories | to_entries[] | "\n=== \(.key) [\(.value.priority)] (\(.value.items | length) items) ===\n\(.value.description)\n" + (.value.items | map("  \(.id // "-") — \(.title // .weakness // .summary // "?")") | join("\n"))' "$IDEA"
+        else
+            jq -r --arg c "$cat_filter" '.categories[$c] // {} | "=== \($c) ===\n\(.description // "")\n" + ((.items // []) | map("  \(.id) — \(.title // .weakness // .summary)") | join("\n"))' "$IDEA"
+        fi
+        ;;
+    show)
+        id="${1:-}"; [ -z "$id" ] && { echo "usage: claudx-idea show <id>" >&2; exit 2; }
+        jq -r --arg i "$id" '
+          .categories | to_entries | map(.value.items // []) | add
+          | map(select(.id == $i)) | .[0] // {error: "not found"}
+          | if .error then .error else
+              "id: \(.id)\n" +
+              (if .title then "title: \(.title)\n" else "" end) +
+              (if .summary then "summary: \(.summary)\n" else "" end) +
+              (if .weakness then "weakness: \(.weakness)\n" else "" end) +
+              (if .cover then "cover: \(.cover)\n" else "" end) +
+              (if .source then "source: \(.source)\n" else "" end) +
+              (if .use_case then "use_case: \(.use_case)\n" else "" end) +
+              (if .impl_hint then "impl_hint: \(.impl_hint)\n" else "" end) +
+              (if .v1_borrow then "v1_borrow: \(.v1_borrow)\n" else "" end) +
+              (if .hive_borrow then "hive_borrow: \(.hive_borrow)\n" else "" end) +
+              (if .unlock then "unlock: \(.unlock)\n" else "" end)
+            end
+        ' "$IDEA"
+        ;;
+    search)
+        q="${1:-}"; [ -z "$q" ] && { echo "usage: claudx-idea search <keyword>" >&2; exit 2; }
+        jq -r --arg q "$q" '
+          .categories | to_entries | map(.value.items[] as $it | $it | . + {_cat: (. | tostring)}) | flatten
+          | .categories | to_entries | map(.value.items // []) | add
+          | map(select(
+              ((.title // "") | test($q; "i")) or
+              ((.summary // "") | test($q; "i")) or
+              ((.weakness // "") | test($q; "i")) or
+              ((.cover // "") | test($q; "i")) or
+              ((.use_case // "") | test($q; "i"))
+            ))
+          | map("  \(.id) — \(.title // .weakness // .summary)") | join("\n")
+        ' "$IDEA" 2>/dev/null || \
+        jq -r --arg q "$q" '
+          [.categories | to_entries[] | .value.items // [] | .[]]
+          | map(select(
+              ((.title // "") | test($q; "i")) or
+              ((.summary // "") | test($q; "i")) or
+              ((.weakness // "") | test($q; "i")) or
+              ((.cover // "") | test($q; "i"))
+            ))
+          | map("  \(.id) — \(.title // .weakness // .summary)") | .[]
+        ' "$IDEA"
+        ;;
+    top)
+        echo "=== 경제세팅 Top 5 (P0 구현 순서) ==="
+        jq -r '.recommended_top5_economy_first[]? | "  \(.id) — \(.why)"' "$IDEA"
+        echo ""
+        echo "=== 전체 Top 3 ==="
+        jq -r '.recommended_top3_overall[]? | "  \(.id) — \(.why)"' "$IDEA"
+        ;;
+    count)
+        jq -r '.categories | to_entries[] | "\(.key)\t\(.value.priority)\t\(.value.items | length)"' "$IDEA" | \
+            awk 'BEGIN{print "category\tpri\tcount"} {print} END{}'
+        jq -r '[.categories[].items | length] | add' "$IDEA" | awk '{print "TOTAL\t-\t" $1}'
+        ;;
+    impl)
+        id="${1:-}"; [ -z "$id" ] && { echo "usage: claudx-idea impl <id>" >&2; exit 2; }
+        jq -r --arg i "$id" '[.categories[].items[]?] | map(select(.id == $i)) | .[0].impl_hint // "(no impl_hint)"' "$IDEA"
+        ;;
+    report)
+        # cost.jsonl 집계 (M13c e5)
+        if [ ! -f "$COST_LOG" ]; then echo "(no cost.jsonl yet — 아직 claude 호출 없음)"; exit 0; fi
+        now_s=$(date +%s)
+        day_ago=$((now_s - 86400))
+        mon_ago=$((now_s - 86400 * 30))
+        echo "=== daily (last 24h) ==="
+        jq -r --arg s "$day_ago" '
+          select((.ts | fromdateiso8601) >= ($s | tonumber))
+          | [.acct, .model, (.usd // 0)] | @tsv
+        ' "$COST_LOG" | awk -F'\t' '
+          { sum[$1"\t"$2] += $3; grand += $3 }
+          END {
+            printf "%-12s %-18s %s\n", "acct", "model", "usd"
+            for (k in sum) {
+              split(k, a, "\t")
+              printf "%-12s %-18s $%.4f\n", a[1], a[2], sum[k]
+            }
+            printf "%-12s %-18s $%.4f\n", "TOTAL", "-", grand
+          }'
+        echo ""
+        echo "=== monthly (last 30d) ==="
+        jq -r --arg s "$mon_ago" '
+          select((.ts | fromdateiso8601) >= ($s | tonumber))
+          | (.usd // 0)
+        ' "$COST_LOG" | awk 'BEGIN{s=0} {s+=$1} END{printf "total: $%.4f\n", s}'
+        ;;
+    cache-stats)
+        if [ ! -d "$CACHE_DIR" ]; then echo "(no cache dir yet)"; exit 0; fi
+        files=$(ls "$CACHE_DIR" 2>/dev/null | wc -l)
+        size=$(du -sh "$CACHE_DIR" 2>/dev/null | awk '{print $1}')
+        echo "cache entries: $files"
+        echo "cache size:    $size"
+        # rotations.jsonl 에서 cache_hit 이벤트 카운트
+        if [ -f "$CLAUDX_STATE/rotations.jsonl" ]; then
+            hits=$(grep -c '"event":"cache_hit"' "$CLAUDX_STATE/rotations.jsonl" 2>/dev/null || echo 0)
+            echo "cache_hit events (rotations.jsonl): $hits"
+        fi
+        ;;
+    -h|--help|help)
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        echo "unknown command: $cmd" >&2
+        echo "usage: claudx-idea {list|show|search|top|count|impl|report|cache-stats}" >&2
+        exit 2
+        ;;
+esac

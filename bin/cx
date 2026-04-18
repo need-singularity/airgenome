@@ -112,6 +112,22 @@ if [ "$host" != "mac" ]; then
     remote_env_prefix='BROWSER="$HOME/bin/open-on-mac" '"$remote_env_prefix"
 fi
 
+# claudx integration (M13): forward NODE_OPTIONS + CLAUDX_* so the in-process
+# rate-limit interceptor loads on the remote claude. sshfs /Users/ghost symlink
+# lets Mac-absolute paths in NODE_OPTIONS resolve unchanged on the remote.
+if [ "$host" != "mac" ]; then
+    if [ -n "${NODE_OPTIONS:-}" ]; then
+        remote_env_prefix="NODE_OPTIONS=$(printf '%q' "$NODE_OPTIONS") $remote_env_prefix"
+    fi
+    for __cxv in CLAUDX_STATE CLAUDX_POOL CLAUDX_USAGE CLAUDX_HOME_MAP CLAUDX_MAX_ROT CLAUDX_EXH_SEC CLAUDX_DEBUG CLAUDX_SCRUB; do
+        eval "__cxval=\${$__cxv:-}"
+        if [ -n "$__cxval" ]; then
+            remote_env_prefix="$__cxv=$(printf '%q' "$__cxval") $remote_env_prefix"
+        fi
+    done
+    unset __cxv __cxval
+fi
+
 # cwd 매핑: 원격 /Users/ghost → $HOME/mac_home symlink 로 Mac 절대경로 그대로 resolve.
 # fallback: Mac HOME 밖이면 상대 경로 추출 시도 후 최후 $HOME.
 remote_cwd_prefix=""
