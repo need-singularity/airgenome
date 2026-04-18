@@ -53,43 +53,51 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# host 선택
+# host 후보 (priority-first: ubu → ubu2 → mac, hosts.json enabled 순서).
+# Why: hexa run 은 default-remote dispatch 라 cold start ~10s. cx 는 매 호출 latency 예산 없음.
+#      infra_state 도 16h 지연 가능 → 신뢰 X. 각 후보 fresh TCP probe 로 실측.
+#      hexa claude_route.hexa 는 analytics 용도로 남기되 핫패스에서 제외 (2026-04-19).
 if [ -n "$force_host" ]; then
-    host=$force_host
+    candidates=("$force_host")
 else
-    host=$(hexa run "$MODULE" select 2>/dev/null | tail -n 1)
+    # hosts.json 의 enabled remote 들을 JSON 순서대로 (ubu, ubu2, htz…), 최후 mac.
+    # mapfile 은 bash 4+ 전용 — macOS bash 3.2 호환 위해 read loop 사용.
+    candidates=()
+    while IFS= read -r h; do [ -n "$h" ] && candidates+=("$h"); done < <(jq -r '.hosts | to_entries | map(select(.value.enabled==true and .value.kind!="self")) | .[].key' "$REG" 2>/dev/null)
+    candidates+=("mac")
 fi
-[ -n "$host" ] || die "select failed — infra_state 읽기 실패?"
+
+# fresh probe 순회 — 첫 번째 살아있는 후보 선택.
+# -o ControlPath=none 으로 stale mux bypass, ConnectTimeout=3 으로 banner 행 방지.
+host=""
+alias=""
+rtt=0
+for cand in "${candidates[@]}"; do
+    if [ "$cand" = "mac" ]; then
+        host=mac
+        break
+    fi
+    cand_alias=$(jq -r --arg h "$cand" '.hosts[$h].ssh_alias // ""' "$REG")
+    [ -n "$cand_alias" ] || continue
+    r0=$(now_ms)
+    if ssh -o ControlPath=none -o ConnectTimeout=3 -o BatchMode=yes "$cand_alias" true 2>/dev/null; then
+        r1=$(now_ms)
+        rtt=$(( r1 - r0 ))
+        host=$cand
+        alias=$cand_alias
+        break
+    else
+        echo "cx: probe fail → $cand (next)" >&2
+    fi
+done
+[ -n "$host" ] || die "no host reachable (mac 포함 전 후보 실패)"
 
 if [ "$show_only" = true ]; then
-    echo "cx → $host"
+    echo "cx → $host${alias:+ ($alias)}"
     exit 0
 fi
 
-# alias 조회 (mac 제외)
-alias=""
-if [ "$host" != "mac" ]; then
-    alias=$(jq -r --arg h "$host" '.hosts[$h].ssh_alias // ""' "$REG")
-    [ -n "$alias" ] || die "host '$host' ssh_alias 없음"
-fi
-
 echo "cx → $host${alias:+ ($alias)}" >&2
-
-# RTT 측정 (remote only).
-# Mac ~/.ssh/config 의 ControlMaster 설정에 의존 — probe 가 master 세션을 웜업,
-# 이후 ssh -t 는 동일 master 재사용 → 두 번째 핸드셰이크 skip (~200ms↓).
-rtt=0
-if [ "$host" != "mac" ]; then
-    r0=$(now_ms)
-    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$alias" true 2>/dev/null; then
-        r1=$(now_ms)
-        rtt=$(( r1 - r0 ))
-    else
-        echo "cx: ssh probe 실패 — mac 으로 fallback" >&2
-        host=mac
-        alias=""
-    fi
-fi
 
 # CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
 # 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
@@ -135,12 +143,17 @@ else
         : > "$_cx_marker"
         echo "cx: /login 은 Mac 에서 'CLAUDE_CONFIG_DIR=\$HOME/.claude-<n> claude' — 원격 /login 은 Mac keychain 미반영 (오늘 1회)" >&2
     fi
-    # ssh -t 직결. cd + env + claude. printf %q 로 args 안전 인코딩.
+    # ssh 직결. cd + env + claude. printf %q 로 args 안전 인코딩.
     # ServerAliveInterval=60 : 유휴 60s 마다 keep-alive, 3회 실패시 연결 종료 → 끊김 감지.
-    # Mac ssh config 의 ControlMaster 로 probe 웜업 master 재사용 (추가 handshake 0ms).
+    # tty flag: stdin 이 tty 면 -t (TUI interactive), 아니면 -T (one-shot -p/--print, pipe-safe).
+    #          Why: -t + 비-tty stdin 은 "Pseudo-terminal will not be allocated" + claude -p 입력 행.
     # --add-dir /var/folders: Mac $TMPDIR paste 이미지 경로 read 허용 (mac-tmp.service sshfs 경유). 빠지면 interactive TUI image paste 시 401 재인증 루프.
     inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude --add-dir /var/folders ${fwd[@]+"${fwd[@]}"})
-    ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" "$inner_cmd"
+    if [ -t 0 ]; then
+        ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" "$inner_cmd"
+    else
+        ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -T "$alias" "$inner_cmd"
+    fi
     rc=$?
 fi
 t1=$(date +%s)
