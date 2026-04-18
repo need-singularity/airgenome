@@ -110,4 +110,14 @@ if [ ! -f "$HOME/.ssh/config" ] || ! grep -q "Host ubu" "$HOME/.ssh/config" 2>/d
     log "  jq -r '.hosts | to_entries[] | .key' $DEV/airgenome/shared/config/hosts.json"
 fi
 
+# ─ 8. git credentials 원격 동기화 ─────────────────────────────────────
+# Mac 의 ~/.git-credentials 를 enabled 원격에 전파 → 각 원격에서 직접 git push 가능.
+# ssh config 가 이미 있고 Mac 에서 git 한 번 push 한 상태여야 작동.
+if [ -f "$HOME/.git-credentials" ] && [ -f "$DEV/airgenome/bin/sync_git_creds" ]; then
+    log "원격 git credentials 동기화..."
+    "$DEV/airgenome/bin/sync_git_creds" 2>&1 | sed 's/^/  /' || log "  (ssh config 설정 후 수동 실행: bin/sync_git_creds)"
+else
+    log "~/.git-credentials 없음 — Mac 에서 git push 한 번 후 bin/sync_git_creds 재실행"
+fi
+
 log "bootstrap 완료. 새 terminal 열거나 'exec zsh' 로 shell 환경 재로드."

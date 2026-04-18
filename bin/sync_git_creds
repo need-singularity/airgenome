@@ -1,0 +1,64 @@
+#!/bin/bash
+# bin/sync_git_creds — Mac 의 ~/.git-credentials 를 원격 호스트 (hosts.json) 전파.
+#
+# 목적: ubu/ubu2/hetzner 등 원격에서 직접 `git push` 가능하게 만듦. Mac 의
+# GitHub PAT (git credential.helper=store 로 저장) 를 재사용 — 별도 GitHub
+# SSH 키 등록 불필요.
+#
+# Usage:
+#   bin/sync_git_creds           # hosts.json 의 enabled=true && kind!=self 전부
+#   bin/sync_git_creds ubu       # 특정 호스트만
+#
+# 보안: Mac 에 이미 평문 파일로 존재하므로 원격에 복사해도 위험도 동일.
+# 권한 600 유지. 토큰 만료 시 Mac 갱신 → 이 스크립트 재실행으로 전파.
+
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOSTS_FILE="$ROOT/shared/config/hosts.json"
+CREDS="$HOME/.git-credentials"
+
+log() { printf '[sync_git_creds] %s\n' "$*" >&2; }
+
+[ -f "$CREDS" ] || { log "FAIL: $CREDS 없음 — Mac 에서 git push 한 번 해 credential 생성 후 재실행"; exit 1; }
+[ -r "$HOSTS_FILE" ] || { log "FAIL: $HOSTS_FILE 없음"; exit 1; }
+
+target_hosts() {
+    if [ -n "${1:-}" ]; then
+        # 단일 호스트: hosts.json 에서 alias 조회
+        jq -r --arg name "$1" \
+            '.hosts[$name] | select(.enabled==true and .kind!="self") | .ssh_alias' \
+            "$HOSTS_FILE"
+    else
+        # 전체: enabled=true && kind!=self
+        jq -r '.hosts | to_entries[] | select(.value.enabled==true and .value.kind!="self") | .value.ssh_alias' \
+            "$HOSTS_FILE"
+    fi
+}
+
+sync_one() {
+    local alias="$1"
+    # reachability
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$alias" true 2>/dev/null || {
+        log "SKIP: $alias 연결 불가"
+        return 0
+    }
+    # scp + chmod + helper=store
+    if scp -q "$CREDS" "$alias:~/.git-credentials" 2>&1; then
+        ssh "$alias" 'chmod 600 ~/.git-credentials && git config --global credential.helper store' 2>&1
+        log "OK: $alias"
+    else
+        log "FAIL: $alias scp 실패"
+    fi
+}
+
+HOSTS=$(target_hosts "${1:-}")
+[ -z "$HOSTS" ] && { log "no target hosts"; exit 0; }
+
+# 병렬 실행 — wait 로 동기화
+for alias in $HOSTS; do
+    sync_one "$alias" &
+done
+wait
+
+log "complete"
