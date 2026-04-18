@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # bin/cx — AI-native Claude CLI router (ubu/ubu2 우선, mac fallback)
 #
+# v3 (2026-04-18, C안): tmux 완전 제거. ssh -t 직결.
+#   - 세션 관리 레이어 폐기 → 세션 이름 충돌 / fork 이슈 원천 소멸
+#   - 원격 ~/.airgenome/cx_remote_launch 미사용 (파일 남아있어도 무해)
+#   - 트레이드오프: ssh 끊기면 원격 claude 가 SIGHUP. 집 LAN 전제로 수용.
+#
 # 책임:
 #   1. modules/claude_route.hexa select → best host
-#   2. mac 이면 local `command claude`, remote 이면 `ssh -t <alias> claude`
+#   2. mac 이면 local `command claude`, remote 이면 `ssh -t <alias> <inner_cmd>`
 #   3. SSH handshake RTT 측정 (remote only)
-#   4. 세션 종료 후 modules/claude_route.hexa record 로 genome 기록
+#   4. 세션 종료 후 genome 기록
 #
 # 사용:
 #   cx                         # 기본 claude TUI
@@ -31,7 +36,6 @@ now_ms() {
     if command -v perl >/dev/null 2>&1; then
         perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
     else
-        # 저해상도 fallback
         echo $(( $(date +%s) * 1000 ))
     fi
 }
@@ -87,32 +91,22 @@ fi
 
 # CLAUDE_CONFIG_DIR 매핑: cl 이 Mac 절대경로(/Users/ghost/.claude-claudeN)로 export 하므로
 # 원격에는 basename 만 뽑아서 $HOME/<basename> 형태로 전달 (호스트별 HOME 상이: /home/aiden vs /home/summer).
-# cl 을 안 썼으면 이 변수는 비어있고, 원격 claude 는 기본 ~/.claude 사용.
 remote_env_prefix=""
 if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     base=$(basename "$CLAUDE_CONFIG_DIR")
-    # $HOME 은 remote 셸이 전개 — ssh 로 전달되는 문자열에 리터럴 '$HOME' 로 두기
     remote_env_prefix='CLAUDE_CONFIG_DIR="$HOME/'"$base"'" '
 fi
 
-# BROWSER inject — 원격 /login 의 OAuth URL 을 Mac 브라우저로 역송출 (~/bin/open-on-mac).
-# .bashrc 의 non-interactive 가드 우회: ssh 명령행에서 직접 export.
+# BROWSER inject — 원격 /login 의 OAuth URL 을 Mac 브라우저로 역송출.
 if [ "$host" != "mac" ]; then
     remote_env_prefix='BROWSER="$HOME/bin/open-on-mac" '"$remote_env_prefix"
 fi
 
-# cwd 매핑: 원격에 /Users/ghost → $HOME/mac_home symlink 가 있으므로 Mac 절대경로를 그대로 cd.
-# 장점: Mac 경로 ($HOME 밖 포함) 가 원격에서도 동일하게 resolve. cd 실패 시 $HOME fallback.
+# cwd 매핑: 원격 /Users/ghost → $HOME/mac_home symlink 로 Mac 절대경로 그대로 resolve.
+# fallback: Mac HOME 밖이면 상대 경로 추출 시도 후 최후 $HOME.
 remote_cwd_prefix=""
 if [ "$host" != "mac" ]; then
-    # CALLER_CWD 는 cx 최상단에서 저장한 Mac 호출 시점 pwd ($ROOT cd 전)
-    # fallback chain: Mac 절대경로 → 원격 $HOME 내 동일 relative → $HOME
-    #   1) Mac 절대경로 ($HOME/mac_home symlink 또는 sshfs 마운트 경유)
-    #   2) /Users/ghost/foo → $HOME/foo (원격에 clone 있을 때)
-    #   3) /Users/ghost/Dev/foo → $HOME/Dev/foo (Dev/ 하위 convention)
-    #   4) $HOME (최후 안전망)
     caller_quoted=$(printf '%q' "$CALLER_CWD")
-    # Mac HOME prefix 제거한 relative 경로 (예: /Users/ghost/Dev/airgenome → Dev/airgenome)
     case "$CALLER_CWD" in
         /Users/ghost/*)
             rel="${CALLER_CWD#/Users/ghost/}"
@@ -126,14 +120,12 @@ if [ "$host" != "mac" ]; then
 fi
 
 # 실행 + duration
-# ${fwd[@]+"${fwd[@]}"} — 빈 배열에서 set -u unbound 방지 (bash 3.2 호환)
 t0=$(date +%s)
 if [ "$host" = "mac" ]; then
     command claude ${fwd[@]+"${fwd[@]}"}
     rc=$?
 else
-    # L4-A (2026-04-18): /login SSOT 경고 — 원격 /login 은 Mac keychain 반영 안 됨.
-    # 하루 1회만 안내 (stderr). marker: ~/.airgenome/cx-login-warning.YYYYMMDD
+    # /login SSOT 경고 (하루 1회)
     _cx_today=$(date +%Y%m%d)
     _cx_marker="$HOME/.airgenome/cx-login-warning.$_cx_today"
     if [ ! -f "$_cx_marker" ]; then
@@ -141,27 +133,16 @@ else
         : > "$_cx_marker"
         echo "cx: /login 은 Mac 에서 'CLAUDE_CONFIG_DIR=\$HOME/.claude-<n> claude' — 원격 /login 은 Mac keychain 미반영 (오늘 1회)" >&2
     fi
-    # 원격 실행용 cmd 합성 (cd + env prefix + claude + args) — base64 로 ssh quoting 회피.
+    # ssh -t 직결. cd + env + claude. printf %q 로 args 안전 인코딩.
+    # ServerAliveInterval=60 : 유휴 60s 마다 keep-alive, 3회 실패시 연결 종료 → 끊김 감지.
     inner_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
-    # 2026-04-18: cx_remote_launch 방식 — 원격에 미리 배포된 launcher 가
-    # base64 디코드 → tmux new-session -A (attached ssh 의 pty 위에서) → claude 가 실제 tty 확보.
-    # detached tmux 에서 claude 가 즉시 exit 하던 문제 해결.
-    # launcher 는 bin/bootstrap + bin/sync_cx_launcher 로 설치. 미설치 시 raw fallback.
-    session_base="$(basename "${CLAUDE_CONFIG_DIR:-default}")"
-    session_base="${session_base#.claude-}"
-    session="cx-${session_base}"
-    cmd_b64=$(printf '%s' "$inner_cmd" | base64 | tr -d '\n')
-    # ssh -t 단일 호출. launcher 가 tty/tmux 판정 후 exec.
-    # if/else 로 명확히 분기 — inner_cmd 안의 `;` 이 다음 statement 로 escape 되는 것 방지.
-    ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" \
-        "if [ -x ~/.airgenome/cx_remote_launch ]; then bash ~/.airgenome/cx_remote_launch '$session' '$cmd_b64'; else $inner_cmd; fi"
+    ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=3 -t "$alias" "$inner_cmd"
     rc=$?
 fi
 t1=$(date +%s)
 dur=$(( t1 - t0 ))
 
-# genome 기록 (bash 직접 append — hexa sandbox 우회)
-# 스키마: {ts, host, duration_s, exit, rtt_ms}
+# genome 기록
 mkdir -p "$(dirname "$GENOME")"
 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf '{"ts":"%s","host":"%s","duration_s":%d,"exit":%d,"rtt_ms":%d}\n' \
