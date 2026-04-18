@@ -1,0 +1,555 @@
+// bin/deploy.hexa — one-command airgenome stack deployer
+//
+// Deploys full airgenome stack to all enabled remote hosts + Mac (AG6-safe).
+// Reads hosts from shared/config/hosts.json (SSOT).
+// Reads module placement from shared/config/ag6_manifest.json.
+//
+// Usage:
+//   hexa run bin/deploy.hexa              # full deploy to all hosts
+//   hexa run bin/deploy.hexa self-test    # parse + data sanity check
+//   hexa run bin/deploy.hexa status       # show host reachability + hexa version
+//   hexa run bin/deploy.hexa verify       # verify hexa toolchain + core_test on all remotes
+
+use "../core/core"
+
+let ROOT = airgenome_root()
+let HOSTS_FILE = ROOT + "/shared/config/hosts.json"
+let MANIFEST = ROOT + "/shared/config/ag6_manifest.json"
+let SYSTEMD_DIR = ROOT + "/shared/systemd"
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HOST HELPERS — jq-based JSON parsing from hosts.json
+// ═══════════════════════════════════════════════════════════════════════
+
+fn remote_hosts() -> list {
+    // Returns list of "name::::ssh_alias::::kind" for enabled non-self hosts
+    let raw = exec("jq -r '.hosts|to_entries[]|select(.value.kind!=\"self\" and .value.enabled==true)|\"\\(.key)::::\\(.value.ssh_alias)::::\\(.value.kind)\"' \"" + HOSTS_FILE + "\"").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn all_hosts() -> list {
+    // Returns list of "name::::ssh_alias::::kind" for all enabled hosts
+    let raw = exec("jq -r '.hosts|to_entries[]|select(.value.enabled==true)|\"\\(.key)::::\\(.value.ssh_alias // \"null\")::::\\(.value.kind)\"' \"" + HOSTS_FILE + "\"").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+fn host_name(entry: str) -> str {
+    return entry.split("::::")[0]
+}
+
+fn host_alias(entry: str) -> str {
+    return entry.split("::::")[1]
+}
+
+fn host_kind(entry: str) -> str {
+    return entry.split("::::")[2]
+}
+
+fn remote_modules() -> list {
+    // Returns modules with remote_allowed=true
+    let raw = exec("jq -r '.modules|to_entries[]|select(.value.remote_allowed==true)|.key' \"" + MANIFEST + "\"").trim()
+    if raw == "" { return [] }
+    return raw.split("\n")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  REACHABILITY CHECK
+// ═══════════════════════════════════════════════════════════════════════
+
+fn check_reachable(alias: str) -> bool {
+    let r = exec("ssh -o ConnectTimeout=5 -o BatchMode=yes " + alias + " echo ok 2>/dev/null").trim()
+    return r == "ok"
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FIND REFERENCE HOST — first reachable Linux host with hexa_v2
+// ═══════════════════════════════════════════════════════════════════════
+
+fn find_reference_host() -> str {
+    // Returns ssh_alias of first reachable Linux host that has hexa + hexa_v2
+    let hosts = remote_hosts()
+    let mut i = 0
+    while i < len(hosts) {
+        let entry = hosts[i].trim()
+        if entry != "" {
+            let alias = host_alias(entry)
+            let has_hexa = exec("ssh -o ConnectTimeout=5 " + alias + " '[ -x ~/Dev/hexa-lang/hexa ] && [ -x ~/Dev/hexa-lang/self/native/hexa_v2 ] && echo y || echo n' 2>/dev/null").trim()
+            if has_hexa == "y" {
+                println("  reference host: " + host_name(entry) + " (" + alias + ")")
+                return alias
+            }
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STEP 1: rsync airgenome source
+// ═══════════════════════════════════════════════════════════════════════
+
+fn deploy_source(alias: str, name: str) -> bool {
+    println("  [" + name + "] rsync source...")
+    let _ = exec("ssh " + alias + " 'mkdir -p ~/Dev/airgenome'")
+    let rc = exec("rsync -az --delete --exclude='.git' --exclude='build' --exclude='.claude' --exclude='forge/*.ring' --exclude='forge/*.log' --exclude='forge/*.stdout.log' --exclude='forge/*.stderr.log' -e ssh \"" + ROOT + "/\" " + alias + ":~/Dev/airgenome/ 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    let ok = rc.contains("__OK__")
+    if ok {
+        println("  [" + name + "] source: OK")
+    } else {
+        println("  [" + name + "] source: FAIL")
+        println("    " + rc)
+    }
+    return ok
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STEP 2: sync hexa toolchain from reference host
+// ═══════════════════════════════════════════════════════════════════════
+
+fn deploy_toolchain(alias: str, name: str, ref_host: str) -> bool {
+    println("  [" + name + "] sync hexa toolchain...")
+
+    // If this host IS the reference host, skip — it already has everything
+    if alias == ref_host {
+        println("  [" + name + "] toolchain: SKIP (is reference host)")
+        return true
+    }
+
+    // Ensure target directories exist
+    let _ = exec("ssh " + alias + " 'mkdir -p ~/Dev/hexa-lang/build ~/Dev/hexa-lang/self/native ~/Dev/hexa-lang/stdlib'")
+
+    // hexa binary
+    let r1 = exec("ssh " + ref_host + " 'cat ~/Dev/hexa-lang/hexa' | ssh " + alias + " 'cat > ~/Dev/hexa-lang/hexa && chmod +x ~/Dev/hexa-lang/hexa' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r1.contains("__OK__") {
+        println("  [" + name + "] toolchain hexa binary: FAIL")
+        return false
+    }
+
+    // hexa_stage0
+    let r2 = exec("ssh " + ref_host + " 'cat ~/Dev/hexa-lang/build/hexa_stage0' | ssh " + alias + " 'cat > ~/Dev/hexa-lang/build/hexa_stage0 && chmod +x ~/Dev/hexa-lang/build/hexa_stage0' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r2.contains("__OK__") {
+        println("  [" + name + "] toolchain stage0: FAIL")
+        return false
+    }
+
+    // module_loader.hexa
+    let r3 = exec("ssh " + ref_host + " 'cat ~/Dev/hexa-lang/self/module_loader.hexa' | ssh " + alias + " 'cat > ~/Dev/hexa-lang/self/module_loader.hexa' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r3.contains("__OK__") {
+        println("  [" + name + "] toolchain module_loader: FAIL")
+        return false
+    }
+
+    // runtime.c
+    let r4 = exec("ssh " + ref_host + " 'cat ~/Dev/hexa-lang/self/runtime.c' | ssh " + alias + " 'cat > ~/Dev/hexa-lang/self/runtime.c' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r4.contains("__OK__") {
+        println("  [" + name + "] toolchain runtime.c: FAIL")
+        return false
+    }
+
+    // hexa_v2 codegen binary
+    let r5 = exec("ssh " + ref_host + " 'cat ~/Dev/hexa-lang/self/native/hexa_v2' | ssh " + alias + " 'cat > ~/Dev/hexa-lang/self/native/hexa_v2 && chmod +x ~/Dev/hexa-lang/self/native/hexa_v2' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r5.contains("__OK__") {
+        println("  [" + name + "] toolchain hexa_v2: FAIL")
+        return false
+    }
+
+    // stdlib/ — rsync via ref host
+    let r6 = exec("ssh " + ref_host + " 'rsync -az ~/Dev/hexa-lang/stdlib/ " + alias + ":~/Dev/hexa-lang/stdlib/' 2>&1 && echo __OK__ || echo __FAIL__").trim()
+    if !r6.contains("__OK__") {
+        println("  [" + name + "] toolchain stdlib: FAIL")
+        return false
+    }
+
+    println("  [" + name + "] toolchain: OK")
+    return true
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STEP 2.5: ensure clang installed
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ensure_clang(alias: str, name: str) -> void {
+    let has = exec("ssh " + alias + " 'which clang >/dev/null 2>&1 && echo y || echo n'").trim()
+    if has == "y" {
+        println("  [" + name + "] clang: present")
+        return
+    }
+    println("  [" + name + "] installing clang...")
+    let _ = exec("ssh " + alias + " 'sudo -n apt-get install -y clang >/dev/null 2>&1 || true'")
+    let has2 = exec("ssh " + alias + " 'which clang >/dev/null 2>&1 && echo y || echo n'").trim()
+    if has2 == "y" {
+        println("  [" + name + "] clang: installed")
+    } else {
+        println("  [" + name + "] clang: WARN — install failed (may need manual sudo)")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STEP 3: deploy systemd timers
+// ═══════════════════════════════════════════════════════════════════════
+
+fn deploy_systemd(alias: str, name: str) -> bool {
+    println("  [" + name + "] deploy systemd timers...")
+    let mods = remote_modules()
+    let user = exec("ssh -o ConnectTimeout=3 " + alias + " whoami 2>/dev/null").trim()
+    if user == "" {
+        println("  [" + name + "] systemd: FAIL (unreachable)")
+        return false
+    }
+
+    let mut dest_dir = ""
+    let mut ctl = ""
+    if user == "root" {
+        dest_dir = "/etc/systemd/system"
+        ctl = "systemctl"
+    } else {
+        dest_dir = "/home/" + user + "/.config/systemd/user"
+        ctl = "systemctl --user"
+    }
+
+    // Create dir
+    let _ = exec("ssh " + alias + " 'mkdir -p " + dest_dir + "'")
+
+    // Copy slices first
+    let _ = exec("scp -q " + SYSTEMD_DIR + "/airgenome-*.slice " + alias + ":" + dest_dir + "/ 2>/dev/null || true")
+
+    // Deploy each remote module's service + timer
+    let mut ok_count = 0
+    let mut i = 0
+    while i < len(mods) {
+        let mod_name = mods[i].trim()
+        if mod_name != "" {
+            let svc = "airgenome-" + mod_name + ".service"
+            let tmr = "airgenome-" + mod_name + ".timer"
+            let svc_path = SYSTEMD_DIR + "/" + svc
+            let tmr_path = SYSTEMD_DIR + "/" + tmr
+            let svc_exists = exec("[ -f '" + svc_path + "' ] && echo y || echo n").trim()
+            if svc_exists == "y" {
+                let _ = exec("scp -q '" + svc_path + "' " + alias + ":" + dest_dir + "/")
+                let tmr_exists = exec("[ -f '" + tmr_path + "' ] && echo y || echo n").trim()
+                if tmr_exists == "y" {
+                    let _ = exec("scp -q '" + tmr_path + "' " + alias + ":" + dest_dir + "/")
+                }
+                let _ = exec("ssh " + alias + " '" + ctl + " daemon-reload && " + ctl + " enable --now " + tmr + " 2>/dev/null || true'")
+                println("    " + mod_name + ": OK")
+                ok_count = ok_count + 1
+            } else {
+                println("    " + mod_name + ": SKIP (no service file)")
+            }
+        }
+        i = i + 1
+    }
+
+    println("  [" + name + "] systemd: " + to_string(ok_count) + " timers deployed")
+    return true
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  STEP 4: verify — hexa run core_test + hexa build
+// ═══════════════════════════════════════════════════════════════════════
+
+fn verify_remote(alias: str, name: str) -> bool {
+    println("  [" + name + "] verify...")
+    let mut pass = true
+
+    // hexa run core test
+    let r1 = exec("ssh " + alias + " 'cd ~/Dev/airgenome && CORE_SELF_TEST=1 ~/Dev/hexa-lang/hexa run core/core.hexa' 2>&1").trim()
+    let r1_ok = r1.contains("self_test PASS") || r1.contains("lib.rs port verified")
+    if r1_ok {
+        println("  [" + name + "] core_test: PASS")
+    } else {
+        println("  [" + name + "] core_test: FAIL")
+        // Show last line for diagnostics
+        let lines = r1.split("\n")
+        let last_idx = len(lines) - 1
+        if last_idx >= 0 {
+            println("    last: " + lines[last_idx])
+        }
+        pass = false
+    }
+
+    // hexa build core
+    let r2 = exec("ssh " + alias + " 'cd ~/Dev/airgenome && ~/Dev/hexa-lang/hexa build core/core.hexa' 2>&1 && echo __BUILD_OK__ || echo __BUILD_FAIL__").trim()
+    if r2.contains("__BUILD_OK__") {
+        println("  [" + name + "] build core: PASS")
+    } else {
+        println("  [" + name + "] build core: FAIL")
+        pass = false
+    }
+
+    return pass
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAC (kind=self): AG6 verify
+// ═══════════════════════════════════════════════════════════════════════
+
+fn deploy_mac() -> void {
+    println("\n--- mac (self) ---")
+    // AG6: verify no blocked modules are loaded on Mac
+    let blocked_raw = exec("jq -r '.modules|to_entries[]|select(.value.mac_allowed==false)|.key' \"" + MANIFEST + "\"").trim()
+    if blocked_raw == "" {
+        println("  AG6: no blocked modules defined")
+        return
+    }
+    let blocked = blocked_raw.split("\n")
+    let dest = env("HOME") + "/Library/LaunchAgents"
+    let uid = exec("id -u").trim()
+    let mut violations = 0
+    let mut i = 0
+    while i < len(blocked) {
+        let mod_name = blocked[i].trim()
+        if mod_name != "" {
+            let plist = dest + "/com.airgenome." + mod_name + ".plist"
+            let exists = exec("[ -f '" + plist + "' ] && echo y || echo n").trim()
+            if exists == "y" {
+                println("  AG6 VIOLATION: " + plist + " (mac_allowed=false)")
+                violations = violations + 1
+            }
+            let loaded = exec("launchctl list com.airgenome." + mod_name + " >/dev/null 2>&1 && echo y || echo n").trim()
+            if loaded == "y" {
+                println("  AG6 VIOLATION: com.airgenome." + mod_name + " loaded")
+                violations = violations + 1
+            }
+        }
+        i = i + 1
+    }
+    if violations == 0 {
+        println("  AG6 verify: PASS")
+    } else {
+        println("  AG6 verify: FAIL (" + to_string(violations) + " violations)")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SUBCOMMAND: full deploy
+// ═══════════════════════════════════════════════════════════════════════
+
+fn deploy_full() -> void {
+    println("=== airgenome deploy — full stack ===")
+    println("")
+
+    // Find reference host for toolchain sync
+    println("--- finding reference host ---")
+    let ref_host = find_reference_host()
+    if ref_host == "" {
+        println("  FATAL: no reference host with hexa+hexa_v2 found")
+        println("  Deploy at least one Linux host manually first.")
+        return
+    }
+
+    let hosts = remote_hosts()
+    let mut total = 0
+    let mut ok = 0
+    let mut i = 0
+
+    while i < len(hosts) {
+        let entry = hosts[i].trim()
+        if entry != "" {
+            let name = host_name(entry)
+            let alias = host_alias(entry)
+            println("")
+            println("--- " + name + " (" + alias + ") ---")
+
+            if !check_reachable(alias) {
+                println("  SKIP: unreachable")
+            } else {
+                total = total + 1
+                let mut host_ok = true
+                if !deploy_source(alias, name) { host_ok = false }
+                if !deploy_toolchain(alias, name, ref_host) { host_ok = false }
+                ensure_clang(alias, name)
+                if !deploy_systemd(alias, name) { host_ok = false }
+                if !verify_remote(alias, name) { host_ok = false }
+                if host_ok {
+                    ok = ok + 1
+                    println("  [" + name + "] DEPLOY: OK")
+                } else {
+                    println("  [" + name + "] DEPLOY: PARTIAL (check errors above)")
+                }
+            }
+        }
+        i = i + 1
+    }
+
+    // Mac self
+    deploy_mac()
+
+    println("")
+    println("=== deploy complete: " + to_string(ok) + "/" + to_string(total) + " remote hosts OK ===")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SUBCOMMAND: status
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_status() -> void {
+    println("=== airgenome deploy status ===")
+    let hosts = all_hosts()
+    let mut i = 0
+    while i < len(hosts) {
+        let entry = hosts[i].trim()
+        if entry != "" {
+            let name = host_name(entry)
+            let alias = host_alias(entry)
+            let kind = host_kind(entry)
+
+            if kind == "self" {
+                println("  " + name + " (self): local")
+            } else {
+                let reachable = check_reachable(alias)
+                if !reachable {
+                    println("  " + name + " (" + alias + "): UNREACHABLE")
+                } else {
+                    let ver = exec("ssh -o ConnectTimeout=5 " + alias + " '~/Dev/hexa-lang/hexa version 2>/dev/null || echo none'").trim()
+                    let has_src = exec("ssh " + alias + " '[ -d ~/Dev/airgenome/core ] && echo y || echo n'").trim()
+                    let timers = exec("ssh " + alias + " 'systemctl --user list-timers --no-pager 2>/dev/null | grep -c airgenome; true' 2>/dev/null | head -1").trim()
+                    println("  " + name + " (" + alias + "): hexa=" + ver + " src=" + has_src + " timers=" + timers)
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SUBCOMMAND: verify
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_verify() -> void {
+    println("=== airgenome deploy verify ===")
+    let hosts = remote_hosts()
+    let mut total = 0
+    let mut pass = 0
+    let mut i = 0
+    while i < len(hosts) {
+        let entry = hosts[i].trim()
+        if entry != "" {
+            let name = host_name(entry)
+            let alias = host_alias(entry)
+
+            if !check_reachable(alias) {
+                println("  " + name + ": UNREACHABLE")
+            } else {
+                total = total + 1
+                if verify_remote(alias, name) {
+                    pass = pass + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    println("")
+    println("verify: " + to_string(pass) + "/" + to_string(total) + " PASS")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SUBCOMMAND: self-test (offline parse + data sanity, no SSH)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn cmd_self_test() -> void {
+    println("=== deploy.hexa self-test ===")
+
+    // 1. hosts.json readable + has enabled hosts
+    let host_count = exec("jq '.hosts|to_entries|length' \"" + HOSTS_FILE + "\" 2>/dev/null").trim()
+    let hc_str = to_string(host_count)
+    if hc_str == "" || hc_str == "void" {
+        panic("self-test FAIL: cannot parse hosts.json")
+    }
+    let hc = to_int(host_count)
+    if hc < 2 { panic("self-test FAIL: hosts.json has <2 hosts") }
+    println("  hosts.json: " + to_string(hc) + " hosts")
+
+    // 2. remote hosts exist
+    let remotes = remote_hosts()
+    if len(remotes) < 1 { panic("self-test FAIL: no remote hosts found") }
+    println("  remote hosts: " + to_string(len(remotes)))
+
+    // 3. ag6_manifest readable + has modules
+    let mod_count = exec("jq '.modules|to_entries|length' \"" + MANIFEST + "\" 2>/dev/null").trim()
+    let mc = to_int(mod_count)
+    if mc < 3 { panic("self-test FAIL: ag6_manifest has <3 modules") }
+    println("  ag6_manifest: " + to_string(mc) + " modules")
+
+    // 4. remote modules exist (harvest/label/forecast)
+    let rmods = remote_modules()
+    if len(rmods) < 2 { panic("self-test FAIL: <2 remote modules") }
+    println("  remote modules: " + to_string(len(rmods)))
+
+    // 5. Verify remote modules include harvest
+    let mut found_harvest = false
+    let mut i = 0
+    while i < len(rmods) {
+        if rmods[i].trim() == "harvest" { found_harvest = true }
+        i = i + 1
+    }
+    if !found_harvest { panic("self-test FAIL: harvest not in remote modules") }
+    println("  harvest in remote_modules: OK")
+
+    // 6. systemd dir has service files
+    let svc_count = exec("ls " + SYSTEMD_DIR + "/airgenome-*.service 2>/dev/null | wc -l").trim()
+    let sc = to_int(svc_count)
+    if sc < 1 { panic("self-test FAIL: no systemd service files") }
+    println("  systemd services: " + to_string(sc))
+
+    // 7. core/core.hexa exists
+    let core_exists = exec("[ -f '" + ROOT + "/core/core.hexa' ] && echo y || echo n").trim()
+    if core_exists != "y" { panic("self-test FAIL: core/core.hexa missing") }
+    println("  core/core.hexa: present")
+
+    // 8. Each remote host entry has ssh_alias
+    i = 0
+    while i < len(remotes) {
+        let entry = remotes[i].trim()
+        if entry != "" {
+            let alias = host_alias(entry)
+            if alias == "" || alias == "null" {
+                panic("self-test FAIL: host " + host_name(entry) + " has no ssh_alias")
+            }
+        }
+        i = i + 1
+    }
+    println("  all remote hosts have ssh_alias: OK")
+
+    // 9. host_name / host_alias / host_kind parsing
+    let test_entry = "testhost::::testalias::::lan"
+    if host_name(test_entry) != "testhost" { panic("self-test FAIL: host_name parse") }
+    if host_alias(test_entry) != "testalias" { panic("self-test FAIL: host_alias parse") }
+    if host_kind(test_entry) != "lan" { panic("self-test FAIL: host_kind parse") }
+    println("  host parser: OK")
+
+    // 10. Mac host exists (kind=self)
+    let all = all_hosts()
+    let mut found_self = false
+    i = 0
+    while i < len(all) {
+        let entry = all[i].trim()
+        if entry != "" {
+            let k = host_kind(entry)
+            if k == "self" { found_self = true }
+        }
+        i = i + 1
+    }
+    if !found_self { panic("self-test FAIL: no self host in hosts.json") }
+    println("  self host (mac): OK")
+
+    println("")
+    println("  deploy.hexa self-test: ALL PASS")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  MAIN
+// ═══════════════════════════════════════════════════════════════════════
+
+fn main() -> void {
+    let a = args()
+    let mut sub = ""
+    if len(a) >= 3 { sub = a[2] }
+
+    if sub == "self-test" { cmd_self_test(); return }
+    if sub == "status" { cmd_status(); return }
+    if sub == "verify" { cmd_verify(); return }
+    deploy_full()
+}

@@ -1,0 +1,113 @@
+#!/bin/bash
+# bin/bootstrap — fresh Mac airgenome 일회성 설치기 (Phase 0, pre-hexa).
+#
+# hexa-only 원칙 예외: hexa 가 없는 상태에서 hexa 를 세팅해야 하므로 Phase 0
+# 은 shell 이 유일한 선택. hexa 사용 가능해지면 Phase 1 부터는 install_agents.hexa
+# + deploy.hexa 로 위임.
+#
+# Usage:
+#   # 새 Mac 에서 한 번만:
+#   git clone https://github.com/need-singularity/airgenome ~/Dev/airgenome
+#   ~/Dev/airgenome/bin/bootstrap
+#
+#   # 또는 curl one-liner (public 인 경우):
+#   curl -fsSL https://raw.githubusercontent.com/need-singularity/airgenome/main/bin/bootstrap | bash
+#
+# 모든 단계 idempotent — 재실행 시 이미 설치된 건 skip.
+
+set -eu
+
+MARKER="# --- airgenome bootstrap (managed block) ---"
+DEV="$HOME/Dev"
+GH_ORG="need-singularity"
+
+log()  { printf '[bootstrap %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ─ 1. Homebrew ────────────────────────────────────────────────────────
+if ! have brew; then
+    log "Homebrew 설치 (admin pw 프롬프트 발생)"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
+# ─ 2. 패키지 (필수 + 선택) ─────────────────────────────────────────────
+REQUIRED="jq rsync git"
+OPTIONAL="sshfs cpulimit"
+for pkg in $REQUIRED; do
+    brew list "$pkg" >/dev/null 2>&1 || { log "brew install $pkg"; brew install "$pkg"; }
+done
+for pkg in $OPTIONAL; do
+    brew list "$pkg" >/dev/null 2>&1 || brew install "$pkg" 2>/dev/null || log "  (optional skip: $pkg — macFUSE 등 수동 설치 필요할 수 있음)"
+done
+
+# ─ 3. 3-repo clone (airgenome / nexus / hexa-lang) ─────────────────────
+mkdir -p "$DEV"
+clone_if_missing() {
+    local repo="$1"
+    local dir="$DEV/$repo"
+    if [ -d "$dir/.git" ]; then
+        log "$repo: 이미 clone 됨"
+    else
+        log "clone: $GH_ORG/$repo → $dir"
+        git clone "https://github.com/$GH_ORG/$repo.git" "$dir"
+    fi
+}
+clone_if_missing airgenome
+clone_if_missing nexus
+clone_if_missing hexa-lang
+
+# ─ 4. ~/.zshrc managed block (idempotent) ──────────────────────────────
+ZSHRC="$HOME/.zshrc"
+if ! grep -qF "$MARKER" "$ZSHRC" 2>/dev/null; then
+    log "~/.zshrc 에 airgenome 블록 추가"
+    cat >> "$ZSHRC" <<EOF
+
+$MARKER
+export NEXUS="\$HOME/Dev/nexus"
+export HEXA_LANG="\$HOME/Dev/hexa-lang"
+export PATH="\$HOME/Dev/nexus/shared/bin:\$HOME/Dev/airgenome/bin:\$PATH"
+export CLAUDE_EXEC="\$HOME/Dev/airgenome/bin/cx"
+# --- /airgenome bootstrap ---
+EOF
+else
+    log "~/.zshrc managed block 존재 — skip"
+fi
+# 현 shell 에 즉시 반영 (후속 단계용)
+export NEXUS="$DEV/nexus"
+export HEXA_LANG="$DEV/hexa-lang"
+export PATH="$DEV/nexus/shared/bin:$DEV/airgenome/bin:$PATH"
+
+# ─ 5. hexa-lang 빌드 ───────────────────────────────────────────────────
+# hexa-lang 은 install.hexa 로 자가 설치. 이미 있으면 skip.
+if [ ! -x "$HEXA_LANG/hexa" ] && [ ! -x "$HEXA_LANG/build/hexa_stage0" ]; then
+    log "hexa-lang 빌드 필요 — hexa-lang/install.hexa 또는 수동 build 후 재실행"
+    log "  cd $HEXA_LANG && cat README.md 참조"
+    # 빌드 자체는 hexa-lang 리포의 책임. 여기선 존재만 확인.
+else
+    log "hexa-lang 빌드 이미 있음"
+fi
+
+# ─ 6. LaunchAgents (Phase 1 — hexa 사용 가능할 때) ─────────────────────
+if have hexa; then
+    log "LaunchAgents 설치 (install_agents.hexa sync-ssot → install → doctor)"
+    cd "$DEV/airgenome"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa sync-ssot || log "  sync-ssot 실패 (hexa 빌드 확인 필요)"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa          || log "  install 실패"
+    HEXA_LOCAL=1 hexa run bin/install_agents.hexa doctor   || log "  doctor 실패"
+else
+    log "hexa 없음 — LaunchAgents 설치 스킵. hexa-lang 빌드 후 수동 실행:"
+    log "  cd ~/Dev/airgenome && hexa run bin/install_agents.hexa"
+fi
+
+# ─ 7. ssh config 힌트 ──────────────────────────────────────────────────
+if [ ! -f "$HOME/.ssh/config" ] || ! grep -q "Host ubu" "$HOME/.ssh/config" 2>/dev/null; then
+    log "~/.ssh/config 에 ubu/ubu2/hetzner 엔트리 수동 추가 필요 (hosts.json 참고):"
+    log "  jq -r '.hosts | to_entries[] | .key' $DEV/airgenome/shared/config/hosts.json"
+fi
+
+log "bootstrap 완료. 새 terminal 열거나 'exec zsh' 로 shell 환경 재로드."
