@@ -95,6 +95,12 @@ if [ "$host" != "mac" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     remote_env_prefix='CLAUDE_CONFIG_DIR="$HOME/'"$base"'" '
 fi
 
+# BROWSER inject — 원격 /login 의 OAuth URL 을 Mac 브라우저로 역송출 (~/bin/open-on-mac).
+# .bashrc 의 non-interactive 가드 우회: ssh 명령행에서 직접 export.
+if [ "$host" != "mac" ]; then
+    remote_env_prefix='BROWSER="$HOME/bin/open-on-mac" '"$remote_env_prefix"
+fi
+
 # cwd 매핑: 원격에 /Users/ghost → $HOME/mac_home symlink 가 있으므로 Mac 절대경로를 그대로 cd.
 # 장점: Mac 경로 ($HOME 밖 포함) 가 원격에서도 동일하게 resolve. cd 실패 시 $HOME fallback.
 remote_cwd_prefix=""
@@ -110,6 +116,15 @@ if [ "$host" = "mac" ]; then
     command claude ${fwd[@]+"${fwd[@]}"}
     rc=$?
 else
+    # L4-A (2026-04-18): /login SSOT 경고 — 원격 /login 은 Mac keychain 반영 안 됨.
+    # 하루 1회만 안내 (stderr). marker: ~/.airgenome/cx-login-warning.YYYYMMDD
+    _cx_today=$(date +%Y%m%d)
+    _cx_marker="$HOME/.airgenome/cx-login-warning.$_cx_today"
+    if [ ! -f "$_cx_marker" ]; then
+        mkdir -p "$(dirname "$_cx_marker")" 2>/dev/null
+        : > "$_cx_marker"
+        echo "cx: /login 은 Mac 에서 'CLAUDE_CONFIG_DIR=\$HOME/.claude-<n> claude' — 원격 /login 은 Mac keychain 미반영 (오늘 1회)" >&2
+    fi
     # 원격 실행용 quoted cmd 합성 (cd + env prefix + claude + args)
     remote_cmd="$remote_cwd_prefix$remote_env_prefix"$(printf '%q ' claude ${fwd[@]+"${fwd[@]}"})
     ssh -t "$alias" "$remote_cmd"
