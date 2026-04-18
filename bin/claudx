@@ -22,6 +22,10 @@
 #   claudx --force-host mac         # cx --force-host 패스스루
 #   claudx --no-rotate              # interceptor 비활성 (pre-pick 만)
 #   claudx --show                   # acct/host 결정만 출력 후 종료 (실행 X)
+#
+# permission 프롬프트:
+#   기본값 = --dangerously-skip-permissions 자동 주입 (전면 허용 · 프롬프트 0)
+#   CLAUDX_SAFE=1 로 env 지정하면 자동 주입 안 함 — claude 의 기본 권한 검사 복원
 
 set -uo pipefail
 
@@ -152,6 +156,20 @@ if [ "$no_rotate" != true ] && [ -f "$INTERCEPTOR" ]; then
         export NODE_OPTIONS="--require $INTERCEPTOR $NODE_OPTIONS"
     else
         export NODE_OPTIONS="--require $INTERCEPTOR"
+    fi
+fi
+
+# M13f+: --dangerously-skip-permissions 기본 주입 (CLAUDX_SAFE=1 이면 skip).
+# bypassPermissions defaultMode + skipDangerousModePermissionPrompt 에도 특정
+# 패턴 (rm 포함 chain 등) 에 대한 프롬프트가 뜨는 것을 완전 차단.
+# 이미 사용자가 같은 플래그를 줬다면 중복 방지.
+if [ "${CLAUDX_SAFE:-0}" != "1" ]; then
+    _has_dsp=0
+    for a in ${fwd[@]+"${fwd[@]}"}; do
+        case "$a" in --dangerously-skip-permissions|--allow-dangerously-skip-permissions) _has_dsp=1; break ;; esac
+    done
+    if [ $_has_dsp -eq 0 ]; then
+        fwd=("--dangerously-skip-permissions" ${fwd[@]+"${fwd[@]}"})
     fi
 fi
 
