@@ -1,0 +1,14 @@
+[Unit]
+Description=airgenome git repo sync from origin/feat/m11a-cross-host (safe, fast-forward only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Dev/airgenome
+# fetch + fast-forward only. 로컬에 신규 commit 있으면 stop (손실 방지).
+# reset --hard 가 아닌 merge --ff-only — 원격이 rewind 되어도 조용히 실패.
+ExecStart=/usr/bin/git fetch origin feat/m11a-cross-host
+ExecStart=/bin/sh -c 'cd %h/Dev/airgenome && git merge --ff-only origin/feat/m11a-cross-host 2>&1 || echo "ff-only merge failed (local divergence?)"'
+StandardOutput=journal
+StandardError=journal

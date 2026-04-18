@@ -10,7 +10,8 @@
       "threads": "nproc. dispatch score_heavy 의 thread bonus 기준",
       "tier": "primary(LAN 상시) | secondary(원격 상시) | local(mac self)",
       "tags": "compute | gpu | heavy | io — dispatch 후보 필터용",
-      "slots": "kind 별 동시 실행 하드캡 (executor flock). dispatch 는 active*20 감점으로 쏠림 분산. 0 이면 해당 kind 금지, 필드 누락이면 무제한."
+      "slots": "kind 별 동시 실행 하드캡 (executor flock). dispatch 는 active*20 감점으로 쏠림 분산. 0 이면 해당 kind 금지, 필드 누락이면 무제한.",
+      "needs_mac_ip": "true 면 bin/mac_ip_push 가 5분마다 이 호스트의 ~/.ssh/config 의 'Host mac' HostName 을 Mac 의 현재 LAN IP 로 갱신. tailscale 없는 LAN 호스트용."
     }
   },
   "hosts": {
@@ -44,7 +45,8 @@
       "slots": {
         "heavy": 1,
         "compute": 2
-      }
+      },
+      "needs_mac_ip": true
     },
     "htz": {
       "enabled": true,

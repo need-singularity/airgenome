@@ -1,0 +1,88 @@
+#!/bin/bash
+# bin/mac_ip_push — Mac 의 현재 LAN IP 를 원격 호스트의 ~/.ssh/config 의
+# `Host mac` HostName 에 주입. tailscale 이 없는 호스트 (ubu2) 의 stale
+# hardcoded IP 문제를 해결한다.
+#
+# 동작:
+#   1. 현재 en0 의 inet IP 추출
+#   2. 원격의 ~/.ssh/config 백업 → sed 로 'Host mac' 블록의 HostName 치환
+#   3. ssh 재확인 ping (옵션)
+#
+# Usage:
+#   bin/mac_ip_push              # hosts.json 의 enabled=true && needs_mac_ip=true
+#   bin/mac_ip_push ubu2         # 특정 호스트만
+#
+# 주기: launchd (com.airgenome.mac-ip-push.plist) 5분 간격으로 자동 실행.
+# sudo 없이 user-level 로만 작동. tailscale 가용 호스트는 고정 100.x IP 사용
+# 하므로 이 스크립트 대상에서 제외 (hosts.json 의 needs_mac_ip 플래그).
+
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOSTS_FILE="$ROOT/shared/config/hosts.json"
+
+# 현재 Mac LAN IP (en0 inet)
+MAC_IP="$(ifconfig en0 2>/dev/null | awk '/inet / {print $2; exit}')"
+if [ -z "$MAC_IP" ]; then
+  # en0 없거나 연결 끊김 — en1 / 기타 시도
+  MAC_IP="$(ifconfig 2>/dev/null | awk '/inet 192\.|inet 10\./ {print $2; exit}')"
+fi
+
+if [ -z "$MAC_IP" ]; then
+  echo "[mac_ip_push] no LAN IP found, skip" >&2
+  exit 0
+fi
+
+push_one() {
+  local host="$1"
+  local alias="${2:-mac}"
+  # 원격 config 의 'Host mac' 블록 HostName 치환 — awk 로 블록 단위 안전 치환
+  local remote_cmd
+  remote_cmd=$(cat <<REMOTE
+set -e
+CFG="\$HOME/.ssh/config"
+[ -f "\$CFG" ] || { echo "no config"; exit 0; }
+# 현재 값 추출
+CUR=\$(awk '/^Host ${alias}\$/{f=1;next} f && /^Host /{f=0} f && /HostName/{print \$2; exit}' "\$CFG")
+if [ "\$CUR" = "${MAC_IP}" ]; then
+  echo "[ok] already ${MAC_IP}"
+  exit 0
+fi
+cp "\$CFG" "\$CFG.bak.\$(date +%s)" 2>/dev/null || true
+# awk in-place: Host ${alias} 블록의 HostName 줄만 치환
+awk -v newip="${MAC_IP}" '
+  /^Host ${alias}\$/ {inblk=1; print; next}
+  inblk && /^Host / {inblk=0}
+  inblk && /^[[:space:]]*HostName/ {print "    HostName " newip; next}
+  {print}
+' "\$CFG" > "\$CFG.new" && mv "\$CFG.new" "\$CFG"
+chmod 600 "\$CFG"
+echo "[updated] \$CUR -> ${MAC_IP}"
+# 오래된 백업 정리 (최근 5개만 유지)
+ls -t "\$CFG".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
+REMOTE
+)
+  ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$host" "bash -s" <<<"$remote_cmd" 2>&1 | sed "s/^/[${host}] /"
+}
+
+if [ $# -ge 1 ]; then
+  push_one "$1" "${2:-mac}"
+  exit 0
+fi
+
+# hosts.json 에서 needs_mac_ip=true 인 호스트만
+if [ ! -f "$HOSTS_FILE" ]; then
+  echo "[mac_ip_push] hosts.json not found: $HOSTS_FILE" >&2
+  exit 1
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  # hosts.json: .hosts 는 object {alias: {...}} — to_entries 로 순회
+  jq -r '.hosts | to_entries[] | select(.value.enabled==true and .value.needs_mac_ip==true) | "\(.value.ssh_alias) \(.value.mac_alias // "mac")"' "$HOSTS_FILE" 2>/dev/null | while read -r alias mac_alias; do
+    [ -z "$alias" ] && continue
+    push_one "$alias" "$mac_alias"
+  done
+else
+  echo "[mac_ip_push] jq required" >&2
+  exit 1
+fi
